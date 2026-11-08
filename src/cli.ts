@@ -992,7 +992,8 @@ async function main() {
       if (!server || !code) throw new Error("用法：noop join <服务端地址> <接入码>");
       const { joinServer } = await import("./join");
       const { DATA } = await import("./core");
-      const r = await joinServer(server, code, { data: DATA });
+      const r = await joinServer(server, code, { data: DATA }).catch((e: Error) => { console.error(e.message); process.exitCode = 1; return null; });
+      if (!r) return;
       return void console.log(`已接入 ${server}${r.name ? `：${r.name}` : ""}（配置写在 ${r.file}）`);
     }
     case "install": return install();
