@@ -14,11 +14,13 @@ export type TeamTask = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   state: string; step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; session: string;
   claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
+  /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
+  repo?: string;
 };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string };
 export type Claim = {
-  task: TeamTask; agent: TeamAgent & { repo?: string }; channel: { id: string; name: string; topic: string };
+  task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string }; channel: { id: string; name: string; topic: string };
   recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
   creator: { name: string; handle: string }; resumed: boolean;
 };
@@ -27,6 +29,8 @@ export type TaskResult = {
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
   /** The criteria the agent worked to, when people gave none. */
   acceptance?: string;
+  /** The agent's memory.md as it wants it now, when it learned something lasting. */
+  memory?: string;
 };
 
 /** Where a task runs. `repo` is the agent's checkout this worktree belongs to. */
@@ -66,7 +70,8 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
   "recommendation": "A",
   "pr_title": "review with commits only: the pull request title",
   "pr_body": "review with commits only: what changed and how it was verified",
-  "acceptance": "only when the task came without acceptance criteria: the criteria you worked to, one per line"
+  "acceptance": "only when the task came without acceptance criteria: the criteria you worked to, one per line",
+  "memory": "only when you learned something that will matter in later tasks (how the team works, a repo's quirks, people's preferences): your whole memory.md as it should be now, short bullet points, under 4000 characters"
 }
 review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
@@ -97,13 +102,16 @@ function mandateLine(c: Claim): string {
   return `\nMandate: ${rule}${m.confirm ? "; your owner confirmed this task" : ""}. Autonomy ${AUTONOMY[m.autonomy] ?? m.autonomy}.`;
 }
 
-/** The first turn: who the agent is, where it works, the channel, the task and its thread. */
+/** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir): string {
   const a = c.agent, t = c.task;
   return `You are ${a.name} (@${a.handle}), an AI teammate in a TeamAgent workspace, running headless on your owner's machine.
 ${a.description ? `Your role: ${a.description}\n` : ""}People hand you tasks by @-mentioning you in a channel; you work on one task now.
 
-${RULES(wd)}
+# Your memory (memory.md)
+${a.memory?.trim() || "(empty)"}
+
+${RULES(wd)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
 # Channel #${c.channel.name}
 ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters):
@@ -138,8 +146,10 @@ export type WorkerOptions = {
   workRoot?: string;
   runtimes?: Record<string, Runtime>;
   afterRun?: AfterRun;
-  /** Prepares a task's work directory (default: prepareWorkdir). */
+  /** Prepares a task's work directory (default: prepareWorkdir with resolveRepo). */
   workdir?: (c: Claim, root: string) => Promise<Workdir>;
+  /** This machine's checkout of a task's repository (repos.ts). */
+  resolveRepo?: (remote: string) => Promise<string>;
   /** Extra environment for the runtime (default: gateEnv, which stops git pushes and gh/glab writes). */
   env?: (wd: Workdir) => Record<string, string>;
   log?: (s: string) => void;
@@ -157,11 +167,16 @@ async function git(cwd: string, ...args: string[]): Promise<{ ok: boolean; out: 
   return { ok: code === 0, out: (code === 0 ? out : err).trim() };
 }
 
-/** The task's own worktree of the agent's repository on its branch (made once, kept for its later turns), or an
- * empty directory when the agent has no repository. */
-export async function prepareWorkdir(c: Claim, root: string): Promise<Workdir> {
+/** The task's own worktree of its repository on its branch (made once, kept for its later turns), or an empty
+ * directory for a general task. The repository is the task's own (found or cloned on this machine by `resolve`), or,
+ * when the task names none, the agent's repo path. */
+export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: string) => Promise<string>): Promise<Workdir> {
   const dir = join(root, c.task.id);
-  const repoPath = c.agent.repo ? expand(c.agent.repo) : "";
+  let repoPath = c.agent.repo ? expand(c.agent.repo) : "";
+  if (c.task.repo) {
+    if (!resolve) throw new Error(`这台机器不知道去哪找 ${c.task.repo}`);
+    repoPath = await resolve(c.task.repo);
+  }
   if (!repoPath) {
     mkdirSync(dir, { recursive: true });
     return { cwd: dir, writable: [] };
@@ -217,7 +232,7 @@ export function createWorker(o: WorkerOptions) {
     }
     let wd: Workdir;
     try {
-      wd = await (o.workdir ?? prepareWorkdir)(c, root);
+      wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo)))(c, root);
     } catch (e) {
       await report(t.id, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
       return;
@@ -259,6 +274,7 @@ export function createWorker(o: WorkerOptions) {
     const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
     if (extra?.pr) body.pr = extra.pr;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
+    if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
     await report(t.id, body);
     log(`${t.id} → ${result.status}`);

@@ -2,14 +2,15 @@
 //   个人: 账号 (profile, sign in on another device, signed-in devices, sign out), 通用 (language)
 //   Agent 工作: 我的 Agent (list + detail; New agent picks a machine, then a runtime on it), 我的机器 (runtimes, Git credentials, agents)
 //   团队·管理员: 成员与邀请, Git 平台 (the team's platforms, the GitLab webhook, each machine's credentials)
-// An agent = one machine + one runtime on it + a repo + who can hand it work. A machine hosts many agents.
+// An agent = one machine + one runtime on it + who can hand it work + its memory. A machine hosts many agents; the
+// repository follows the task (a channel's default, or one named in the message), not the agent.
 import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
-import { Dialog } from "nsh/base";
+import { Dialog, Input } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
-  modelsOn, RUNTIMES, runtimeLabel, runtimeOn,
+  modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type GitCred, type GitPlatform, type GitSettings, type Machine, type Team,
 } from "./api";
 import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
@@ -403,7 +404,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-          {L("An agent is one runtime on one of your machines, working in one repository. People @ it in channels to hand it work.", "一个 Agent = 你某台机器上的一个 Runtime + 一个代码仓库。大家在频道里 @它派活。")}
+          {L("An agent is one runtime on one of your machines. People @ it in channels to hand it work; the repository comes with the task.", "一个 Agent = 你某台机器上的一个 Runtime。大家在频道里 @它派活，仓库跟着任务走。")}
         </Text>
         <Btn small kind="primary" testID="agent-add" icon="plus" label={L("New agent", "新建 Agent")} onPress={props.onNew} />
       </View>
@@ -497,6 +498,10 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}</Text>
       </Panel>
 
+      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")}>
+        <AgentMemory team={t} agent={a()} />
+      </Panel>
+
       <Panel title={L("Who can use it", "谁能用它")}>
         <Label text={L("Who can hand it work", "谁能派活")} />
         <DispatchControls testID={`agent-dispatch-${a().handle}`} dispatch={a().dispatch} confirm={a().confirm} onDispatch={(v) => void patch({ dispatch: v })} onConfirm={(v) => void patch({ confirm: v })} />
@@ -538,7 +543,43 @@ function AgentText(props: { team: Team; agent: Agent; field: "description"; labe
   );
 }
 
-/** The repository its tasks run in: a checkout on its machine; each task gets a worktree of it on agent/T-xxxx. */
+/** What it keeps between tasks. Its owner edits it; the agent rewrites it when it learns something lasting. */
+function AgentMemory(props: { team: Team; agent: Agent }) {
+  const value = signal(props.agent.memory ?? "");
+  const busy = signal(false);
+  const saved = signal(false);
+  const changed = () => value().trim() !== (props.agent.memory ?? "");
+  // the agent rewrote it while it was open here and nothing was typed: show the new text
+  effect(() => {
+    const m = props.agent.memory ?? "";
+    if (!untracked(changed) || untracked(saved)) value.set(m);
+  });
+  async function save() {
+    busy.set(true);
+    const r = await props.team.patchAgent(props.agent.id, { memory: value().trim() });
+    busy.set(false);
+    saved.set(r.ok);
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <Input
+        testID={`agent-memory-${props.agent.handle}`}
+        value={value()}
+        multiline
+        placeholder={L("- The pay service is Go 1.24; run make test\n- Ask Wang Lei before touching the orders table", "- 支付服务是 Go 1.24，测试用 make test\n- 动 orders 表前先问王磊")}
+        class="placeholder:text-faint"
+        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
+        style={{ minHeight: 96, maxHeight: 260, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+      />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}</Text>
+        <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+    </View>
+  );
+}
+
+/** A checkout on its machine for tasks that name no repository (the task's own repository comes first). */
 function AgentRepo(props: { team: Team; agent: Agent }) {
   const value = signal(props.agent.repo ?? "");
   const busy = signal(false);
@@ -552,14 +593,14 @@ function AgentRepo(props: { team: Team; agent: Agent }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Label text={L("Repository on its machine", "代码仓库（它在机器上的路径）")} />
+      <Label text={L("Fallback checkout on its machine (optional)", "本机默认仓库（可选）")} />
       <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
         <View style={{ flex: 1 }}>
           <Field value={value()} onChange={(v) => { value.set(v); saved.set(false); }} onSubmit={save} placeholder="~/work/orders" testID={`agent-repo-${props.agent.handle}`} />
         </View>
         <Btn small testID={`agent-repo-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
       </View>
-      <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("A git checkout path. Each task works in its own worktree on branch agent/T-xxxx; the machine pushes it and opens the PR. Empty: tasks get an empty folder.", "填本机上 git 仓库的路径。每个任务在自己的 worktree 里干活（分支 agent/T-xxxx），由机器推送并开 PR；留空则每个任务一个空目录。")}</Text>
+      <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("Usually empty: the repository comes with the task (an address in the message, or the channel’s default) and the machine finds or clones it. This path is used only when a task names none.", "一般不用填：仓库跟着任务走（消息里写的地址，或频道的默认仓库），机器会自己找到或克隆。只有任务没指定仓库时才用这里的路径。")}</Text>
     </View>
   );
 }
@@ -684,7 +725,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
             <Label text={L("Model", "模型")} />
             <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
           </If>
-          <Field label={L("Repository on that machine", "代码仓库（那台机器上的路径）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
+          <Field label={L("Fallback checkout on that machine (optional)", "本机默认仓库（可选，一般不用填）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
 
           {step("3", L("Who can use it", "谁能用它"))}
           <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
@@ -826,6 +867,15 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
                 </View>
               );
             }}
+          </Each>
+        </View>
+      </If>
+
+      <Label text={L("Repositories", "仓库")} note={L("Checkouts it found (under ~/code, ~/work and the like, or [teamagent] roots in its config), by remote. Tasks in other repositories get cloned.", "它找到的本地仓库（~/code、~/work 等目录，或配置里 [teamagent] roots 指定的目录），按远端地址识别。其他仓库的任务会自动克隆。")} />
+      <If when={(m().repos ?? []).length} else={<Text testID={`machine-${m().id}-repos-none`} style={{ fontSize: 13, color: colors.faint }}>{reported() ? L("None found yet.", "还没找到。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
+        <View testID={`machine-${m().id}-repos`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          <Each of={m().repos ?? []} key={(r) => r.remote}>
+            {(r) => <Tag label={repoLabel(r().remote)} />}
           </Each>
         </View>
       </If>

@@ -13,7 +13,14 @@ export type GitCred = { provider: "github" | "gitlab"; host: string; configured:
 export type Machine = {
   id: string; owner_id: string; name: string; os: string; arch: string; runtimes: string[]; max_sessions: number; online: boolean; last_seen: number | null;
   runtime_info?: RuntimeInfo[]; git?: GitCred[];
+  /** The repositories it has checkouts of, by remote (host/owner/name). */
+  repos?: RepoRef[] | null;
 };
+/** A repository, named by its remote the same way on every machine: host/owner/name. */
+export type RepoRef = { remote: string; name: string };
+export type Repo = RepoRef & { machines: string[] };
+/** "github.com/acme/pay" → "acme/pay" (the host only when it is not GitHub). */
+export const repoLabel = (remote: string) => (remote.startsWith("github.com/") ? remote.slice("github.com/".length) : remote);
 export type GitPlatform = { kind: "gitlab" | "github"; name: string; host: string; api: string };
 export type GitEvent = { at: number; kind: string; project: string; branch: string; number: number; state: string; task: string };
 export type GitSettings = { platforms: GitPlatform[]; webhook: { path: string; secret_set: boolean }; events: GitEvent[] };
@@ -23,7 +30,9 @@ export type Dispatch = "owner" | "channel" | "team";
 export type Autonomy = "cautious" | "assist" | "auto";
 export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
   /** Work from people other than the owner waits for the owner's yes. */
-  confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean };
+  confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
+  /** Its memory.md: what it keeps between tasks. */
+  memory?: string };
 export type TaskState = "pending" | "queued" | "running" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
@@ -33,8 +42,12 @@ export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string; state: TaskState;
   step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; claimed_by: string | null; confirmed_by: string | null;
   runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
+  /** Where it runs: host/owner/name; "" = a general task (or the agent's own repo path). */
+  repo?: string;
 };
-export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number };
+export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
+  /** The default repository of its tasks (host/owner/name), "" for none. */
+  repo?: string };
 export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
   mentions: Mention[] | null; attachments: string[] | null; client_id?: string | null; created: number; edited: number | null;
@@ -396,6 +409,17 @@ export function createTeam(s: Session) {
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
+  /** name, topic, or the default repository (an address; "" clears it). */
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string }) {
+    const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
+    if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
+    return r;
+  }
+  /** The repositories the team's machines have. */
+  const repos = async (): Promise<Repo[]> => {
+    const r = await api("GET", "/api/v1/repos");
+    return r.ok ? (r.data.repos as Repo[]) : [];
+  };
   async function removeMember(channelId: string, m: Member) {
     const r = await api("DELETE", `/api/v1/channels/${channelId}/members/${m.kind}/${m.id}`);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
@@ -454,6 +478,12 @@ export function createTeam(s: Session) {
     if (r.ok) putTasks([r.data as Task]);
     return r;
   }
+  /** Where a task runs, before it ever ran (an address; "" = a general task). */
+  async function setTaskRepo(id: string, repo: string) {
+    const r = await api("PATCH", `/api/v1/tasks/${id}`, { repo });
+    if (r.ok) putTasks([r.data as Task]);
+    return r;
+  }
   const taskOfThread = (rootId: string) => Object.values(tasks()).filter((t) => t.thread_id === rootId).sort((a, b) => a.created - b.created);
 
   async function logout() {
@@ -476,8 +506,8 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, taskOfThread, loadInbox,
-    openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, setTaskRepo, taskOfThread, loadInbox,
+    openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };

@@ -92,6 +92,11 @@ test("prompts: the first turn has the channel, the task and the rules; a later o
   expect(m).toContain("# Acceptance criteria\nP99 < 100ms");
   expect(m).toContain("Mandate: anyone in the team may hand you work; your owner confirmed this task. Autonomy cautious:");
   expect(parseTaskResult('```json\n{"status":"review","summary":"s","acceptance":"- 不锁表"}\n```').acceptance).toBe("- 不锁表");
+  const mem = taskPrompt(claim({ repo: "github.com/acme/pay" }, { memory: "- orders 表很大" }), { cwd: "/w/T-0001", repo: "/r", branch: "agent/T-0001", writable: [] });
+  expect(mem).toContain("# Your memory (memory.md)\n- orders 表很大");
+  expect(mem).toContain("Repository: github.com/acme/pay");
+  expect(p).toContain("# Your memory (memory.md)\n(empty)");
+  expect(parseTaskResult('```json\n{"status":"review","summary":"s","memory":"- 新的"}\n```').memory).toBe("- 新的");
   const f = followUpPrompt(claim());
   expect(f).toContain("顺便看 /refunds");
   expect(f).not.toContain("# Channel");
@@ -128,6 +133,18 @@ test("a task gets its own worktree on agent/T-xxxx, and the agent's git cannot p
     expect(sh(wd.cwd, "git", "push", "-q", "origin", "agent/T-0001").ok).toBe(true); // the daemon's own push
 
     await expect(prepareWorkdir(claim({}, { repo: join(W, "nope") }), join(W, "work2"))).rejects.toThrow("不存在");
+
+    // the task's own repository comes first: the machine finds (or clones) it; the agent's path is only a fallback
+    const asked: string[] = [];
+    const own = await prepareWorkdir(claim({ id: "T-0002", branch: "agent/T-0002", repo: "github.com/acme/pay" }, { repo: join(W, "nope") }), join(W, "work"),
+      async (remote) => { asked.push(remote); return repo; });
+    expect(asked).toEqual(["github.com/acme/pay"]);
+    expect(own.repo).toBe(repo);
+    expect(own.branch).toBe("agent/T-0002");
+    await expect(prepareWorkdir(claim({ id: "T-0003", repo: "github.com/acme/x" }), join(W, "work"), async () => { throw new Error("克隆也失败了"); }))
+      .rejects.toThrow("克隆也失败了");
+    const general = await prepareWorkdir(claim({ id: "T-0004" }), join(W, "work"));
+    expect(general).toEqual({ cwd: join(W, "work", "T-0004"), writable: [] });
   } finally {
     rmSync(W, { recursive: true, force: true });
   }

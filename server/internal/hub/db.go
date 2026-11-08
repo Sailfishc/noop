@@ -99,6 +99,9 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''",     // "" = the runtime's default model
 		"ALTER TABLE tasks_v1 ADD COLUMN acceptance TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE tasks_v1 ADD COLUMN mandate TEXT",
+		"ALTER TABLE tasks_v1 ADD COLUMN repo TEXT NOT NULL DEFAULT ''", // host/owner/name, "" = a general task
+		"ALTER TABLE channels ADD COLUMN repo TEXT NOT NULL DEFAULT ''", // the channel's default repository
+		"ALTER TABLE agents ADD COLUMN memory TEXT NOT NULL DEFAULT ''", // the agent's memory.md: what it keeps between tasks
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

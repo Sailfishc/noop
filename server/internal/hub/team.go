@@ -22,6 +22,7 @@ const (
 	loginCodeTTL      = 15 * time.Minute
 	adminLoginCodeTTL = 24 * time.Hour
 	machineOnlineSpan = 3 * time.Minute
+	memoryChars       = 8000
 )
 
 var (
@@ -76,6 +77,7 @@ type machineView struct {
 type machineInfo struct {
 	RuntimeInfo []runtimeInfo `json:"runtime_info"`
 	Git         []gitCred     `json:"git"`
+	Repos       []repoRef     `json:"repos"` // the remotes of the checkouts it has (never their paths)
 }
 
 type runtimeInfo struct {
@@ -121,6 +123,9 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 		if m.Git == nil {
 			m.Git = []gitCred{}
 		}
+		if m.Repos == nil {
+			m.Repos = []repoRef{}
+		}
 		if m.Runtimes == nil {
 			m.Runtimes = []string{}
 		}
@@ -146,11 +151,15 @@ type agentView struct {
 	Autonomy string `json:"autonomy"`
 	// Model: the runtime's model to use ("" = the runtime's default).
 	Model string `json:"model"`
-	// Repo: where its tasks run on its machine, a local git checkout (each task gets a worktree of it); "" for none.
+	// Repo: a local checkout on its machine for tasks that name no repository (older setups); "" for none. A task's
+	// own repository (teamrepos.go) comes first.
 	Repo string `json:"repo"`
+	// Memory: its memory.md, what it keeps between tasks. Its owner edits it; the agent rewrites it when it learns
+	// something lasting.
+	Memory string `json:"memory"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo"
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -160,7 +169,7 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo); err != nil {
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory); err != nil {
 			panic(err)
 		}
 		out = append(out, a)
@@ -521,6 +530,7 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 		MaxSessions int           `json:"max_sessions"`
 		RuntimeInfo []runtimeInfo `json:"runtime_info"`
 		Git         []gitCred     `json:"git"`
+		Repos       []repoRef     `json:"repos"`
 	}
 	_ = q.json(&b)
 	var info machineInfo
@@ -541,6 +551,13 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 		if (g.Provider == "github" || g.Provider == "gitlab") && len(info.Git) < 16 {
 			g.Host, g.User, g.Via = trimmed(strings.ToLower(g.Host), 100), trimmed(g.User, 60), trimmed(g.Via, 20)
 			info.Git = append(info.Git, g)
+		}
+	}
+	seen := map[string]bool{}
+	for _, r := range b.Repos {
+		if rem := normRemote(r.Remote); rem != "" && !seen[rem] && len(info.Repos) < 300 {
+			seen[rem] = true
+			info.Repos = append(info.Repos, repoRef{Remote: rem, Name: repoName(rem)})
 		}
 	}
 	infoJSON, _ := json.Marshal(info)
@@ -579,6 +596,7 @@ type agentBody struct {
 	Autonomy    *string `json:"autonomy"`
 	Model       *string `json:"model"`
 	Repo        *string `json:"repo"`
+	Memory      *string `json:"memory"`
 }
 
 // apply validates the fields present and writes them to agent id.
@@ -627,6 +645,9 @@ func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
 	}
 	if b.Repo != nil {
 		set("repo", trimmed(*b.Repo, 300))
+	}
+	if b.Memory != nil {
+		set("memory", clip(strings.TrimSpace(*b.Memory), memoryChars))
 	}
 	if b.Autonomy != nil {
 		if !autonomies[*b.Autonomy] {
