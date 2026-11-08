@@ -2,14 +2,17 @@
 // Screens: sign in (an invite link, or a login code), the workspace (待你决定, channels, my agents; a channel with its
 // thread or members beside it), and Settings, a page of its own (settings.tsx). Wide windows show the sidebar, the
 // channel and a thread or the members side by side; narrow ones one pane at a time.
-import { cleanup, computed, effect, Image, keymap, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type InputRef, type JSX, type ViewStyle } from "nsh";
-import { Input, Menu, MenuItem, MenuSeparator } from "nsh/base";
+import { cleanup, computed, effect, Image, keymap, List, openUrl, Picker, Scroll, signal, Storage, Text, untracked, View, windowSize, type InputRef, type JSX, type ViewStyle } from "nsh";
+import fs from "fs/promises";
+import { filePath } from "../hub";
+import { Input, Menu, MenuItem, MenuSeparator, TextView, type MarkdownExtension } from "nsh/base";
 import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
+import { formatText } from "./format";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
-  blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
-  EXTERNAL_TRIES, repoLabel, type Agent, type Member, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
+  blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS,
+  EXTERNAL_TRIES, repoLabel, type Agent, type Attachment, type Member, type Mention, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
@@ -378,6 +381,60 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
   );
 }
 
+/** @handles in a message: a custom node, shown in the accent color when it names someone. */
+const MENTION: MarkdownExtension[] = [{ name: "mention", pattern: "@[a-z][a-z0-9_-]{1,31}" }];
+
+/** A message's text as Markdown (what the formatting buttons write), its @mentions highlighted. */
+function MessageText(props: { text: string; mentions: readonly Mention[] | null }) {
+  const known = () => new Set((props.mentions ?? []).map((m) => `@${m.handle}`));
+  return (
+    <TextView
+      testID="message-text"
+      document={TextView.parse(props.text, { math: false, html: false }, MENTION)}
+      selectable
+      onLinkPress={({ url }) => { if (/^(https?|mailto):/i.test(url)) void openUrl(url).catch(() => {}); }}
+      renderCustom={(n) => <Text style={known().has(n.text ?? "") ? { color: colors.accent, fontWeight: "500" } : {}}>{n.text}</Text>}
+      styles={{
+        root: { gap: 6, fontSize: 15, lineHeight: 22, color: colors.text },
+        code: { fontFamily: "monospace", fontSize: 13.5, color: colors.text, backgroundColor: alpha(colors.text, 0.07) },
+        link: { color: colors.accent },
+      }}
+    />
+  );
+}
+
+/** A message's files: pictures in place, other files as a row to open; links come from the server when shown. */
+function MessageFiles(props: { team: Team; messageId: string }) {
+  const list = signal<Attachment[]>([]);
+  void props.team.attachments(props.messageId).then((a) => list.set(a));
+  const pictures = () => list().filter((a) => a.mime.startsWith("image/") && a.url);
+  const others = () => list().filter((a) => !a.mime.startsWith("image/") || !a.url);
+  return (
+    <View testID={`files-${props.messageId}`} style={{ gap: 6, marginTop: 2 }}>
+      <If when={pictures().length}>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          <Each of={pictures()} key={(a) => a.path}>
+            {(a) => (
+              <View role="link" testID="message-picture" accessibilityLabel={a().name} onPress={() => void openUrl(a().url!).catch(() => {})} style={{ borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+                <Image src={a().url!} accessibilityLabel={a().name} style={{ width: 240, height: 160, objectFit: "cover" }} />
+              </View>
+            )}
+          </Each>
+        </View>
+      </If>
+      <Each of={others()} key={(a) => a.path}>
+        {(a) => (
+          <View role="link" testID="message-file" accessibilityLabel={a().name} onPress={() => { if (a().url) void openUrl(a().url!).catch(() => {}); }} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 360 }}>
+            <Icon name="file" size={16} tint={colors.muted} />
+            <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
+            <Text style={{ fontSize: 12, color: colors.faint }}>{fileSize(a().size)}</Text>
+          </View>
+        )}
+      </Each>
+    </View>
+  );
+}
+
 /** A message's reactions, one chip per emoji with who put it there. */
 function reactionGroups(t: Team, m: Message): { emoji: string; names: string[] }[] {
   const out: { emoji: string; names: string[] }[] = [];
@@ -403,11 +460,12 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
           </If>
           <Text style={{ fontSize: 12, color: colors.faint }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
         </View>
-        <Text style={{ fontSize: 15, lineHeight: 22, color: colors.text }}>
-          <Each of={textParts(props.m.text, props.m.mentions)} key="index">
-            {(p) => (p().mention ? <Text style={{ color: colors.accent, fontWeight: "500" }}>{p().text}</Text> : <Text>{p().text}</Text>)}
-          </Each>
-        </Text>
+        <If when={props.m.text.trim()}>
+          <MessageText text={props.m.text} mentions={props.m.mentions} />
+        </If>
+        <If when={props.m.attachments?.length ? props.m.id : null}>
+          {(id) => <MessageFiles team={props.team} messageId={id()} />}
+        </If>
         <If when={reactionGroups(props.team, props.m).length ? reactionGroups(props.team, props.m) : null}>
           {(groups) => (
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
@@ -550,26 +608,80 @@ function dispatchLine(t: Team, channelId: string, text: string): { text: string;
 }
 
 /** The message box: @ opens a picker of the channel's agents and people; the line under it says where the work goes. */
-function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; onSend: (text: string) => Promise<string | null> }) {
+/** A file waiting in the composer to go with the next message. */
+type Draft = { id: string; name: string; type: string; size: number; file: Blob; preview?: string };
+
+const MAX_FILES = 10, MAX_FILE = 50 * 1024 * 1024;
+export const fileSize = (n: number) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${Math.round(n / 1024)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
+const guessType = (name: string) => {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" } as Record<string, string>)[ext] ?? "";
+};
+
+function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; onSend: (text: string, files: string[]) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
   const error = signal("");
   const busy = signal(false);
   const pick = signal(0);
   const dismissed = signal<string | null>(null); // the text the picker was closed on
+  const files = signal<Draft[]>([]);
+  const dropping = signal(false);
+  let caret = { start: 0, end: 0 };
+  let seq = 0;
   let input: InputRef | undefined;
   const mention = () => (dismissed() === text() ? null : mentionAt(text()));
   const items = computed(() => { const m = mention(); return m ? candidates(t, props.channelId, m.query) : []; });
   const open = () => !!mention();
   effect(() => { items(); pick.set(0); });
   const preview = () => dispatchLine(t, props.channelId, text());
+  function setText(v: string, at: number, to = at) {
+    text.set(v);
+    caret = { start: at, end: to };
+    input?.focus();
+    input?.setSelection(at, to);
+  }
   function insert(c: Candidate) {
     const m = untracked(mention);
     if (!m) return;
     const v = untracked(text).slice(0, m.start) + `@${c.handle} `;
-    text.set(v);
+    setText(v, v.length);
+  }
+  function attach(file: Blob, name: string) {
+    if (untracked(files).length >= MAX_FILES) return error.set(L(`At most ${MAX_FILES} files in one message`, `一条消息最多 ${MAX_FILES} 个文件`));
+    if (file.size > MAX_FILE) return error.set(L(`${name} is over 50 MB`, `${name} 超过 50 MB`));
+    if (!file.size) return error.set(L(`${name} is empty`, `${name} 是空文件`));
+    error.set("");
+    const type = file.type || guessType(name);
+    const typed = type && file.type !== type ? new Blob([file], { type }) : file;
+    let previewUrl: string | undefined;
+    if (type.startsWith("image/")) try { previewUrl = URL.createObjectURL(typed); } catch {}
+    files.update((list) => [...list, { id: `f${++seq}`, name: name || `file-${seq}`, type, size: file.size, file: typed, preview: previewUrl }]);
+  }
+  function unattach(id: string) {
+    const f = untracked(files).find((x) => x.id === id);
+    if (f?.preview) try { URL.revokeObjectURL(f.preview); } catch {}
+    files.update((list) => list.filter((x) => x.id !== id));
+  }
+  /** Local files (`file:` URLs from a drop or a file manager's copy). */
+  async function attachUris(uris: string[]) {
+    for (const u of uris) {
+      const path = filePath(u);
+      const name = path.split(/[\\/]/).pop() ?? "file";
+      try {
+        attach(new Blob([(await fs.readFile(path)) as Uint8Array<ArrayBuffer>], { type: guessType(name) }), name);
+      } catch {
+        error.set(L(`Can’t read ${name}`, `读不到 ${name}`));
+      }
+    }
+  }
+  async function pickFiles() {
+    try {
+      for (const p of await Picker.pickFiles({ multiple: true, limit: MAX_FILES })) attach(p.file, p.file.name);
+    } catch {
+      error.set(L("Can’t pick files on this device", "这台设备上不能选择文件"));
+    }
     input?.focus();
-    input?.setSelection(v.length, v.length);
   }
   async function send() {
     if (untracked(open)) {
@@ -578,42 +690,69 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
       dismissed.set(untracked(text));
     }
     const v = untracked(text).trim();
-    if (!v || untracked(busy)) return;
+    const drafts = untracked(files);
+    if ((!v && !drafts.length) || untracked(busy)) return;
     busy.set(true);
-    const err = await props.onSend(v);
+    const paths: string[] = [];
+    for (const f of drafts) {
+      const r = await t.upload(f.file, f.name);
+      if ("error" in r) {
+        busy.set(false);
+        return error.set(r.error);
+      }
+      paths.push(r.path);
+    }
+    const err = await props.onSend(v, paths);
     busy.set(false);
     error.set(err ?? "");
-    if (!err) text.set("");
+    if (!err) {
+      text.set("");
+      for (const f of drafts) unattach(f.id);
+    }
   }
   function addAt() {
     const v = untracked(text);
     const next = v && !/\s$/.test(v) ? `${v} @` : `${v}@`;
-    text.set(next);
     dismissed.set(null);
-    input?.focus();
-    input?.setSelection(next.length, next.length);
+    setText(next, next.length);
   }
-  function addCode() {
-    const v = untracked(text);
-    const next = `${v}${v && !v.endsWith("\n") ? "\n" : ""}\`\`\`\n\n\`\`\``;
-    text.set(next);
-    input?.focus();
-    input?.setSelection(next.length - 4, next.length - 4);
+  function format(kind: Parameters<typeof formatText>[2]) {
+    const r = formatText(untracked(text), caret, kind);
+    setText(r.text, r.start, r.end);
   }
-  const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string) => (
-    <View role="button" testID={testID} accessibilityLabel={label} onPress={onPress} hoverStyle={hovered()} style={{ width: 30, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
-      <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted }}>{glyph}</Text>}>
+  const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string, glyphStyle?: Record<string, unknown>) => (
+    <View role="button" testID={testID} accessibilityLabel={label} tooltip={<Text>{label}</Text>} onPress={onPress} hoverStyle={hovered()} style={{ width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
+      <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted, ...glyphStyle }}>{glyph}</Text>}>
         <Icon name={icon!} size={16} tint={colors.muted} />
       </If>
     </View>
   );
+  const sep = () => <View style={{ width: 1, height: 16, marginHorizontal: 3, backgroundColor: colors.border }} />;
   return (
-    <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}>
+    <View
+      style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}
+      onFileDragEnter={() => dropping.set(true)}
+      onFileDragLeave={() => dropping.set(false)}
+      onFileDrop={({ uris }) => { dropping.set(false); void attachUris(uris); }}
+    >
       <ErrorNote text={error()} testID={`${props.testID}-error`} />
       <If when={open()}>
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
-      <View style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field }}>
+      <View style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 1, paddingHorizontal: 6, paddingTop: 5 }}>
+          {tool(`${props.testID}-bold`, null, L("Bold", "粗体"), () => format("bold"), "B", { fontWeight: "800" })}
+          {tool(`${props.testID}-italic`, null, L("Italic", "斜体"), () => format("italic"), "I", { fontStyle: "italic", fontWeight: "500" })}
+          {tool(`${props.testID}-strike`, null, L("Strikethrough", "删除线"), () => format("strike"), "S", { textDecorationLine: "line-through", fontWeight: "500" })}
+          {sep()}
+          {tool(`${props.testID}-link`, "link", L("Link", "链接"), () => format("link"))}
+          {tool(`${props.testID}-list`, "lists", L("Bulleted list", "无序列表"), () => format("list"))}
+          {tool(`${props.testID}-numbered`, null, L("Numbered list", "有序列表"), () => format("numbered"), "1.")}
+          {tool(`${props.testID}-quote`, null, L("Quote", "引用"), () => format("quote"), "❝")}
+          {sep()}
+          {tool(`${props.testID}-inline-code`, null, L("Inline code", "行内代码"), () => format("code"), "`")}
+          {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), () => format("codeblock"))}
+        </View>
         <Input
           testID={props.testID}
           ref={(r) => (input = r)}
@@ -623,14 +762,39 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
           placeholder={props.placeholder}
           class="placeholder:text-faint"
           onChange={({ value }) => text.set(value)}
+          onSelectionChange={({ start, end }) => (caret = { start, end })}
+          onPaste={({ files: pasted, uris }) => {
+            for (const f of pasted) attach(f, f.name);
+            if (uris.length) void attachUris(uris);
+          }}
           onSubmit={send}
-          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
+          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
+        <If when={files().length}>
+          <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>
+            <Each of={files()} key={(f) => f.id}>
+              {(f) => (
+                <View testID={`${props.testID}-file`} style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 40, paddingLeft: 4, paddingRight: 2, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 240 }}>
+                  <If when={f().preview} else={<View style={{ width: 32, height: 32, alignItems: "center", justifyContent: "center" }}><Icon name="file" size={16} tint={colors.muted} /></View>}>
+                    <Image src={f().preview!} accessibilityLabel={f().name} style={{ width: 32, height: 32, borderRadius: 5, objectFit: "cover" }} />
+                  </If>
+                  <View style={{ flexShrink: 1 }}>
+                    <Text style={{ fontSize: 12.5, color: colors.text, numberOfLines: 1 }}>{f().name}</Text>
+                    <Text style={{ fontSize: 11, color: colors.faint }}>{fileSize(f().size)}</Text>
+                  </View>
+                  <View role="button" testID={`${props.testID}-unattach`} accessibilityLabel={L(`Remove ${f().name}`, `移除 ${f().name}`)} onPress={() => unattach(f().id)} hoverStyle={hovered()} style={{ width: 22, height: 22, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
+                    <Icon name="close" size={12} tint={colors.faint} />
+                  </View>
+                </View>
+              )}
+            </Each>
+          </View>
+        </If>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 6, paddingBottom: 6 }}>
+          {tool(`${props.testID}-attach`, "plus", L("Attach files (or paste or drop them)", "添加文件（也可粘贴或拖入）"), () => void pickFiles())}
           {tool(`${props.testID}-at`, null, L("Mention someone", "@ 人或 Agent"), addAt, "@")}
-          {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), addCode)}
           <View style={{ flex: 1 }} />
-          <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim()} onPress={send} />
+          <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim() && !files().length} onPress={send} />
         </View>
       </View>
       <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}>
@@ -712,7 +876,7 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           channelId={props.id}
           testID="team-composer"
           placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-          onSend={(text) => t.send(props.id, text)}
+          onSend={(text, files) => t.send(props.id, text, null, files)}
         />
       </If>
     </View>
@@ -1179,7 +1343,7 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
               </Each>
             </Scroll>
             <If when={member()}>
-              <Composer team={t} channelId={r().channel_id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text) => t.send(r().channel_id, text, r().id)} />
+              <Composer team={t} channelId={r().channel_id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
             </If>
           </>
         )}
