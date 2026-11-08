@@ -112,6 +112,14 @@ p{color:GrayText;font-size:14px}</style></head><body><main><h1>这个网络还�
 
 const isMcpPath = (p: string) => p === "/mcp" || p.startsWith("/oauth/") || p.startsWith("/.well-known/oauth-") || p === "/.well-known/openid-configuration";
 
+/** Per-route counters: [requests, rowsRead, rowsWritten]. */
+type Usage = { day: string; requests: number; rowsRead: number; rowsWritten: number; routes: Record<string, [number, number, number]> };
+/** "POST /api/files/commit": the route without ids, so a day's breakdown stays a few dozen keys. */
+export const routeKey = (req: Request) => {
+  const p = new URL(req.url).pathname.replace(/\/(T|D)-[\w-]+/g, "/:id").replace(/^\/media\/.*/, "/media/:id");
+  return `${req.method} ${p.length > 40 ? p.slice(0, 40) : p}`;
+};
+
 type Ev = { id: string; ts: string; from: string; kind: string; text: string; ref?: string; [k: string]: unknown };
 
 export class Hub extends DurableObject<Env> {
@@ -119,8 +127,10 @@ export class Hub extends DurableObject<Env> {
   mcp: Mcp;
   /** Every cursor since the last settle(): their rowsRead / rowsWritten are what Cloudflare bills. */
   cursors: SqlStorageCursor<Record<string, SqlStorageValue>>[] = [];
-  usage = { day: "", requests: 0, rowsRead: 0, rowsWritten: 0 };
+  usage: Usage = { day: "", requests: 0, rowsRead: 0, rowsWritten: 0, routes: {} };
   usageSaved = 0;
+  /** Rows written since the counters were last persisted: a busy burst is saved before an eviction can drop it. */
+  unsaved = 0;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     const raw = ctx.storage.sql, cursors = this.cursors;
@@ -143,6 +153,8 @@ export class Hub extends DurableObject<Env> {
     // events.ref, indexed: a task's conversation is read by ref, never by scanning every event's JSON (rows_read is billed per row)
     try { this.sql.exec("ALTER TABLE events ADD COLUMN ref TEXT"); } catch { /* exists */ }
     this.sql.exec("CREATE INDEX IF NOT EXISTS events_ref ON events (ref)");
+    // Channel feeds use indexed room/ref lookups; opening a room never scans unrelated history.
+    this.sql.exec("CREATE INDEX IF NOT EXISTS events_channel ON events (json_extract(json, '$.channel')) WHERE json_extract(json, '$.channel') IS NOT NULL");
     // Indexed receipt lookup: one row per retry, no event scan or polling.
     this.sql.exec("CREATE INDEX IF NOT EXISTS events_client_id ON events (json_extract(json, '$.client_id')) WHERE json_extract(json, '$.client_id') IS NOT NULL");
     if (this.sql.exec("SELECT v FROM kv WHERE k = 'events_ref_filled'").toArray().length === 0) {
@@ -250,17 +262,26 @@ export class Hub extends DurableObject<Env> {
   flushed = new Map<string, number>();
   today() {
     const day = new Date().toISOString().slice(0, 10);
-    if (this.usage.day !== day) this.usage = { day, requests: 0, rowsRead: 0, rowsWritten: 0 };
+    if (this.usage.day !== day) this.usage = { day, requests: 0, rowsRead: 0, rowsWritten: 0, routes: {} };
+    this.usage.routes ??= {};
     return this.usage;
   }
-  /** Count the rows of every query since the last call; persist the counters every few minutes. */
-  settle(requests = 1) {
+  /** Count the rows of every query since the last call, per route (what `/api/usage` shows so the biggest consumer is
+   *  visible), and persist the counters every minute while busy or after a few hundred unsaved rows: an evicted object
+   *  used to lose up to five minutes of counts on every wake, so the app read far below Cloudflare's own figures. */
+  settle(requests = 1, route = "other") {
     const u = this.today();
     u.requests += requests;
-    for (const c of this.cursors.splice(0)) { u.rowsRead += c.rowsRead; u.rowsWritten += c.rowsWritten; }
-    if (Date.now() - this.usageSaved > 5 * 60_000) {
-      this.usageSaved = Date.now();
-      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO kv (k, v) VALUES ('usage', ?)", JSON.stringify(u)); // unmetered: a few hundred rows a day
+    let r = 0, w = 0;
+    for (const c of this.cursors.splice(0)) { r += c.rowsRead; w += c.rowsWritten; }
+    u.rowsRead += r; u.rowsWritten += w; this.unsaved += w + r / 50;
+    const k = u.routes[route] ??= [0, 0, 0];
+    k[0] += requests; k[1] += r; k[2] += w;
+    const since = Date.now() - this.usageSaved;
+    if (since > 5 * 60_000 || (since > 60_000 && this.unsaved > 50) || this.unsaved > 300) {
+      this.usageSaved = Date.now(); this.unsaved = 0;
+      u.rowsWritten += 2; // this save: the kv row and its primary key (unmetered cursor, counted by hand)
+      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO kv (k, v) VALUES ('usage', ?)", JSON.stringify(u));
     }
   }
   /** The tightest of today's allowances, as a fraction of the free plan. */
@@ -327,14 +348,14 @@ export class Hub extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets("host")) try { ws.send('{"type":"inbox"}'); } catch {}
   }
 
-  ownerMessage(text: string, ref?: string, attachments?: string[], thread = false, clientId?: string): Ev {
+  ownerMessage(text: string, ref?: string, attachments?: string[], thread = false, clientId?: string, channel?: string): Ev {
     if (clientId) {
       const previous = this.sql.exec("SELECT json FROM events WHERE json_extract(json, '$.client_id') = ? LIMIT 1", clientId).toArray()[0];
       if (previous) return JSON.parse(previous.json as string) as Ev;
     }
-    const ev = this.append({ from: "owner", kind: "owner", text, ref, ...(clientId ? { client_id: clientId } : {}), ...(attachments?.length ? { attachments } : {}), ...(thread ? { thread } : {}) });
+    const ev = this.append({ from: "owner", kind: "owner", text, ref, ...(clientId ? { client_id: clientId } : {}), ...(attachments?.length ? { attachments } : {}), ...(thread ? { thread } : {}), ...(channel ? { channel } : {}) });
     this.toInbox({ type: "message", event: ev });
-    if (!this.hostOnline()) this.append({ from: "hub", kind: "system", text: "收到。团队的电脑暂时都不在线，上线后会马上处理。", ref: ev.id });
+    if (!this.hostOnline()) this.append({ from: "hub", kind: "system", text: "收到。团队的电脑暂时都不在线，上线后会马上处理。", ref: ev.id, ...(channel ? { channel } : {}) });
     return ev;
   }
 
@@ -503,7 +524,7 @@ export class Hub extends DurableObject<Env> {
   }
 
   async fetch(req: Request): Promise<Response> {
-    try { return await this.handle(req); } finally { this.settle(); }
+    try { return await this.handle(req); } finally { this.settle(1, routeKey(req)); }
   }
 
   async handle(req: Request): Promise<Response> {
@@ -647,7 +668,9 @@ export class Hub extends DurableObject<Env> {
     }
 
     if (p === "/api/messages" && m === "POST") {
-      const { text = "", reply_to, attachments, thread, client_id } = (await req.json()) as { text?: string; reply_to?: string; attachments?: unknown; thread?: unknown; client_id?: unknown };
+      const { text = "", reply_to, attachments, thread, client_id, channel } = (await req.json()) as { text?: string; reply_to?: string; attachments?: unknown; thread?: unknown; client_id?: unknown; channel?: unknown };
+      const room = typeof channel === "string" && channel ? channelsView(this.mcp.store()).channels.find((c) => c.slug === channel)?.slug : undefined;
+      if (channel !== undefined && channel !== "" && !room) return json({ error: "channel not found" }, 400);
       if (client_id !== undefined && (typeof client_id !== "string" || !/^[\w:-]{1,100}$/.test(client_id)))
         return json({ error: "bad client_id" }, 400);
       const files = ownerAttachments(attachments);
@@ -655,7 +678,7 @@ export class Hub extends DurableObject<Env> {
       if (files.some((f) => !this.sql.exec("SELECT 1 FROM media WHERE id = ? LIMIT 1", f.slice(7)).toArray().length))
         return json({ error: "attachment not found" }, 400);
       if (!text.trim() && !files.length) return json({ error: "text required" }, 400);
-      return json(this.ownerMessage(text, reply_to, files, thread === true && /^T-/.test(reply_to ?? ""), client_id as string | undefined));
+      return json(this.ownerMessage(text, reply_to, files, thread === true && /^T-/.test(reply_to ?? ""), client_id as string | undefined, room));
     }
 
     // The owner's images for a message (paste / drop / pick in the app): images only, ≤ 10 MB, kept with the media.
@@ -697,8 +720,8 @@ export class Hub extends DurableObject<Env> {
     if (p === "/api/channels/feed" && m === "GET") { // the channel's digest, however far back the app's feed doesn't reach
       const c = channelsView(this.mcp.store()).channels.find((c) => c.slug === url.searchParams.get("slug"));
       if (!c) return json({ error: "not found" }, 404);
-      const rows = this.sql.exec("SELECT json FROM events WHERE ref IS NOT NULL ORDER BY seq DESC LIMIT 5000").toArray().reverse();
-      return json({ events: channelDigest(rows.map((r) => JSON.parse(r.json as string)), c.refs ?? []) });
+      const rows = this.sql.exec("SELECT json FROM events WHERE ref IN (SELECT value FROM json_each(?)) OR json_extract(json, '$.channel') = ? ORDER BY seq DESC LIMIT 5000", JSON.stringify(c.refs ?? []), c.slug).toArray().reverse();
+      return json({ events: channelDigest(rows.map((r) => JSON.parse(r.json as string)), c.refs ?? [], c.slug) });
     }
     if (p === "/api/channels" && m === "POST") { // owner: edit a channel's goal / archive it; the primary writes the file
       if (who === "machine") return json({ error: "forbidden" }, 403);
@@ -793,13 +816,13 @@ export class Hub extends DurableObject<Env> {
     return json({ error: "not found" }, 404);
   }
 
-  webSocketMessage() { this.settle(1 / 20); } // incoming frames bill as 1/20 of a request (pings are auto-answered)
+  webSocketMessage() { this.settle(1 / 20, "ws"); } // incoming frames bill as 1/20 of a request (pings are auto-answered)
   webSocketClose(ws: WebSocket) {
     try { ws.close(); } catch {}
     const tags = this.ctx.getTags(ws);
     if (tags.includes("host")) { this.touchHost(); this.pushStatus(); }
     if (tags.includes("owner")) this.tellWatchers();
-    this.settle(0);
+    this.settle(0, "ws");
   }
 }
 

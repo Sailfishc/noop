@@ -48,7 +48,7 @@ function hub(posts: { text: string; reply_to?: string }[], extra: unknown[] = []
     [`POST ${URL}/api/messages`]: (r: { body?: string | null }) => {
       const m = JSON.parse(r.body!);
       posts.push(m);
-      return { body: { id: `o${posts.length}`, ts: new Date().toISOString(), from: "owner", kind: "owner", text: m.text, ref: m.reply_to, client_id: m.client_id } };
+      return { body: { id: `o${posts.length}`, ts: new Date().toISOString(), from: "owner", kind: "owner", text: m.text, ref: m.reply_to, client_id: m.client_id, ...(m.channel ? { channel: m.channel } : {}) } };
     },
   };
 }
@@ -222,6 +222,24 @@ describe("channel", () => {
     await app.waitFor("Long timeline message 89");
     expect(app.shows("Long timeline message 0")).toBe(false);
   });
+  test("decision jumps load older history and return to the bottom promptly", async () => {
+    const many = Array.from({ length: 500 }, (_, i) => ({
+      id: `jump-${i}`, ts: ts(10 + i / 100), from: "agent", kind: "notice",
+      text: `Jump message ${i}\n${"Long message content. ".repeat(i % 9 + 1)}`,
+    }));
+    const app = await open("./App.tsx", { storage: STORAGE, width: 1200, height: 800, platform: "macos", network: hub([], many) });
+    await app.waitFor("text:/Jump message 499/");
+    await app.wait(350);
+    const start = Date.now();
+    await app.press("label:D-0001");
+    await app.waitFor("id:opt-D-0001-B", { timeout: 2000 });
+    expect(Date.now() - start).toBeLessThan(2000);
+    await app.waitFor("label:Back to bottom");
+    await app.wait(700);
+    await app.press("label:Back to bottom");
+    await app.waitFor("text:/Jump message 499/", { timeout: 2000 });
+    await app.waitUntil(() => !app.shows("label:Back to bottom"), { timeout: 2000 });
+  });
   test("the channel shows the newest 200 messages; older ones load on request", async () => {
     const many = Array.from({ length: 250 }, (_, i) => ({ id: `page-${i}`, ts: ts(i / 5), from: "agent", kind: "notice", text: `Paged message ${i}` }));
     const app = await open("./App.tsx", { storage: STORAGE, width: 390, height: 800, platform: "ios", network: hub([], many) });
@@ -243,14 +261,14 @@ describe("channel", () => {
       network: { ...hub([], many), [`GET ${URL}/api/feed?*`]: () => ({ body: { events: later.splice(0) } }) },
     });
     await app.waitUntil(() => app.texts().some((text) => text.startsWith("Tail message")));
-    if (app.shows("label:Jump to latest")) await app.press("label:Jump to latest");
+    if (app.shows("label:Back to bottom")) await app.press("label:Back to bottom");
     await app.waitFor("Tail message 249");
     await app.wait(300); // Let initial list measurements and the initial scroll settle.
-    expect(app.shows("label:Jump to latest")).toBe(false);
+    expect(app.shows("label:Back to bottom")).toBe(false);
 
     // Just off the end, closer than a message: it stays put and counts what came below.
     await app.scroll("id:timeline", platform === "ios" ? -40 : -240);
-    await app.waitFor("Jump to latest");
+    await app.waitFor("Back to bottom");
     arrive("Below the fold");
     await app.waitFor("1 new messages", { timeout: 10000 });
     await app.wait(300); // following would reach the end, and the end clears the count
@@ -268,12 +286,12 @@ describe("channel", () => {
     expect(onScreen().filter((t) => !before.includes(t))).toEqual([]);
 
     // Back at the end, new messages show by themselves.
-    await app.press("label:Jump to latest");
+    await app.press("label:Back to bottom");
     await app.waitFor("Further below");
-    await app.waitUntil(() => !app.shows("label:Jump to latest"));
+    await app.waitUntil(() => !app.shows("label:Back to bottom"));
     arrive("Followed");
     await app.waitFor("Followed", { timeout: 10000 });
-    expect(app.shows("label:Jump to latest")).toBe(false);
+    expect(app.shows("label:Back to bottom")).toBe(false);
   });
 
   test("a new message preserves existing content", async () => {
@@ -478,7 +496,7 @@ describe("channel", () => {
     await app.rightClick("text:要不要升级依赖？ >> nth=0");
     await app.press("id:side-ignore-D-0001");
     await app.waitUntil(() => posts.length === 2);
-    expect(posts[1]).toEqual({ text: "D-0001 忽略" });
+    expect(posts[1]).toMatchObject({ text: "D-0001 忽略" });
     await app.waitUntil(() => !app.shows("id:ignore-D-0001"));
   });
 
@@ -591,16 +609,41 @@ describe("channel", () => {
     await app.waitFor("Quiet 7d");
     await app.press("id:side-channel-omamail");
     await app.waitFor("omamail 的 PR 与 issue");
-    await app.waitFor("omamail #460 审查");
-    await app.waitFor("合并 omamail #460 吗？");
     await app.press("id:channel-edit-goal");
     await app.waitFor("id:channel-goal-input");
+    await app.type("id:channel-name-input", " 邮件");
     await app.type("id:channel-goal-input", "，以及发布");
     await app.press("id:channel-save-goal");
     await app.waitFor("omamail 的 PR 与 issue，以及发布");
+    await app.waitFor("Omamail 邮件");
     await app.press("id:channel-archive");
     await app.waitFor("id:channel-archived");
-    expect(posts).toEqual([{ slug: "omamail", goal: "omamail 的 PR 与 issue，以及发布" }, { slug: "omamail", archived: true }]);
+    expect(posts).toEqual([{ slug: "omamail", name: "Omamail 邮件", goal: "omamail 的 PR 与 issue，以及发布" }, { slug: "omamail", archived: true }]);
+  });
+
+  test("a channel is its own room: messages sent there carry the channel, and its talk stays out of the main chat", async () => {
+    const posts: any[] = [];
+    const chans = [{ slug: "nsh-i18n", name: "NSH i18n", goal: "NSH 多语言", status: "active", created: ts(-900), last_activity: ts(5), stale: false, count: 0, refs: [], items: [] }];
+    const talk = [
+      { id: "c1", ts: ts(3), from: "owner", kind: "owner", text: "日文翻译进度如何？", channel: "nsh-i18n" },
+      { id: "c2", ts: ts(4), from: "lead@primary", kind: "notice", text: "日文已完成 80%，剩下 API 文档", channel: "nsh-i18n" },
+    ];
+    const app = await open("./App.tsx", {
+      storage: STORAGE, width: 1200, height: 800, platform: "macos",
+      network: { ...hub(posts, talk), [`GET ${URL}/api/channels`]: { body: { channels: chans } }, [`GET ${URL}/api/channels/feed?*`]: { body: { events: talk } } },
+    });
+    await app.waitFor("id:composer");
+    expect(app.shows("日文已完成 80%，剩下 API 文档")).toBe(false);
+    await app.waitFor("id:side-channel-nsh-i18n");
+    await app.press("id:side-channel-nsh-i18n");
+    await app.waitFor("日文已完成 80%，剩下 API 文档");
+    await app.type("id:composer", "韩文也一起补上");
+    await app.press("id:send");
+    await app.waitUntil(() => posts.length === 1, { timeout: 10_000 });
+    expect(posts[0]).toMatchObject({ text: "韩文也一起补上", channel: "nsh-i18n" });
+    await app.waitFor("韩文也一起补上");
+    await app.press("text:Channel");
+    await app.waitUntil(() => !app.shows("韩文也一起补上"));
   });
 
   test("a dropped connection stays quiet until reconnecting keeps failing", async () => {
@@ -1608,7 +1651,6 @@ test("channels share per-message read state with main chat, and Menu can mark al
   await app.waitFor("text:Shared channel result");
   expect(app.shows("text:Running cargo test")).toBe(false); // task-thread steps stay on the task page
   expect(app.shows("text:收到 D-1")).toBe(false);
-  await app.press("id:channel-msg-shared-old");
   await app.waitUntil(() => {
     const raw = app.storage()[`hub.read:${URL}`];
     return !!raw && JSON.parse(raw).ids.includes("shared-old");
