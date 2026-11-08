@@ -57,6 +57,15 @@ export type Workdir = { cwd: string; repo?: string; base?: string; branch?: stri
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
 
+const REACT_LINE = /^\s*react:[^\n]*\n?/gim;
+
+/** The emoji of the agent's "react: …" line, if a message has one (one emoji, nothing else). */
+export function reactionOf(text: string): string {
+  const m = text.match(/^\s*react:\s*(\S+)\s*$/im);
+  const e = m?.[1] ?? "";
+  return e.length <= 16 && /^\p{Extended_Pictographic}/u.test(e) && !/[\p{L}\p{N}]/u.test(e) ? e : "";
+}
+
 const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting"]);
 
 /** The result block at the end of the agent's last message. Without one, the message itself is the summary. */
@@ -74,7 +83,7 @@ export function parseTaskResult(text: string): TaskResult {
       }
     } catch {}
   }
-  const prose = text.replace(/```json[\s\S]*?```/g, "").trim();
+  const prose = text.replace(/```json[\s\S]*?```/g, "").replace(REACT_LINE, "").trim();
   return prose ? { status: "review", summary: prose.slice(0, 4000) } : { status: "failed", summary: "Agent 没有给出结果" };
 }
 
@@ -159,8 +168,17 @@ ${quote(c, c.thread)}
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
 ${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${REACT}
+
 ${RESULT_SPEC}`;
 }
+
+/** The first thing the agent says: one emoji on the request, showing how it read it (the way a teammate reacts in chat). */
+const REACT = `Before anything else (before any tool call), send one short message whose first line is exactly
+react: <one emoji>
+choosing the emoji from how you read this request, the way a teammate reacts in chat: e.g. 🔍 a lookup or question, 🐛 a
+bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, 🎨 design, 🤔 unclear (say what is unclear when you
+report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.`;
 
 const WAKE: Record<Wake["reason"], string> = {
   callback: "the outside service called your callback address",
@@ -189,6 +207,8 @@ export function followUpPrompt(c: Claim): string {
 ${quote(c, c.new)}
 
 Continue the task with this in mind (same rules as before).
+
+${REACT}
 
 ${RESULT_SPEC}`;
 }
@@ -288,6 +308,13 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
   return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
+}
+
+/** Whether the run left anything in the task's worktree: edits, or commits on its branch. */
+async function touched(wd: Workdir): Promise<boolean> {
+  if (!wd.repo) return false;
+  if ((await git(wd.cwd, "status", "--porcelain")).out) return true;
+  return wd.base ? Number((await git(wd.cwd, "rev-list", "--count", `${wd.base}..HEAD`)).out) > 0 : false;
 }
 
 /** The files under out/ (relative paths), at most `max`, skipping hidden ones. */
@@ -398,8 +425,13 @@ export function createWorker(o: WorkerOptions) {
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
     const flushStep = () => { stepTimer = undefined; if (pendingStep) void report(t.id, { step: pendingStep }); lastStep = Date.now(); pendingStep = ""; };
+    let reacted = false;
     const onEvent = (e: RunEvent) => {
       if (e.kind === "session") void report(t.id, { session: e.id, branch: wd.branch ?? "" });
+      if (e.kind === "message" && !reacted) {
+        const emoji = reactionOf(e.text);
+        if (emoji) { reacted = true; void report(t.id, { reaction: emoji }); }
+      }
       if (e.kind !== "step") return;
       pendingStep = e.text;
       if (Date.now() - lastStep >= every) flushStep();
@@ -446,6 +478,10 @@ export function createWorker(o: WorkerOptions) {
       body.wait = { how: w.how, every: seconds(w.every), expect: seconds(w.expect), deadline: seconds(w.deadline), what: w.what ?? "" };
     }
     if (extra?.pr) body.pr = extra.pr;
+    // Nothing changed (no commits or edits, no PR, no files, no outside results) and nothing left unconfirmed: the
+    // summary is the whole result (a question answered, a lookup), so it needs nobody's acceptance.
+    if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length
+      && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };

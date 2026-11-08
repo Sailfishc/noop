@@ -354,11 +354,20 @@ type messageView struct {
 	Edited      *int64    `json:"edited"`
 	ReplyCount  int64     `json:"reply_count"`
 	LastReplyAt *int64    `json:"last_reply_at"`
+	// Reactions: who put which emoji on it, oldest first (an agent's 👀: it took the message up)
+	Reactions []reaction `json:"reactions"`
+}
+
+type reaction struct {
+	Emoji  string `json:"emoji"`
+	Author member `json:"author"`
 }
 
 const messageCols = `m.id, m.seq, m.channel_id, m.thread_id, m.author_kind, m.author_id, m.text, COALESCE(m.mentions, '[]'),
 	COALESCE(m.attachments, '[]'), m.client_id, m.created, m.edited,
-	(SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id), (SELECT MAX(created) FROM messages r WHERE r.thread_id = m.id)`
+	(SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id), (SELECT MAX(created) FROM messages r WHERE r.thread_id = m.id),
+	(SELECT json_group_array(json_object('emoji', x.emoji, 'author', json_object('kind', x.author_kind, 'id', x.author_id)))
+	  FROM (SELECT * FROM reactions WHERE message_id = m.id ORDER BY created) x)`
 
 func scanMessages(rows *sql.Rows, err error) []messageView {
 	if err != nil {
@@ -368,10 +377,14 @@ func scanMessages(rows *sql.Rows, err error) []messageView {
 	out := []messageView{}
 	for rows.Next() {
 		var m messageView
-		var mentions, att string
+		var mentions, att, reactions string
 		if err := rows.Scan(&m.ID, &m.Seq, &m.ChannelID, &m.ThreadID, &m.Author.Kind, &m.Author.ID, &m.Text, &mentions, &att,
-			&m.ClientID, &m.Created, &m.Edited, &m.ReplyCount, &m.LastReplyAt); err != nil {
+			&m.ClientID, &m.Created, &m.Edited, &m.ReplyCount, &m.LastReplyAt, &reactions); err != nil {
 			panic(err)
+		}
+		_ = json.Unmarshal([]byte(reactions), &m.Reactions)
+		if m.Reactions == nil {
+			m.Reactions = []reaction{}
 		}
 		_ = json.Unmarshal([]byte(mentions), &m.Mentions)
 		_ = json.Unmarshal([]byte(att), &m.Attachments)
@@ -384,6 +397,21 @@ func scanMessages(rows *sql.Rows, err error) []messageView {
 		out = append(out, m)
 	}
 	return out
+}
+
+// react puts an emoji on a message (once per author) and sends the message out again.
+func (h *Hub) react(messageID string, author member, emoji string) {
+	res, err := h.db.Exec("INSERT OR IGNORE INTO reactions (message_id, author_kind, author_id, emoji, created) VALUES (?, ?, ?, ?, ?)",
+		messageID, author.Kind, author.ID, emoji, h.nowMs())
+	if err != nil {
+		panic(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return
+	}
+	if m, ok := h.message(messageID); ok {
+		h.broadcastChannel(m.ChannelID, obj{"type": "message_edited", "message": m})
+	}
 }
 
 func (h *Hub) message(id string) (messageView, bool) {

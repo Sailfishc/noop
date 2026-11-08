@@ -378,6 +378,17 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
   );
 }
 
+/** A message's reactions, one chip per emoji with who put it there. */
+function reactionGroups(t: Team, m: Message): { emoji: string; names: string[] }[] {
+  const out: { emoji: string; names: string[] }[] = [];
+  for (const r of m.reactions ?? []) {
+    let g = out.find((x) => x.emoji === r.emoji);
+    if (!g) out.push((g = { emoji: r.emoji, names: [] }));
+    g.names.push(authorOf(t, r.author).name);
+  }
+  return out;
+}
+
 function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTask?: boolean }) {
   const a = () => authorOf(props.team, props.m.author);
   const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
@@ -397,6 +408,20 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
             {(p) => (p().mention ? <Text style={{ color: colors.accent, fontWeight: "500" }}>{p().text}</Text> : <Text>{p().text}</Text>)}
           </Each>
         </Text>
+        <If when={reactionGroups(props.team, props.m).length ? reactionGroups(props.team, props.m) : null}>
+          {(groups) => (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
+              <Each of={groups()} key={(g) => g.emoji}>
+                {(g) => (
+                  <View testID={`msg-${props.m.id}-reaction`} accessibilityLabel={`${g().emoji} ${g().names.join("、")}`} style={{ height: 24, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+                    <Text style={{ fontSize: 13 }}>{g().emoji}</Text>
+                    <Text style={{ fontSize: 12, color: colors.muted }}>{g().names.length > 1 ? String(g().names.length) : g().names[0]}</Text>
+                  </View>
+                )}
+              </Each>
+            </View>
+          )}
+        </If>
         <If when={!props.noTask}>
           <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
             {(task) => <TaskCard team={props.team} task={task()} />}
@@ -1354,6 +1379,12 @@ function prLine(pr: NonNullable<Task["pr"]>) {
 }
 
 /** A task on its request message (and in the inbox): its state, what it does now, and what this person can do. */
+/** The run's conclusion for the card in the channel: the first paragraph of the agent's summary, once it stopped. */
+function conclusion(task: Task): string {
+  if (!["review", "done", "blocked", "failed"].includes(task.state)) return "";
+  return (task.summary ?? "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").slice(0, 300);
+}
+
 function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; detail?: boolean }) {
   const t = props.team;
   const task = () => props.task;
@@ -1401,6 +1432,9 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
       </View>
       <If when={props.detail}>
         <TaskFacts team={t} task={task()} />
+      </If>
+      <If when={props.detail ? "" : conclusion(task())}>
+        {(line) => <Text testID={`task-${task().id}-summary`} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text, numberOfLines: 2 }}>{line()}</Text>}
       </If>
       <If when={props.detail ? null : task().pr}>
         {(pr) => (

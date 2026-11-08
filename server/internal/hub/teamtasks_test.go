@@ -80,6 +80,16 @@ func TestTaskConfirmClaimReport(t *testing.T) {
 	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 	check(t, "claim", r.status == 200 && r.body["task"].(map[string]any)["state"] == "running" && r.body["task"].(map[string]any)["runs"] == float64(1), r)
 	check(t, "the claim brings the request", len(r.body["new"].([]any)) == 1 && r.body["channel"].(map[string]any)["topic"] == "订单服务", r)
+	root := e.do("GET", "/api/v1/messages/"+m["id"].(string)+"/thread", e.zw.session, nil).body["root"].(map[string]any)
+	rx := root["reactions"].([]any)
+	check(t, "the agent puts 👀 on what it took up", len(rx) == 1 && rx[0].(map[string]any)["emoji"] == "👀" &&
+		rx[0].(map[string]any)["author"].(map[string]any)["kind"] == "agent", resp{raw: []byte(fmt.Sprint(root))})
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"reaction": "🔍"})
+	root = e.do("GET", "/api/v1/messages/"+m["id"].(string)+"/thread", e.zw.session, nil).body["root"].(map[string]any)
+	rx = root["reactions"].([]any)
+	check(t, "then its own emoji for how it read it, in place of the 👀", len(rx) == 1 && rx[0].(map[string]any)["emoji"] == "🔍", resp{raw: []byte(fmt.Sprint(root))})
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"reaction": "ok"})
+	check(t, "not just any text", len(e.do("GET", "/api/v1/messages/"+m["id"].(string)+"/thread", e.zw.session, nil).body["root"].(map[string]any)["reactions"].([]any)) == 1)
 	check(t, "and the agent's repo", r.body["agent"].(map[string]any)["repo"] == "~/work/pay", r)
 
 	// acceptance criteria: the agent may propose them while people wrote none; people can always rewrite them
@@ -117,6 +127,17 @@ func TestTaskConfirmClaimReport(t *testing.T) {
 	check(t, "unseen words queue the next turn", r.body["state"] == "queued", r)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 	check(t, "with them", len(r.body["new"].([]any)) == 1, r)
+
+	// a run that changed nothing (a lookup, an answer): its summary is the result, so nobody has to accept it
+	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "没有锁表风险", "answer": true, "result": "unconfirmed"})
+	check(t, "an unconfirmed answer still waits for review", r.body["state"] == "review", r)
+	e.post(e.zw.session, "再确认一下", m["id"].(string))
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "确认没有锁表风险", "answer": true})
+	check(t, "an answer is done at once", r.body["state"] == "done", r)
+	e.post(e.zw.session, "那 /refunds 呢", m["id"].(string))
+	check(t, "a reply still goes on", e.task(id)["state"] == "queued")
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 
 	// a decision card
 	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "needs_decision", "summary": "加索引要锁表约 30 秒",

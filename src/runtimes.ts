@@ -180,6 +180,7 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
       const out: RunEvent[] = [];
       for (const c of e.message?.content ?? []) {
         if (c.type === "tool_use") { const s = toolStep(String(c.name ?? ""), c.input); if (s) out.push({ kind: "step", text: s }); }
+        else if (c.type === "text" && c.text) out.push({ kind: "message", text: String(c.text) }); // said along the way (the result is the last word)
       }
       return out.length ? out : null;
     }

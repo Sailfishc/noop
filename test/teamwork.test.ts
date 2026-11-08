@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
-import { createWorker, fetchInputs, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
+import { createWorker, fetchInputs, reactionOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
   const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -32,7 +32,7 @@ test("codex runs sandboxed in the work directory; a later turn resumes its sessi
 test("Claude Code: stream-json steps, its session, its result; edits accepted, gates denied, model and resume passed", () => {
   expect(claudeEvent('{"type":"system","subtype":"init","session_id":"s_1"}')).toEqual({ kind: "session", id: "s_1" });
   expect(claudeEvent('{"type":"assistant","message":{"content":[{"type":"text","text":"hm"},{"type":"tool_use","name":"Bash","input":{"command":"bun test"}}]}}'))
-    .toEqual([{ kind: "step", text: "运行 bun test" }]);
+    .toEqual([{ kind: "message", text: "hm" }, { kind: "step", text: "运行 bun test" }]);
   expect(claudeEvent('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/src/orders.ts"}}]}}'))
     .toEqual([{ kind: "step", text: "改 src/orders.ts" }]);
   expect(claudeEvent('{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"x"}}]}}')).toBe(null);
@@ -65,6 +65,35 @@ test("the result block decides the state; without one the message is the summary
   expect(parseTaskResult('```json\n{"status":"needs_decision","summary":"s"}\n```').status).toBe("blocked"); // no question to ask
   expect(parseTaskResult("看了一下，没问题")).toEqual({ status: "review", summary: "看了一下，没问题" });
   expect(parseTaskResult("").status).toBe("failed");
+  expect(parseTaskResult("react: 🔍\n看了一下，没问题")).toEqual({ status: "review", summary: "看了一下，没问题" });
+});
+
+test("the agent's first word is an emoji for how it read the request; it goes to the server once", async () => {
+  expect(reactionOf("react: 🔍")).toBe("🔍");
+  expect(reactionOf("好的\nreact:🛠️\n开始")).toBe("🛠️");
+  expect(reactionOf("react: ok")).toBe("");
+  expect(reactionOf("react: 🔍 查一下")).toBe("");
+  expect(reactionOf("没有")).toBe("");
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).toContain("react: <one emoji>");
+  expect(followUpPrompt(claim())).toContain("react: <one emoji>");
+
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt: Runtime = {
+    name: "codex", available: () => true,
+    start(o) {
+      seen.push(o);
+      o.onEvent?.({ kind: "message", text: "react: 🔍" });
+      o.onEvent?.({ kind: "message", text: "react: 🐛" });
+      return { done: Promise.resolve({ session: "thr_9", text: '```json\n{"status":"review","summary":"7 个"}\n```', exitCode: 0, killed: false }), kill: () => {} };
+    },
+  };
+  const w = createWorker({ api: fakeApi({ "T-0001": claim() }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(calls.filter((c) => c.body?.reaction).map((c) => c.body.reaction)).toEqual(["🔍"]);
+  rmSync(W, { recursive: true, force: true });
 });
 
 const claim = (over: Partial<Claim["task"]> = {}, agent: Partial<Claim["agent"]> = {}): Claim => ({
@@ -266,6 +295,32 @@ test("the agent's runtime and model run the task; criteria the agent chose go ba
   const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report`).at(-1)!.body;
   expect(last("T-0001").acceptance).toBe("- P99 < 200ms");
   expect(last("T-0002").acceptance).toBeUndefined();
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("a run that changed nothing is an answer: done without acceptance; files, PRs or an unconfirmed result still go to review", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt = fakeRuntime([
+    { text: '```json\n{"status":"review","summary":"7 个开放 PR","result":"confirmed"}\n```' },
+    { text: '```json\n{"status":"review","summary":"报告在 out/ 里"}\n```' },
+    { text: '```json\n{"status":"review","summary":"已提交，结果明天出","result":"unconfirmed"}\n```' },
+  ], seen);
+  const ids = ["T-0001", "T-0002", "T-0003"];
+  const w = createWorker({
+    api: fakeApi(Object.fromEntries(ids.map((id) => [id, claim({ id })])), calls), maxParallel: 1, workRoot: W,
+    runtimes: { codex: { ...rt, start(o) { if (o.cwd.endsWith("T-0002")) writeFileSync(join(o.cwd, "out", "report.md"), "# r"); return rt.start(o); } } },
+    stepEveryMs: 0, log: () => {},
+  });
+  for (const id of ids) {
+    w.onTask({ ...claim().task, id, state: "queued" } as any, () => true);
+    await Bun.sleep(1);
+    await w.idle();
+  }
+  const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report` && c.body.state).at(-1)!.body;
+  expect(last("T-0001").answer).toBe(true);
+  expect(last("T-0002").answer).toBeUndefined();
+  expect(last("T-0003").answer).toBeUndefined();
   rmSync(W, { recursive: true, force: true });
 });
 
