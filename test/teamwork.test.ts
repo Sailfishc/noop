@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexCommand, codexEvent, type RunOptions, type Runtime } from "../src/runtimes";
@@ -62,7 +62,7 @@ test("prompts: the first turn has the channel, the task and the rules; a later o
 });
 
 test("a task gets its own worktree on agent/T-xxxx, and the agent's git cannot push", async () => {
-  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-"))); // macOS: /var → /private/var, as git reports it
   try {
     const origin = join(W, "origin.git"), repo = join(W, "repo");
     sh(W, "git", "init", "-q", "--bare", "-b", "main", origin);
