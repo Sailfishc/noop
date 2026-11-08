@@ -46,6 +46,12 @@ export function parseInvite(text: string, server: string): { server: string; cod
   return null;
 }
 
+/** A login link as pasted ("http://hub:8080/login/ABCD-EFGH"): its server; the code is sent as typed. */
+export function loginServer(text: string): string {
+  const m = text.trim().match(/^(.*?)\/login\/[A-Za-z0-9-]+\/?$/);
+  return m ? normalizeServer(m[1]) : "";
+}
+
 export const wsUrl = (base: string, token: string) => `${base.replace(/^http/, "ws")}/api/v1/stream?token=${encodeURIComponent(token)}`;
 
 /** One JSON call; never throws (status 0: unreachable). */
@@ -369,6 +375,8 @@ export function createTeam(s: Session) {
     return r;
   }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
+  /** A one-time login code: for this person's other device, or (an admin) for a member who lost theirs. */
+  const loginCode = (userId?: string) => api("POST", "/api/v1/login-codes", userId ? { user_id: userId } : {});
 
   /** confirm | decline | cancel | accept | decide ({choice}). */
   async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
@@ -403,7 +411,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember,
-    createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

@@ -4,7 +4,6 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { b32decode, hotp, stepAt } from "../../cloud/src/totp";
 import { onAgentMessage, startTeamAgent, type TeamMessage } from "../../src/teamagent";
 
 const BASE = (process.argv[2] ?? "http://127.0.0.1:18080").replace(/\/$/, "");
@@ -21,11 +20,9 @@ const until = async (what: string, f: () => boolean | Promise<boolean>, ms = 500
   check(what, false, "timed out");
   return false;
 };
-const totp = async (secret: string) => hotp(b32decode(secret), stepAt());
 
 async function accept(code: string, handle: string) {
-  const r1 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle });
-  const r2 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle, totp: await totp(r1.json.secret) });
+  const r2 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle });
   check(`${handle} joins`, r2.status === 200, JSON.stringify(r2.json).slice(0, 160));
   return r2.json as { session: string; user: { id: string } };
 }

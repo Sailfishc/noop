@@ -8,7 +8,7 @@ import { L, lang, LANG_KEY } from "../i18n";
 import { LOGO } from "./logo";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
 import {
-  call, createTeam, errorOf, type Reply, isMember, isParty, normalizeServer, parseInvite, TEAM_KEYS, textParts,
+  call, createTeam, errorOf, type Reply, isMember, isParty, loginServer, normalizeServer, parseInvite, TEAM_KEYS, textParts,
   type Agent, type Autonomy, type Channel, type Dispatch, type Machine, type Member, type Message, type Session, type Task, type TaskState, type Team,
 } from "./api";
 
@@ -165,8 +165,7 @@ const time = (ms: number) => {
 function SignIn(props: { url: string; email: string; notice: string; onSession: (s: Session, email: string) => void }) {
   const mode = signal<"login" | "invite">("login");
   const url = signal(props.url);
-  const email = signal(props.email);
-  const totp = signal("");
+  const code = signal("");
   const error = signal(props.notice);
   const busy = signal(false);
   // invite
@@ -174,26 +173,20 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
   const invite = signal<{ server: string; code: string; email: string } | null>(null);
   const name = signal("");
   const handle = signal("");
-  const secret = signal<{ secret: string; uri: string } | null>(null);
 
   const fail = (r: Reply, server: string, fallback: string) =>
     error.set(r.status === 0 ? unreachable(server) : errorOf(r, fallback));
 
   async function login() {
-    const server = normalizeServer(url());
-    const t = totp().replace(/\D/g, "");
+    const server = loginServer(code()) || normalizeServer(url());
     if (!server) return error.set(L("Enter the server address", "请填写服务器地址"));
-    if (!/^[^\s@]+@[^\s@]+$/.test(email().trim())) return error.set(L("Enter a valid email address", "请填写有效的邮箱地址"));
-    if (t.length !== 6 || busy()) return;
+    if (!code().trim() || busy()) return;
     busy.set(true);
     error.set("");
-    const r = await call(server, "POST", "/api/v1/login", "", { email: email().trim(), totp: t });
+    const r = await call(server, "POST", "/api/v1/login", "", { code: code().trim() });
     busy.set(false);
-    if (!r.ok || typeof r.data.session !== "string") {
-      totp.set("");
-      return fail(r, server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
-    }
-    props.onSession({ url: server, session: r.data.session }, email().trim());
+    if (!r.ok || typeof r.data.session !== "string") return fail(r, server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
+    props.onSession({ url: server, session: r.data.session }, String(r.data.user?.email ?? props.email));
   }
 
   async function openInvite() {
@@ -209,37 +202,16 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
     if (!handle()) handle.set(String(r.data.email ?? "").split("@")[0].toLowerCase().replace(/[^a-z0-9_-]/g, ""));
   }
 
-  async function bind() {
+  async function join() {
     const iv = invite();
     if (!iv || busy()) return;
     busy.set(true);
     error.set("");
     const r = await call(iv.server, "POST", `/api/v1/invites/${iv.code}/accept`, "", { name: name().trim(), handle: handle().trim().toLowerCase() });
     busy.set(false);
-    if (!r.ok) return fail(r, iv.server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
-    secret.set({ secret: r.data.secret, uri: r.data.uri });
-  }
-
-  async function confirm() {
-    const iv = invite();
-    const t = totp().replace(/\D/g, "");
-    if (!iv || t.length !== 6 || busy()) return;
-    busy.set(true);
-    error.set("");
-    const r = await call(iv.server, "POST", `/api/v1/invites/${iv.code}/accept`, "", { name: name().trim(), handle: handle().trim().toLowerCase(), totp: t });
-    busy.set(false);
-    if (!r.ok || typeof r.data.session !== "string") {
-      totp.set("");
-      return fail(r, iv.server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
-    }
+    if (!r.ok || typeof r.data.session !== "string") return fail(r, iv.server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
     props.onSession({ url: iv.server, session: r.data.session }, iv.email);
   }
-
-  const onTotp = (v: string, done: () => void) => {
-    const t = v.replace(/\D/g, "").slice(0, 6);
-    totp.set(t);
-    if (t.length === 6) done();
-  };
 
   return (
     <Scroll style={{ flex: 1, backgroundColor: colors.background }} keyboardShouldPersistTaps="handled">
@@ -249,7 +221,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
             <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
             <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text }}>TeamAgent</Text>
             <Text style={{ fontSize: 15, lineHeight: 22, color: colors.muted, textAlign: "center" }}>
-              {mode() === "login" ? L("Sign in with your email and the 6 digits in your authenticator app.", "用邮箱和验证器 App 上的 6 位数字登录。") : L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")}
+              {mode() === "login" ? L("Sign in with a login code from a device you’re already signed in on, or a login link from your admin.", "用已登录设备上生成的登录码，或管理员发给你的登录链接登录。") : L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")}
             </Text>
           </View>
           <View style={{ gap: 16, padding: 22, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
@@ -257,16 +229,15 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
               testID="signin-mode"
               options={[{ value: "login", label: L("Sign in", "登录") }, { value: "invite", label: L("I have an invite", "我有邀请") }]}
               value={mode()}
-              onChange={(m) => { mode.set(m); error.set(""); totp.set(""); }}
+              onChange={(m) => { mode.set(m); error.set(""); }}
             />
             <If
               when={mode() === "invite"}
               else={
                 <>
                   <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://teamagent.corp:8080" keyboardType="url" testID="team-url" />
-                  <Field label={L("Email", "邮箱")} value={email()} onChange={(v) => email.set(v)} placeholder="you@corp.com" keyboardType="email-address" testID="team-email" />
-                  <Field label={L("Authenticator code", "验证器上的 6 位数字")} value={totp()} onChange={(v) => onTotp(v, login)} onSubmit={login} placeholder="······" keyboardType="number-pad" big testID="team-totp" />
-                  <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={totp().length !== 6} onPress={login} />
+                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("On a signed-in device: Agents & machines → Sign in on another device.", "在已登录的设备上：Agent 与机器 → 在其他设备登录。")} />
+                  <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim()} onPress={login} />
                 </>
               }
             >
@@ -280,32 +251,12 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
                 }
               >
                 {(iv) => (
-                  <If
-                    when={secret()}
-                    else={
-                      <>
-                        <Text style={{ fontSize: 14, color: colors.muted }}>{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Text>
-                        <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="invite-name" autoFocus />
-                        <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} onSubmit={bind} placeholder="wanglei" testID="invite-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
-                        <Btn testID="invite-next" kind="primary" grow label={L("Next", "下一步")} busy={busy()} disabled={!name().trim() || !handle().trim()} onPress={bind} />
-                      </>
-                    }
-                  >
-                    {(s) => (
-                      <>
-                        <Text style={{ fontSize: 14.5, lineHeight: 22, color: colors.text }}>
-                          {L("Add this key to your authenticator app (Google Authenticator, 1Password, …), then enter the 6 digits it shows. You’ll sign in with them from now on.", "把下面的密钥加到验证器 App（Google Authenticator、1Password 等）里，再输入它显示的 6 位数字。以后登录都用它。")}
-                        </Text>
-                        <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: colors.inset }}>
-                          <Text testID="invite-secret" style={{ fontSize: 17, fontFamily: "monospace", letterSpacing: 1.5, color: colors.text }}>{s().secret.replace(/(.{4})/g, "$1 ").trim()}</Text>
-                          <Text style={{ fontSize: 12, color: colors.faint }}>{s().uri}</Text>
-                        </View>
-                        <Btn small label={L("Copy key", "复制密钥")} icon="copy" onPress={() => void Clipboard.writeText(s().secret)} />
-                        <Field label={L("Authenticator code", "验证器上的 6 位数字")} value={totp()} onChange={(v) => onTotp(v, confirm)} onSubmit={confirm} placeholder="······" keyboardType="number-pad" big testID="invite-totp" />
-                        <Btn testID="invite-join" kind="primary" grow label={L("Join", "加入")} busy={busy()} disabled={totp().length !== 6} onPress={confirm} />
-                      </>
-                    )}
-                  </If>
+                  <>
+                    <Text style={{ fontSize: 14, color: colors.muted }}>{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Text>
+                    <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="invite-name" autoFocus />
+                    <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} onSubmit={join} placeholder="wanglei" testID="invite-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
+                    <Btn testID="invite-join" kind="primary" grow label={L("Join", "加入")} busy={busy()} disabled={!name().trim() || !handle().trim()} onPress={join} />
+                  </>
                 )}
               </If>
             </If>
@@ -874,6 +825,7 @@ function Settings(props: { team: Team; back: boolean; onBack: () => void }) {
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 20, gap: 18, maxWidth: 720 }}>
         <MachinesPanel team={t} machines={myMachines()} />
         <AgentsPanel team={t} agents={myAgents()} machines={myMachines()} />
+        <DevicePanel team={t} />
         <PeoplePanel team={t} />
       </Scroll>
     </View>
@@ -1040,6 +992,42 @@ function AgentRepo(props: { team: Team; agent: Agent }) {
   );
 }
 
+/** Sign in on another device: a one-time code to type (or the link to open) there, valid 15 minutes. */
+function DevicePanel(props: { team: Team }) {
+  const t = props.team;
+  const code = signal<{ code: string; link: string } | null>(null);
+  const error = signal("");
+  const busy = signal(false);
+  async function make() {
+    if (busy()) return;
+    busy.set(true);
+    error.set("");
+    const r = await t.loginCode();
+    busy.set(false);
+    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    code.set({ code: r.data.code, link: `${t.url}${r.data.path}` });
+  }
+  return (
+    <Panel title={L("Sign in on another device", "在其他设备登录")}>
+      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+        {L("On the other device choose Sign in, then enter this code with the server address, or paste the link.", "在另一台设备上选「登录」，填服务器地址和这个登录码，或者直接粘贴链接。")}
+      </Text>
+      <If when={code()}>
+        {(c) => (
+          <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
+            <Text testID="login-code" style={{ fontSize: 24, fontFamily: "monospace", letterSpacing: 3, color: colors.text }}>{c().code}</Text>
+            <Text testID="login-code-url" style={{ fontSize: 12.5, fontFamily: "monospace", color: colors.muted }}>{c().link}</Text>
+            <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次。")}</Text>
+            <Btn small icon="copy" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
+          </View>
+        )}
+      </If>
+      <ErrorNote text={error()} testID="login-code-error" />
+      <Btn testID="login-code-create" label={code() ? L("New code", "重新生成") : L("Get a login code", "生成登录码")} busy={busy()} onPress={make} />
+    </Panel>
+  );
+}
+
 function PeoplePanel(props: { team: Team }) {
   const t = props.team;
   const admin = () => t.me()?.role === "admin";
@@ -1048,6 +1036,7 @@ function PeoplePanel(props: { team: Team }) {
   const error = signal("");
   const busy = signal(false);
   const link = signal("");
+  const note = signal("");
   async function invite() {
     if (!email().trim() || busy()) return;
     busy.set(true);
@@ -1055,8 +1044,17 @@ function PeoplePanel(props: { team: Team }) {
     const r = await t.invite(email().trim(), role());
     busy.set(false);
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    note.set(L("Send this link to them (valid for 7 days, works once):", "把这个链接发给对方（7 天内有效，只能用一次）："));
     link.set(`${t.url}${r.data.path}`);
     email.set("");
+  }
+  /** For a member who lost their device or signed out everywhere. */
+  async function loginLink(id: string, who: string) {
+    error.set("");
+    const r = await t.loginCode(id);
+    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    note.set(L(`Login link for ${who} (valid for a day, works once):`, `${who} 的登录链接（一天内有效，只能用一次）：`));
+    link.set(`${t.url}${r.data.path}`);
   }
   return (
     <Panel title={L("People", "成员")}>
@@ -1066,6 +1064,9 @@ function PeoplePanel(props: { team: Team }) {
             <Avatar name={u().name} size={26} />
             <Text style={{ flex: 1, fontSize: 14.5, color: colors.text }}>{u().name} <Text style={{ color: colors.muted }}>@{u().handle}</Text></Text>
             <Text style={{ fontSize: 12.5, color: colors.faint }}>{u().role === "admin" ? L("admin", "管理员") : u().email}</Text>
+            <If when={admin() && u().id !== t.me()?.id}>
+              <Btn small testID={`login-link-${u().handle}`} label={L("Login link", "登录链接")} onPress={() => void loginLink(u().id, u().name)} />
+            </If>
           </View>
         )}
       </Each>
@@ -1077,7 +1078,7 @@ function PeoplePanel(props: { team: Team }) {
           <Btn testID="invite-create" kind="primary" label={L("Create invite link", "生成邀请链接")} busy={busy()} disabled={!email().trim()} onPress={invite} />
           <If when={link()}>
             <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-              <Text style={{ fontSize: 13.5, color: colors.text }}>{L("Send this link to them (valid for 7 days, works once):", "把这个链接发给对方（7 天内有效，只能用一次）：")}</Text>
+              <Text style={{ fontSize: 13.5, color: colors.text }}>{note()}</Text>
               <Text testID="invite-url" style={{ fontSize: 13, fontFamily: "monospace", color: colors.text }}>{link()}</Text>
               <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(link())} />
             </View>

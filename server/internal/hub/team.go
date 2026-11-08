@@ -3,6 +3,7 @@ package hub
 import (
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -11,13 +12,15 @@ import (
 
 // People, invites and sign-in, machines and agents.
 //
-// Sign-in is email + the 6-digit code of the person's own authenticator app. There is no password and no mail:
-// an admin invites a person (or `teamagent-server invite` does, for the first admin), the invite link binds the
-// authenticator, and every sign-in after that needs it.
+// There is no password and no mail. An admin invites a person (or `teamagent-server invite` does, for the first
+// admin) and the invite link signs them in. Another device signs in with a one-time login code made on a device
+// that is already signed in, or with a login link an admin makes. Accounts from before keep email + authenticator.
 
 const (
 	inviteTTL         = 7 * 24 * time.Hour
 	loginFailsPerDay  = 10
+	loginCodeTTL      = 15 * time.Minute
+	adminLoginCodeTTL = 24 * time.Hour
 	machineOnlineSpan = 3 * time.Minute
 )
 
@@ -217,8 +220,8 @@ func (h *Hub) v1InviteInfo(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, obj{"email": iv.email, "role": iv.role})
 }
 
-// v1InviteAccept, in two steps: {name, handle} → {secret, uri} to add to the authenticator app;
-// then {name, handle, totp} → the account exists and {session, user} signs it in.
+// v1InviteAccept: {name, handle} → the account exists and {session, user} signs it in. The invite link is the
+// credential: it is one-time, expires in a week and only reaches the person it was sent to.
 func (h *Hub) v1InviteAccept(w http.ResponseWriter, q *request) {
 	code := q.r.PathValue("code")
 	iv, ok := h.liveInvite(code)
@@ -226,7 +229,7 @@ func (h *Hub) v1InviteAccept(w http.ResponseWriter, q *request) {
 		errJSON(w, 404, "邀请链接无效或已过期")
 		return
 	}
-	var b struct{ Name, Handle, TOTP string }
+	var b struct{ Name, Handle string }
 	_ = q.json(&b)
 	name, handle := trimmed(b.Name, 60), strings.ToLower(strings.TrimSpace(b.Handle))
 	if name == "" || !handleRE.MatchString(handle) {
@@ -237,24 +240,76 @@ func (h *Hub) v1InviteAccept(w http.ResponseWriter, q *request) {
 		errJSON(w, 409, "@"+handle+" 已经被占用了")
 		return
 	}
-	hash := sha256hex([]byte(code))
-	if b.TOTP == "" || iv.pending == nil {
-		secret := newTOTPSecret()
-		h.must(h.db.Exec("UPDATE invites SET pending_secret = ? WHERE hash = ?", secret, hash))
-		writeJSON(w, 200, obj{"secret": secret, "uri": otpauthURI(secret, iv.email)})
-		return
-	}
-	step := totpMatch(*iv.pending, b.TOTP, -1, h.now())
-	if step < 0 {
-		errJSON(w, 400, "验证码不对：确认手机时间准确，输入验证器 App 上的最新数字")
-		return
-	}
 	id := newID("u_")
-	h.must(h.db.Exec("INSERT INTO users (id, email, handle, name, role, totp_secret, totp_last, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		id, iv.email, handle, name, iv.role, *iv.pending, step, h.nowMs()))
-	h.must(h.db.Exec("UPDATE invites SET used_by = ?, used_at = ?, pending_secret = NULL WHERE hash = ?", id, h.nowMs(), hash))
+	// totp_secret stays for accounts made before login codes; a new one is never shown, so it can't sign in
+	h.must(h.db.Exec("INSERT INTO users (id, email, handle, name, role, totp_secret, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		id, iv.email, handle, name, iv.role, newTOTPSecret(), h.nowMs()))
+	h.must(h.db.Exec("UPDATE invites SET used_by = ?, used_at = ?, pending_secret = NULL WHERE hash = ?", id, h.nowMs(), sha256hex([]byte(code))))
 	u, _ := h.user(id)
 	h.broadcastPeople(obj{"type": "user", "user": u})
+	writeJSON(w, 200, obj{"session": h.userSession(u, q.r.UserAgent()), "user": u})
+}
+
+// Login codes (newCode, normCode in auth.go) sign a person in on another device: one-time and short-lived.
+func loginCodeOf(s string) string {
+	if i := strings.LastIndex(s, "/login/"); i >= 0 { // a pasted …/login/ABCD-EFGH link
+		s = s[i+len("/login/"):]
+	}
+	return normCode(strings.TrimSpace(s))
+}
+
+// v1LoginCodeCreate: a person makes a code for themselves (valid 15 minutes, to type on their other device); an
+// admin makes one for a member who lost their device ({user_id}, valid a day, to send them as a link).
+func (h *Hub) v1LoginCodeCreate(w http.ResponseWriter, q *request) {
+	var b struct {
+		UserID string `json:"user_id"`
+	}
+	_ = q.json(&b)
+	ttl := loginCodeTTL
+	target := q.who.userID
+	if b.UserID != "" && b.UserID != q.who.userID {
+		if !h.isAdmin(q.who.userID) {
+			errJSON(w, 403, "只有管理员能给别人生成登录链接")
+			return
+		}
+		if h.count("SELECT COUNT(*) FROM users WHERE id = ? AND disabled = 0", b.UserID) != 1 {
+			errJSON(w, 404, "没有这个成员，或者已被停用")
+			return
+		}
+		target, ttl = b.UserID, adminLoginCodeTTL
+	}
+	raw := newCode()
+	code := raw[:4] + "-" + raw[4:]
+	now := h.nowMs()
+	h.must(h.db.Exec("DELETE FROM login_codes WHERE expires <= ?", now))
+	h.must(h.db.Exec("INSERT INTO login_codes (hash, user_id, created, expires) VALUES (?, ?, ?, ?)",
+		sha256hex([]byte(raw)), target, now, now+ttl.Milliseconds()))
+	writeJSON(w, 200, obj{"code": code, "path": "/login/" + code, "expires": now + ttl.Milliseconds()})
+}
+
+func (h *Hub) loginWithCode(w http.ResponseWriter, q *request, code string) {
+	now := h.nowMs()
+	ip := q.r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	key := "code:" + ip
+	h.must(h.db.Exec("DELETE FROM login_fails WHERE ts < ?", now-24*time.Hour.Milliseconds()))
+	if h.count("SELECT COUNT(*) FROM login_fails WHERE email = ?", key) >= loginFailsPerDay {
+		errJSON(w, 429, "这台设备今天输错登录码太多次，24 小时内无法用登录码登录")
+		return
+	}
+	hash := sha256hex([]byte(loginCodeOf(code)))
+	var id string
+	err := h.db.QueryRow("SELECT c.user_id FROM login_codes c JOIN users u ON u.id = c.user_id WHERE c.hash = ? AND c.expires > ? AND u.disabled = 0",
+		hash, now).Scan(&id)
+	if err != nil {
+		h.must(h.db.Exec("INSERT INTO login_fails (email, ts) VALUES (?, ?)", key, now))
+		errJSON(w, 401, "登录码不对或已过期（每个登录码只能用一次）")
+		return
+	}
+	h.must(h.db.Exec("DELETE FROM login_codes WHERE hash = ?", hash))
+	u, _ := h.user(id)
 	writeJSON(w, 200, obj{"session": h.userSession(u, q.r.UserAgent()), "user": u})
 }
 
@@ -267,8 +322,12 @@ func (h *Hub) userSession(u userView, ua string) string {
 }
 
 func (h *Hub) v1Login(w http.ResponseWriter, q *request) {
-	var b struct{ Email, TOTP string }
+	var b struct{ Email, TOTP, Code string }
 	_ = q.json(&b)
+	if b.Code != "" {
+		h.loginWithCode(w, q, b.Code)
+		return
+	}
 	email := normEmail(b.Email)
 	now := h.nowMs()
 	h.must(h.db.Exec("DELETE FROM login_fails WHERE ts < ?", now-24*time.Hour.Milliseconds()))
