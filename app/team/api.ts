@@ -44,6 +44,16 @@ export type Task = {
   runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
   /** Where it runs: host/owner/name; "" = a general task (or the agent's own repo path). */
   repo?: string;
+  /** What came out of it: its PR first, files from out/, results kept by outside services. */
+  outputs?: Output[] | null;
+};
+export type Output = {
+  id: string; kind: "pr" | "file" | "external"; title: string;
+  /** pending | ready | failed; a PR: open | merged | closed */
+  status: string; url?: string; name?: string; mime?: string; size?: number; version?: number;
+  service?: string; external_id?: string;
+  /** progress or why it failed; a PR: its checks */
+  note?: string; preview?: boolean; updated: number;
 };
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
   /** The default repository of its tasks (host/owner/name), "" for none. */
@@ -478,6 +488,12 @@ export function createTeam(s: Session) {
     if (r.ok) putTasks([r.data as Task]);
     return r;
   }
+  /** A link (15 minutes, no session needed) to a file output, its preview, or an older version. */
+  async function outputLink(id: string, o: { preview?: boolean; version?: number } = {}): Promise<string | null> {
+    const q = o.preview ? "?preview=1" : o.version ? `?v=${o.version}` : "";
+    const r = await api("GET", `/api/v1/outputs/${id}/link${q}`);
+    return r.ok ? s.url.replace(/\/$/, "") + r.data.url : null;
+  }
   /** Where a task runs, before it ever ran (an address; "" = a general task). */
   async function setTaskRepo(id: string, repo: string) {
     const r = await api("PATCH", `/api/v1/tasks/${id}`, { repo });
@@ -506,7 +522,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, setTaskRepo, taskOfThread, loadInbox,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,

@@ -2,14 +2,18 @@
 // worktree of the agent's repository on branch agent/T-xxxx) with the agent's runtime, keep the task card's step up
 // to date, and report the result. The next turn of a task (people replied in its thread, or answered its decision)
 // resumes the same runtime session with only what is new.
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 
 export type Decision = { question: string; options: string[]; recommendation?: string; answer?: string };
 export type PR = { provider: string; url: string; number: number; title?: string; state: string; checks: string; repo?: string };
+/** A result kept by an outside service the agent called (its id there, a link, how it stands). */
+export type ExternalOutput = { kind?: "external"; title: string; service?: string; external_id?: string; url?: string; status?: "pending" | "ready" | "failed"; note?: string;
+  /** A small picture of it the agent made, a path under its work directory: shown in the thread. */
+  preview?: string };
 export type TeamTask = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   state: string; step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; session: string;
@@ -31,10 +35,13 @@ export type TaskResult = {
   acceptance?: string;
   /** The agent's memory.md as it wants it now, when it learned something lasting. */
   memory?: string;
+  /** Results kept by outside services it called. */
+  outputs?: ExternalOutput[];
 };
 
-/** Where a task runs. `repo` is the agent's checkout this worktree belongs to. */
-export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[] };
+/** Where a task runs. `repo` is the checkout this worktree belongs to. `files`: in/ (what people attached) and out/
+ * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task. */
+export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string };
 
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
@@ -71,7 +78,8 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
   "pr_title": "review with commits only: the pull request title",
   "pr_body": "review with commits only: what changed and how it was verified",
   "acceptance": "only when the task came without acceptance criteria: the criteria you worked to, one per line",
-  "memory": "only when you learned something that will matter in later tasks (how the team works, a repo's quirks, people's preferences): your whole memory.md as it should be now, short bullet points, under 4000 characters"
+  "memory": "only when you learned something that will matter in later tasks (how the team works, a repo's quirks, people's preferences): your whole memory.md as it should be now, short bullet points, under 4000 characters",
+  "outputs": [{"kind": "external", "title": "what it is", "service": "which service keeps it", "external_id": "its id there", "url": "https link to it", "status": "pending" | "ready" | "failed", "preview": "optional: path of a small picture of it you saved"}]
 }
 review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
@@ -79,13 +87,18 @@ failed = it cannot be done. When the task has acceptance criteria, say in the su
 not, and why); do not report review while one is unmet. Write summary, question and options in the language the people in the thread use (Simplified
 Chinese unless they write otherwise), plain text, no emoji.`;
 
+const FILES = (wd: Workdir) => wd.files
+  ? `\n- Files people attached to the thread are in ${join(wd.files, "in")}. Put what people should get that is not a code change (a report, a table, a picture) in ${join(wd.files, "out")}: every file there is uploaded to the thread when you stop. Keep drafts elsewhere.
+- When you start work in an outside service (a cloud job, a render, a deployment), list it in "outputs" with its id there, and say plainly whether you saw its result.`
+  : "";
+
 const RULES = (wd: Workdir) => wd.repo
   ? `# Rules (enforced: breaking them fails)
 - Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.
 - Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
-- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.`
+- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${FILES(wd)}`
   : `# Rules
-- Work in ${wd.cwd} (an empty work directory for this task); put any files you produce there.
+- Work in ${wd.cwd} (this task's own directory; no repository).${FILES(wd)}
 - Never push to remote repositories, merge, or publish anything.`;
 
 const AUTONOMY: Record<string, string> = {
@@ -150,6 +163,8 @@ export type WorkerOptions = {
   workdir?: (c: Claim, root: string) => Promise<Workdir>;
   /** This machine's checkout of a task's repository (repos.ts). */
   resolveRepo?: (remote: string) => Promise<string>;
+  /** Files to and from the server (outputs, previews, attachments). */
+  files?: FileApi;
   /** Extra environment for the runtime (default: gateEnv, which stops git pushes and gh/glab writes). */
   env?: (wd: Workdir) => Record<string, string>;
   log?: (s: string) => void;
@@ -178,8 +193,9 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
     repoPath = await resolve(c.task.repo);
   }
   if (!repoPath) {
-    mkdirSync(dir, { recursive: true });
-    return { cwd: dir, writable: [] };
+    mkdirSync(join(dir, "in"), { recursive: true });
+    mkdirSync(join(dir, "out"), { recursive: true });
+    return { cwd: dir, writable: [], files: dir };
   }
   if (!existsSync(repoPath) || (!existsSync(join(repoPath, ".git")) && !(await git(repoPath, "rev-parse", "--git-dir")).ok)) {
     throw new Error(`@${c.agent.handle} 的仓库 ${c.agent.repo} 在这台机器上不存在或不是 git 仓库`);
@@ -195,7 +211,72 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
     const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, base);
     if (!r.ok) throw new Error(`开 worktree 失败：${r.out}`);
   }
-  return { cwd: dir, repo: repoPath, base, branch, writable: [common] };
+  const files = join(root, `${c.task.id}.files`);
+  mkdirSync(join(files, "in"), { recursive: true });
+  mkdirSync(join(files, "out"), { recursive: true });
+  return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
+}
+
+/** The files under out/ (relative paths), at most `max`, skipping hidden ones. */
+export function outFiles(out: string, max = 50): string[] {
+  const found: string[] = [];
+  const walk = (d: string) => {
+    let names: string[] = [];
+    try { names = readdirSync(d).sort(); } catch { return; }
+    for (const n of names) {
+      if (found.length >= max || n.startsWith(".")) continue;
+      const p = join(d, n);
+      let st; try { st = statSync(p); } catch { continue; }
+      if (st.isDirectory()) walk(p);
+      else if (st.isFile()) found.push(relative(out, p));
+    }
+  };
+  walk(out);
+  return found;
+}
+
+export type FileApi = {
+  /** A file of out/ to the task's outputs. */
+  upload(taskId: string, name: string, data: Uint8Array): Promise<boolean>;
+  /** A preview picture of an output. */
+  preview(taskId: string, query: string, data: Uint8Array): Promise<boolean>;
+  /** A thread attachment ("/media/…"). */
+  download(path: string): Promise<Uint8Array | null>;
+};
+
+const MAX_OUT_FILE = 50 << 20;
+
+/** Upload what is new or changed in out/ since the last time (by content), and say what could not go. */
+export async function uploadOut(files: FileApi, taskId: string, dir: string): Promise<string[]> {
+  const out = join(dir, "out"), seenFile = join(dir, ".uploaded.json");
+  let seen: Record<string, string> = {};
+  try { seen = JSON.parse(readFileSync(seenFile, "utf8")); } catch {}
+  const notes: string[] = [];
+  for (const name of outFiles(out)) {
+    const data = readFileSync(join(out, name));
+    if (data.length > MAX_OUT_FILE) { notes.push(`${name} 超过 50 MB，没有上传`); continue; }
+    const hash = new Bun.CryptoHasher("sha256").update(data).digest("hex");
+    if (seen[name] === hash) continue;
+    if (await files.upload(taskId, name, data)) seen[name] = hash;
+    else notes.push(`${name} 上传失败`);
+  }
+  try { writeFileSync(seenFile, JSON.stringify(seen)); } catch {}
+  return notes;
+}
+
+/** The thread's attachments into in/ (once each). */
+export async function fetchInputs(files: FileApi, c: Claim, dir: string) {
+  const inDir = join(dir, "in");
+  for (const m of [...c.thread, ...c.new]) {
+    for (const a of m.attachments ?? []) {
+      if (!a.startsWith("/media/")) continue;
+      const name = basename(decodeURIComponent(a)).replace(/[^\w.\-\u4e00-\u9fff]+/g, "_").slice(-120);
+      const p = join(inDir, name);
+      if (existsSync(p)) continue;
+      const data = await files.download(a);
+      if (data) writeFileSync(p, data);
+    }
+  }
 }
 
 /** Git configuration for the agent's process only: every push goes to an address that refuses it, and gh/glab see
@@ -237,6 +318,7 @@ export function createWorker(o: WorkerOptions) {
       await report(t.id, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
       return;
     }
+    if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
     const resume = t.session;
     const prompt = !resume ? taskPrompt(c, wd) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
@@ -270,7 +352,19 @@ export function createWorker(o: WorkerOptions) {
     if (o.afterRun && result.status === "review") {
       try { extra = await o.afterRun(c, result, wd); } catch (e) { extra = { note: `推送或开 PR 失败：${e instanceof Error ? e.message : e}` }; }
     }
-    const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? ""].filter(Boolean).join("\n\n");
+    const notes: string[] = [];
+    if (o.files && wd.files) notes.push(...await uploadOut(o.files, t.id, wd.files).catch((e) => [`上传产出失败：${e instanceof Error ? e.message : e}`]));
+    const outputs = (Array.isArray(result.outputs) ? result.outputs : []).filter((x) => x && (x.title || x.external_id)).slice(0, 20);
+    if (outputs.length) {
+      await report(t.id, { outputs: outputs.map(({ preview: _p, ...x }) => ({ ...x, kind: "external" })) });
+      for (const x of outputs) {
+        if (!x.preview || !o.files) continue;
+        const p = resolve(wd.cwd, x.preview);
+        const q = x.external_id ? `external_id=${encodeURIComponent(x.external_id)}` : "";
+        try { if (q && existsSync(p)) await o.files.preview(t.id, q, readFileSync(p)); } catch {}
+      }
+    }
+    const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? "", notes.join("；")].filter(Boolean).join("\n\n");
     const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
     if (extra?.pr) body.pr = extra.pr;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);

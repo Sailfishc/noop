@@ -16,7 +16,7 @@ export type TeamAgent = {
 };
 export type TeamMessage = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: { kind: "user" | "agent"; id: string };
-  text: string; mentions: { kind: "user" | "agent"; id: string; handle: string }[]; created: number;
+  text: string; mentions: { kind: "user" | "agent"; id: string; handle: string }[]; created: number; attachments?: string[] | null;
 };
 
 export const isMachineToken = (t: unknown) => typeof t === "string" && t.startsWith("tam_");
@@ -173,6 +173,20 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   const worker = createWorker({
     api: (path, init) => api(path, init), maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
     resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
+    files: {
+      async upload(taskId, name, data) {
+        const r = await fetch(`${base}/api/v1/tasks/${taskId}/outputs/file?name=${encodeURIComponent(name)}`, { method: "POST", headers: { ...auth, "content-type": "" }, body: data, signal: AbortSignal.timeout(120_000) }).catch(() => null);
+        return !!r?.ok;
+      },
+      async preview(taskId, query, data) {
+        const r = await fetch(`${base}/api/v1/tasks/${taskId}/outputs/preview?${query}`, { method: "POST", headers: auth, body: data, signal: AbortSignal.timeout(60_000) }).catch(() => null);
+        return !!r?.ok;
+      },
+      async download(path) {
+        const r = await fetch(base + path, { headers: auth, signal: AbortSignal.timeout(120_000) }).catch(() => null);
+        return r?.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      },
+    },
     workRoot: join(HOME_DIR, "teamagent", "work"), logDir: join(HOME_DIR, "logs", "teamagent"), ...opts.worker,
   });
   const mine = (agentId: string) => agents.some((a) => a.id === agentId);
