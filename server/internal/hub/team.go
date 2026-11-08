@@ -26,9 +26,10 @@ const (
 
 var (
 	handleRE   = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,31}$`)
-	dispatches = map[string]bool{"owner": true, "confirm": true, "open": true}   // 只有我 · 频道成员，需我确认 · 频道成员直接派
+	dispatches = map[string]bool{"owner": true, "channel": true, "team": true}   // 只有我 · 所在频道的成员 · 整个团队
 	autonomies = map[string]bool{"cautious": true, "assist": true, "auto": true} // 谨慎 · 协助 · 自主
-	runtimes   = map[string]bool{"codex": true, "claude": true}
+	runtimes   = map[string]bool{"codex": true, "claude": true, "pi": true}
+	modelRE    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,99}$`)
 )
 
 func newID(prefix string) string { return prefix + randHex(8) }
@@ -78,10 +79,11 @@ type machineInfo struct {
 }
 
 type runtimeInfo struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Installed bool   `json:"installed"`
-	LoggedIn  *bool  `json:"logged_in"` // nil: unknown
+	Name      string   `json:"name"`
+	Version   string   `json:"version"`
+	Installed bool     `json:"installed"`
+	LoggedIn  *bool    `json:"logged_in"` // nil: unknown
+	Models    []string `json:"models"`    // what its owner can pick for an agent (besides the runtime's default)
 }
 
 type gitCred struct {
@@ -136,13 +138,19 @@ type agentView struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description"`
 	Runtime     string  `json:"runtime"`
-	Dispatch    string  `json:"dispatch"`
-	Autonomy    string  `json:"autonomy"`
+	// Dispatch: who may hand it work: owner (只有我), channel (members of a channel it is in), team (anyone; an
+	// @mention in a channel it is not in brings it there). Confirm: work from people other than the owner waits for
+	// the owner's yes.
+	Dispatch string `json:"dispatch"`
+	Confirm  bool   `json:"confirm"`
+	Autonomy string `json:"autonomy"`
+	// Model: the runtime's model to use ("" = the runtime's default).
+	Model string `json:"model"`
 	// Repo: where its tasks run on its machine, a local git checkout (each task gets a worktree of it); "" for none.
 	Repo string `json:"repo"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, autonomy, repo"
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -152,7 +160,7 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Autonomy, &a.Repo); err != nil {
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo); err != nil {
 			panic(err)
 		}
 		out = append(out, a)
@@ -519,6 +527,13 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	for _, r := range b.RuntimeInfo {
 		if runtimes[r.Name] && len(info.RuntimeInfo) < 8 {
 			r.Version = trimmed(r.Version, 40)
+			models := []string{}
+			for _, m := range r.Models {
+				if modelRE.MatchString(m) && len(models) < 100 {
+					models = append(models, m)
+				}
+			}
+			r.Models = models
 			info.RuntimeInfo = append(info.RuntimeInfo, r)
 		}
 	}
@@ -560,7 +575,9 @@ type agentBody struct {
 	MachineID   *string `json:"machine_id"`
 	Runtime     *string `json:"runtime"`
 	Dispatch    *string `json:"dispatch"`
+	Confirm     *bool   `json:"confirm"`
 	Autonomy    *string `json:"autonomy"`
+	Model       *string `json:"model"`
 	Repo        *string `json:"repo"`
 }
 
@@ -588,15 +605,25 @@ func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
 	}
 	if b.Runtime != nil {
 		if !runtimes[*b.Runtime] {
-			return &httpError{400, "runtime 只能是 codex 或 claude"}
+			return &httpError{400, "runtime 只能是 codex、claude 或 pi"}
 		}
 		set("runtime", *b.Runtime)
 	}
 	if b.Dispatch != nil {
 		if !dispatches[*b.Dispatch] {
-			return &httpError{400, "dispatch 只能是 owner、confirm 或 open"}
+			return &httpError{400, "dispatch 只能是 owner、channel 或 team"}
 		}
 		set("dispatch", *b.Dispatch)
+	}
+	if b.Confirm != nil {
+		set("confirm", *b.Confirm)
+	}
+	if b.Model != nil {
+		m := strings.TrimSpace(*b.Model)
+		if m != "" && !modelRE.MatchString(m) {
+			return &httpError{400, "模型名只能含字母、数字和 . _ : / @ + -"}
+		}
+		set("model", m)
 	}
 	if b.Repo != nil {
 		set("repo", trimmed(*b.Repo, 300))

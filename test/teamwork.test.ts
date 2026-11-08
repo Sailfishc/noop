@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexCommand, codexEvent, type RunOptions, type Runtime } from "../src/runtimes";
+import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
 import { createWorker, followUpPrompt, gateEnv, parseTaskResult, prepareWorkdir, taskPrompt, type Claim } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
@@ -29,6 +29,36 @@ test("codex runs sandboxed in the work directory; a later turn resumes its sessi
   expect(codexCommand({ cwd: "/w", resume: "thr_1" }).slice(-3)).toEqual(["resume", "thr_1", "-"]);
 });
 
+test("Claude Code: stream-json steps, its session, its result; edits accepted, gates denied, model and resume passed", () => {
+  expect(claudeEvent('{"type":"system","subtype":"init","session_id":"s_1"}')).toEqual({ kind: "session", id: "s_1" });
+  expect(claudeEvent('{"type":"assistant","message":{"content":[{"type":"text","text":"hm"},{"type":"tool_use","name":"Bash","input":{"command":"bun test"}}]}}'))
+    .toEqual([{ kind: "step", text: "运行 bun test" }]);
+  expect(claudeEvent('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/src/orders.ts"}}]}}'))
+    .toEqual([{ kind: "step", text: "改 src/orders.ts" }]);
+  expect(claudeEvent('{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"x"}}]}}')).toBe(null);
+  expect(claudeEvent('{"type":"result","subtype":"success","is_error":false,"result":"done","session_id":"s_1"}'))
+    .toEqual([{ kind: "session", id: "s_1" }, { kind: "message", text: "done" }]);
+  expect(claudeEvent('{"type":"result","subtype":"error_max_turns","is_error":true,"session_id":"s_1"}'))
+    .toEqual([{ kind: "session", id: "s_1" }, { kind: "error", text: "error_max_turns" }]);
+  const cmd = claudeCommand({ writable: ["/r/.git"], model: "sonnet", resume: "s_1" });
+  expect(cmd.slice(0, 5)).toEqual(["claude", "-p", "--output-format", "stream-json", "--verbose"]);
+  expect(cmd.join(" ")).toContain("--permission-mode acceptEdits");
+  expect(cmd).toContain("Bash(git push --force:*)");
+  expect(cmd.join(" ")).toContain("--add-dir /r/.git --model sonnet --resume s_1");
+  expect(claudeCommand({}).join(" ")).not.toContain("--model");
+});
+
+test("pi: json mode steps, session and last message; model and session passed", () => {
+  expect(piEvent('{"type":"session","version":3,"id":"0199-ab","cwd":"/w"}')).toEqual({ kind: "session", id: "0199-ab" });
+  expect(piEvent('{"type":"tool_execution_start","toolCallId":"1","toolName":"bash","args":{"command":"go test ./..."}}')).toEqual({ kind: "step", text: "运行 go test ./..." });
+  expect(piEvent('{"type":"tool_execution_start","toolCallId":"2","toolName":"edit","args":{"path":"/w/a/b.go"}}')).toEqual({ kind: "step", text: "改 a/b.go" });
+  expect(piEvent('{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"好了"}],"stopReason":"stop"}}')).toEqual({ kind: "message", text: "好了" });
+  expect(piEvent('{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"x"}]}}')).toBe(null);
+  expect(piEvent('{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"No API key"}}')).toEqual({ kind: "error", text: "No API key" });
+  expect(piCommand({ model: "anthropic/claude-sonnet-5-5", resume: "0199-ab" })).toEqual(["pi", "-p", "--mode", "json", "--model", "anthropic/claude-sonnet-5-5", "--session", "0199-ab"]);
+  expect(Object.keys(RUNTIMES)).toEqual(["codex", "claude", "pi"]);
+});
+
 test("the result block decides the state; without one the message is the summary", () => {
   expect(parseTaskResult('改好了\n```json\n{"status":"review","summary":"加了索引","pr_title":"orders: index"}\n```')).toMatchObject({ status: "review", summary: "加了索引", pr_title: "orders: index" });
   expect(parseTaskResult('```json\n{"status":"needs_decision","summary":"s","question":"现在上线吗？","options":["A","B"]}\n```')).toMatchObject({ status: "needs_decision", options: ["A", "B"] });
@@ -40,7 +70,7 @@ test("the result block decides the state; without one the message is the summary
 const claim = (over: Partial<Claim["task"]> = {}, agent: Partial<Claim["agent"]> = {}): Claim => ({
   task: { id: "T-0001", channel_id: "c_1", thread_id: "msg_1", agent_id: "a_1", created_by: "u_1", title: "看下慢查询", body: "@acha 看下慢查询",
     state: "running", step: "", summary: "", decision: null, pr: null, branch: "agent/T-0001", session: "", claimed_by: "m_1", runs: 1, ...over },
-  agent: { id: "a_1", handle: "acha", name: "阿查", owner_id: "u_2", machine_id: "m_1", runtime: "codex", dispatch: "confirm", autonomy: "assist", ...agent },
+  agent: { id: "a_1", handle: "acha", name: "阿查", owner_id: "u_2", machine_id: "m_1", runtime: "codex", dispatch: "channel", autonomy: "assist", ...agent },
   channel: { id: "c_1", name: "支付后端", topic: "订单服务" },
   recent: [{ id: "msg_1", seq: 1, channel_id: "c_1", thread_id: null, author: { kind: "user", id: "u_1" }, text: "@acha 看下慢查询", mentions: [], created: 0 }],
   thread: [{ id: "msg_1", seq: 1, channel_id: "c_1", thread_id: null, author: { kind: "user", id: "u_1" }, text: "@acha 看下慢查询", mentions: [], created: 0 }],
@@ -56,6 +86,12 @@ test("prompts: the first turn has the channel, the task and the rules; a later o
   expect(p).toContain("- 张伟 (@zhangwei): @acha 看下慢查询");
   expect(p).toContain("Never push");
   expect(p).toContain('"status": "review" | "needs_decision" | "blocked" | "failed"');
+  expect(p).toContain("(none given: decide sensible criteria");
+  const m = taskPrompt(claim({ acceptance: "P99 < 100ms", mandate: { by: "u_1", rule: "team", confirm: true, autonomy: "cautious", branch: "agent/T-0001", runtime: "codex" } }),
+    { cwd: "/w/T-0001", writable: [] });
+  expect(m).toContain("# Acceptance criteria\nP99 < 100ms");
+  expect(m).toContain("Mandate: anyone in the team may hand you work; your owner confirmed this task. Autonomy cautious:");
+  expect(parseTaskResult('```json\n{"status":"review","summary":"s","acceptance":"- 不锁表"}\n```').acceptance).toBe("- 不锁表");
   const f = followUpPrompt(claim());
   expect(f).toContain("顺便看 /refunds");
   expect(f).not.toContain("# Channel");
@@ -193,4 +229,23 @@ test("no runtime on this machine: the task is blocked with what to do", async ()
   await w.idle();
   expect(calls.at(-2)?.body.state).toBe("blocked");
   expect(calls.at(-2)?.body.summary).toContain("没有 codex");
+});
+
+test("the agent's runtime and model run the task; criteria the agent chose go back when people gave none", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt = fakeRuntime([{ text: '```json\n{"status":"review","summary":"好了","acceptance":"- P99 < 200ms"}\n```' }], seen);
+  const w = createWorker({
+    api: fakeApi({ "T-0001": claim({}, { runtime: "pi", model: "openai/gpt-5.5" }), "T-0002": claim({ id: "T-0002", acceptance: "人写的" }, { runtime: "pi" }) }, calls),
+    maxParallel: 2, workRoot: W, runtimes: { pi: { ...rt, name: "pi" } }, stepEveryMs: 0, log: () => {},
+  });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  w.onTask({ ...claim().task, id: "T-0002", state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(seen.map((o) => o.model).sort()).toEqual([undefined, "openai/gpt-5.5"].sort() as any);
+  const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report`).at(-1)!.body;
+  expect(last("T-0001").acceptance).toBe("- P99 < 200ms");
+  expect(last("T-0002").acceptance).toBeUndefined();
+  rmSync(W, { recursive: true, force: true });
 });

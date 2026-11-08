@@ -3,6 +3,7 @@
 // points at the team server. The machine reports what it can run, keeps one socket open (that is what "online"
 // means to the team), hears every message in the channels its agents are in, and runs their tasks (teamwork.ts).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Cfg, HOME_DIR } from "./core";
 import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
@@ -10,7 +11,7 @@ import { gitAfterRun, refreshPRs } from "./gitflow";
 
 export type TeamAgent = {
   id: string; handle: string; name: string; owner_id: string; machine_id: string | null; runtime: string; dispatch: string; autonomy: string;
-  description?: string; repo?: string;
+  confirm?: boolean; model?: string; description?: string; repo?: string;
 };
 export type TeamMessage = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: { kind: "user" | "agent"; id: string };
@@ -25,12 +26,13 @@ export function machineReport(cfg: Cfg, which: (bin: string) => boolean = (b) =>
   return {
     os: process.platform === "darwin" ? "macOS" : process.platform,
     arch: process.arch,
-    runtimes: ["codex", "claude"].filter(which),
+    runtimes: ["codex", "claude", "pi"].filter(which),
     max_sessions: Number(cfg.host?.max_parallel) || 3,
   };
 }
 
-export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null };
+/** models: what the agent's owner can pick from (the runtime's own default is always there too: ""). */
+export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null; models: string[] };
 export type GitCred = { provider: "github" | "gitlab"; host: string; configured: boolean; user: string; via: string };
 type Run = (cmd: string[]) => { code: number; out: string } | null;
 const run: Run = (cmd) => {
@@ -42,16 +44,44 @@ const run: Run = (cmd) => {
 };
 const versionOf = (s: string) => s.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? "";
 
-/** Which runtimes are installed here, their versions, and whether they are logged in (null: can't tell). */
-export function detectRuntimes(r: Run = run): RuntimeInfo[] {
+/** Claude Code's model aliases and the current full ids. */
+export const CLAUDE_MODELS = ["opus", "sonnet", "haiku", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"];
+
+/** The model in Codex's own config (~/.codex/config.toml), so the default can be named. */
+function codexModels(home = homedir()): string[] {
+  try {
+    const m = readFileSync(join(home, ".codex", "config.toml"), "utf8").match(/^\s*model\s*=\s*"([^"]+)"/m);
+    return m ? [m[1]!] : [];
+  } catch { return []; }
+}
+
+/** `pi --list-models` prints the models pi has credentials for, one per row: "provider  model  context …". */
+export function piModels(out: string): string[] {
+  const rows = out.split("\n").slice(1).map((l) => l.trim().split(/\s+/)).filter((c) => c.length >= 2 && /^[\w.-]+$/.test(c[0]!));
+  return [...new Set(rows.map((c) => `${c[0]}/${c[1]}`))].slice(0, 80);
+}
+
+/** Which runtimes are installed here, their versions, whether they are logged in (null: can't tell), and their models. */
+export function detectRuntimes(r: Run = run, home = homedir()): RuntimeInfo[] {
   const out: RuntimeInfo[] = [];
   const codex = r(["codex", "--version"]);
   if (codex) {
     const st = r(["codex", "login", "status"]);
-    out.push({ name: "codex", version: versionOf(codex.out), installed: codex.code === 0, logged_in: st ? st.code === 0 && !/not logged in/i.test(st.out) : null });
+    out.push({ name: "codex", version: versionOf(codex.out), installed: codex.code === 0,
+      logged_in: st ? st.code === 0 && !/not logged in/i.test(st.out) : null, models: codexModels(home) });
   }
   const claude = r(["claude", "--version"]);
-  if (claude) out.push({ name: "claude", version: versionOf(claude.out), installed: claude.code === 0, logged_in: null });
+  if (claude) {
+    const st = r(["claude", "auth", "status"]);
+    const logged = st ? st.code === 0 && !/not logged in|"loggedIn":\s*false/i.test(st.out) : null;
+    out.push({ name: "claude", version: versionOf(claude.out), installed: claude.code === 0, logged_in: logged, models: CLAUDE_MODELS });
+  }
+  const pi = r(["pi", "--version"]);
+  if (pi) {
+    const ls = r(["pi", "--list-models"]);
+    const models = ls && ls.code === 0 ? piModels(ls.out) : [];
+    out.push({ name: "pi", version: versionOf(pi.out), installed: pi.code === 0, logged_in: ls ? models.length > 0 : null, models });
+  }
   return out;
 }
 

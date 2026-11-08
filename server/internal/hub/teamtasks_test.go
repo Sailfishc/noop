@@ -14,7 +14,7 @@ type taskEnv struct {
 }
 
 // newTaskEnv: 张伟 (admin), 王磊 who owns @acha on his Mac, 刘丽; all three and @acha in one channel.
-func newTaskEnv(t *testing.T, dispatch string) *taskEnv {
+func newTaskEnv(t *testing.T, dispatch string, confirm bool) *taskEnv {
 	e := &taskEnv{env: newEnv(t)}
 	e.zw = e.join("zhang@corp.com", "zhangwei", "admin", "")
 	e.wl = e.join("wang@corp.com", "wanglei", "member", e.zw.session)
@@ -23,7 +23,7 @@ func newTaskEnv(t *testing.T, dispatch string) *taskEnv {
 	e.token, e.mid = r.body["token"].(string), r.body["machine"].(map[string]any)["id"].(string)
 	r = e.do("POST", "/api/v1/machines", e.zw.session, map[string]any{"name": "张伟的 Mac"})
 	e.otherToken = r.body["token"].(string)
-	r = e.do("POST", "/api/v1/agents", e.wl.session, map[string]any{"handle": "acha", "name": "阿查", "machine_id": e.mid, "dispatch": dispatch, "repo": "~/work/pay"})
+	r = e.do("POST", "/api/v1/agents", e.wl.session, map[string]any{"handle": "acha", "name": "阿查", "machine_id": e.mid, "dispatch": dispatch, "confirm": confirm, "repo": "~/work/pay", "model": "gpt-5.5"})
 	e.aid = r.body["id"].(string)
 	check(t, "agent has its repo", r.body["repo"] == "~/work/pay", r)
 	r = e.do("POST", "/api/v1/channels", e.zw.session, map[string]any{"name": "支付后端", "topic": "订单服务", "members": []any{
@@ -53,7 +53,7 @@ func (e *taskEnv) inbox(s string) []any {
 }
 
 func TestTaskConfirmClaimReport(t *testing.T) {
-	e := newTaskEnv(t, "confirm")
+	e := newTaskEnv(t, "channel", true)
 	m := e.post(e.zw.session, "@acha 看下 /orders 的慢查询\n昨晚 P99 3 秒", "")
 	r := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil)
 	ts := r.body["tasks"].([]any)
@@ -61,6 +61,10 @@ func TestTaskConfirmClaimReport(t *testing.T) {
 	tk := ts[0].(map[string]any)
 	id := tk["id"].(string)
 	check(t, "numbered, titled, waiting for the owner", id == "T-0001" && tk["title"] == "看下 /orders 的慢查询" && tk["state"] == "pending" && tk["branch"] == "agent/T-0001", resp{raw: []byte(fmt.Sprint(tk))})
+	md := tk["mandate"].(map[string]any)
+	check(t, "the mandate: who asked, under which rule, how far", md["by"] == e.zw.id && md["rule"] == "channel" && md["confirm"] == true &&
+		md["branch"] == "agent/T-0001" && md["autonomy"] == "assist" && md["model"] == "gpt-5.5", resp{raw: []byte(fmt.Sprint(md))})
+	check(t, "no acceptance criteria yet", tk["acceptance"] == "")
 	e.post(e.zw.session, "没 @ 的消息", "")
 	check(t, "plain messages are not tasks", len(e.do("GET", "/api/v1/tasks", e.zw.session, nil).body["tasks"].([]any)) == 1)
 
@@ -77,6 +81,15 @@ func TestTaskConfirmClaimReport(t *testing.T) {
 	check(t, "claim", r.status == 200 && r.body["task"].(map[string]any)["state"] == "running" && r.body["task"].(map[string]any)["runs"] == float64(1), r)
 	check(t, "the claim brings the request", len(r.body["new"].([]any)) == 1 && r.body["channel"].(map[string]any)["topic"] == "订单服务", r)
 	check(t, "and the agent's repo", r.body["agent"].(map[string]any)["repo"] == "~/work/pay", r)
+
+	// acceptance criteria: the agent may propose them while people wrote none; people can always rewrite them
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"acceptance": "P99 < 200ms"})
+	check(t, "the agent proposes criteria", e.task(id)["acceptance"] == "P99 < 200ms")
+	check(t, "a bystander cannot edit them", e.do("PATCH", "/api/v1/tasks/"+id, e.ll.session, map[string]any{"acceptance": "x"}).status == 403)
+	r = e.do("PATCH", "/api/v1/tasks/"+id, e.zw.session, map[string]any{"acceptance": "P99 < 100ms，不锁表"})
+	check(t, "the creator rewrites them", r.body["acceptance"] == "P99 < 100ms，不锁表", r)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"acceptance": "随便"})
+	check(t, "the agent does not overwrite people's criteria", e.task(id)["acceptance"] == "P99 < 100ms，不锁表")
 
 	// progress stays on the card; the result goes to the thread
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"step": "读 orders 表的执行计划", "session": "thr_1"})
@@ -122,16 +135,16 @@ func TestTaskConfirmClaimReport(t *testing.T) {
 }
 
 func TestTaskDispatchRules(t *testing.T) {
-	e := newTaskEnv(t, "owner")
+	e := newTaskEnv(t, "owner", true)
 	e.post(e.zw.session, "@acha 帮个忙", "")
 	tk := e.task("T-0001")
 	check(t, "only the owner may dispatch: closed with why", tk["state"] == "closed" && tk["summary"] == "@acha 只接主人派的活", resp{raw: []byte(fmt.Sprint(tk))})
 	e.post(e.wl.session, "@acha 我自己派的", "")
 	check(t, "the owner's own needs no confirmation", e.task("T-0002")["state"] == "queued")
 
-	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"dispatch": "open"})
+	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"dispatch": "channel", "confirm": false})
 	m := e.post(e.ll.session, "@acha 开放派活", "")
-	check(t, "open: anyone in the channel", e.task("T-0003")["state"] == "queued")
+	check(t, "channel, no confirm: anyone in the channel", e.task("T-0003")["state"] == "queued")
 	e.post(e.zw.session, "@acha 再说一次", m["id"].(string))
 	check(t, "an @ in its own thread is not a second task", e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"] != nil &&
 		len(e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)) == 1)
@@ -144,7 +157,7 @@ func TestTaskDispatchRules(t *testing.T) {
 	check(t, "a member who is neither cannot cancel", e.do("POST", "/api/v1/tasks/T-0002/cancel", e.ll.session, nil).status == 403)
 
 	// declined by the owner
-	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"dispatch": "confirm"})
+	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"confirm": true})
 	e.post(e.ll.session, "@acha 帮我查日志", "")
 	r := e.do("POST", "/api/v1/tasks/T-0004/decline", e.wl.session, map[string]any{"reason": "这周排满了"})
 	check(t, "declined with a reason", r.body["state"] == "closed" && r.body["summary"] == "主人没有接这个活：这周排满了", r)
@@ -155,7 +168,7 @@ func TestTaskDispatchRules(t *testing.T) {
 }
 
 func TestTaskPRsAndGitlabHook(t *testing.T) {
-	e := newTaskEnv(t, "open")
+	e := newTaskEnv(t, "channel", false)
 	e.post(e.zw.session, "@acha 改一下", "")
 	e.do("POST", "/api/v1/tasks/T-0001/claim", e.token, nil)
 	e.do("POST", "/api/v1/tasks/T-0001/report", e.token, map[string]any{"state": "review", "summary": "改好了",
@@ -179,4 +192,41 @@ func TestTaskPRsAndGitlabHook(t *testing.T) {
 	check(t, "merged on Ant Code → done", r.status == 200 && tk["state"] == "done" && tk["pr"].(map[string]any)["state"] == "merged", resp{raw: []byte(fmt.Sprint(tk))})
 	r = hook("s3cret", map[string]any{"object_kind": "merge_request", "object_attributes": map[string]any{"source_branch": "feature/x", "state": "merged"}})
 	check(t, "other branches are not tasks", r.body["ignored"] == "not a task branch", r)
+}
+
+func TestTaskTeamScopeAndAcceptance(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	r := e.do("POST", "/api/v1/channels", e.ll.session, map[string]any{"name": "产品", "members": []any{}})
+	other := r.body["id"].(string)
+	say := func(text string) {
+		if r := e.do("POST", "/api/v1/channels/"+other+"/messages", e.ll.session, map[string]any{"text": text}); r.status != 200 {
+			t.Fatalf("post: %d %s", r.status, r.raw)
+		}
+	}
+	say("@acha 帮忙看下需求")
+	check(t, "channel scope: not called where it is not", len(e.do("GET", "/api/v1/tasks", e.zw.session, nil).body["tasks"].([]any)) == 0)
+
+	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"dispatch": "team", "confirm": true})
+	say("@acha 帮忙看下需求\n验收标准：\n- 列出三个风险\n- 给出排期")
+	ts := e.do("GET", "/api/v1/tasks?channel="+other, e.ll.session, nil).body["tasks"].([]any)
+	check(t, "team scope: a task anywhere", len(ts) == 1, resp{raw: []byte(fmt.Sprint(ts))})
+	tk := ts[0].(map[string]any)
+	md := tk["mandate"].(map[string]any)
+	check(t, "it joined, and waits for its owner", tk["state"] == "pending" && md["joined"] == true && md["rule"] == "team", resp{raw: []byte(fmt.Sprint(tk))})
+	check(t, "the agent is now in the channel", e.h.isMember(other, "agent", e.aid))
+	check(t, "acceptance criteria come out of the message", tk["acceptance"] == "- 列出三个风险\n- 给出排期" && tk["body"] == "@acha 帮忙看下需求", resp{raw: []byte(fmt.Sprint(tk))})
+}
+
+func TestDispatchMigration(t *testing.T) {
+	e := newTaskEnv(t, "channel", true)
+	e.h.db.Exec("UPDATE agents SET dispatch = 'open', confirm = 1 WHERE id = ?", e.aid)
+	if err := initSchema(e.h.db); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := e.h.agent(e.aid)
+	check(t, "open → channel without confirmation", a.Dispatch == "channel" && !a.Confirm, resp{raw: []byte(fmt.Sprint(a))})
+	e.h.db.Exec("UPDATE agents SET dispatch = 'confirm', confirm = 0 WHERE id = ?", e.aid)
+	_ = initSchema(e.h.db)
+	a, _ = e.h.agent(e.aid)
+	check(t, "confirm → channel with confirmation", a.Dispatch == "channel" && a.Confirm, resp{raw: []byte(fmt.Sprint(a))})
 }
