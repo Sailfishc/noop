@@ -27,7 +27,7 @@ import { answerFromChat, appendEvent, cancelTask, drainInbound, feed, handleOwne
 import { followUpTarget, reopenTask, type BrainOut, ClaudeModel, SYSTEM, dataActs, localStore, logBrain, think } from "./brain";
 import { runTool } from "../cloud/src/tools";
 import { cloudDeploy, startCloudBridge } from "./cloud";
-import { startTeamAgent } from "./teamagent";
+import { startTeamAgent, teamEnabled } from "./teamagent";
 import { adoptCloudUrl, readHubToml } from "./sync";
 import { judgeAccuracy, level, needsApproval, proposeBatch, resolveProposals, routineQueued, supersedeProposed } from "./autonomy";
 import { CODE, UPDATE_REQUEST, type UpdateState, setUpdateState, updateState, allowedClis, capOk, idTagFor, isPrimary, runningRev, setApprovalGate, setIdTag } from "./core";
@@ -695,7 +695,28 @@ Reply with exactly one fenced json block: {"<task id>": {"requires": "", "cli": 
   });
 }
 
+/** A machine on a TeamAgent server runs only the TeamAgent worker: none of noop's single-owner fleet (data repo,
+ * journal, routines, local hub server), so a fresh machine needs nothing but config.local.toml. Self-update still
+ * follows origin (only when no task runs); the service manager restarts the process on the new code. */
+async function teamDaemon(cfg: Cfg) {
+  const host = hostName(cfg);
+  const ta = startTeamAgent(cfg)!;
+  console.log(`teamagent daemon on ${host} → ${String(cfg.cloud.url)}`);
+  const every = (cfg.update?.check_minutes ?? 30) * 60_000;
+  for (;;) {
+    await Bun.sleep(every);
+    if (ta.worker.running().length) continue;
+    if (await selfUpdate().catch(() => false)) {
+      console.log("self-updated; restarting");
+      ta.stop();
+      await ta.worker.idle();
+      process.exit(0);
+    }
+  }
+}
+
 async function daemon(cfg: Cfg) {
+  if (teamEnabled(cfg)) return teamDaemon(cfg);
   const host = hostName(cfg);
   const every = (cfg.host?.tick_seconds ?? 60) * 1000;
   console.log(`hub daemon on ${host} caps=${hostCaps(cfg).join(",")} tick=${every / 1000}s parallel≤${cfg.host?.max_parallel ?? "cores/3"}`);

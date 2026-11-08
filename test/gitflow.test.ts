@@ -120,3 +120,24 @@ test("after a run: the task branch is pushed and its PR opened; nothing to push,
     rmSync(W, { recursive: true, force: true });
   }
 });
+
+test("after a run in a repository with no origin: the work stays on the local task branch", async () => {
+  const W = mkdtempSync(join(tmpdir(), "gitflow-"));
+  try {
+    const repo = join(W, "repo");
+    sh(W, "git", "init", "-q", "-b", "main", repo);
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-qm", "init");
+    const c = claim(repo);
+    const wd = await prepareWorkdir(c, join(W, "work"));
+    writeFileSync(join(wd.cwd, "b.txt"), "b\n");
+    sh(wd.cwd, "git", "add", ".");
+    sh(wd.cwd, "git", "commit", "-qm", "b");
+    const r = await gitAfterRun({})(c, { status: "review", summary: "加了 b" }, wd);
+    expect(r?.note).toBe("改动在本地分支 agent/T-0001 上；仓库没有 origin，没有推送也没有开 PR");
+    expect(sh(repo, "git", "branch", "--list", "agent/*")).toContain("agent/T-0001");
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
+});

@@ -76,7 +76,7 @@ git clone https://github.com/Sailfishc/noop ~/teamagent && cd ~/teamagent
 bun install
 ```
 
-在客户端的「我的机器」里添加这台电脑，把显示的几行写进 `~/teamagent/config.local.toml`（token 只显示一次）：
+在客户端的「我的机器」里添加这台电脑，把显示的几行写进 `~/.noop/data/config.local.toml`（目录不存在就建一个；token 只显示一次）：
 
 ```toml
 [cloud]
@@ -94,11 +94,14 @@ host = "code.公司.com"
 token = "…"                 # 主人自己的 token，对仓库至少要有 Developer 权限
 ```
 
-然后启动守护进程（长期使用建议交给 launchd 或 systemd）：
+然后在仓库目录里启动守护进程（长期使用建议交给 launchd 或 systemd）：
 
 ```sh
 bun run daemon
+# 输出「已接入 …：<机器名>，Agent @xxx」就说明连上了
 ```
+
+有了 TeamAgent 的机器 token，守护进程只跑 TeamAgent：不需要 noop 的 `init`，也不会启动 noop 单人模式的那些东西。
 
 守护进程会跟随这个仓库的 `main` 自动更新：发现 `origin/main` 有新提交时，先跑 `bun test`，通过了才切换，失败就回滚。所以 `main` 就是线上版本，合进 `main` 的东西会自动到达所有机器。
 
@@ -107,6 +110,30 @@ bun run daemon
 1. 在「我的 Agent」里新建一个 Agent，选它跑在哪台机器上，填它在那台机器上用的仓库路径（比如 `~/work/orders`），再选派活方式。
 2. 在频道里 @它说一句话。需要确认的话，主人在任务卡或「待你决定」里点「确认开工」。
 3. 干完后线程里会有 Agent 的总结和 PR 链接。PR 的 CI 状态由机器每两分钟查一次。
+
+### 在一台电脑上先跑通
+
+想先自己一个人、一个 Agent 跑通，可以把服务端、客户端和守护进程都放在同一台 Mac 上。前提是装好 Go、Bun、git、`nsh` 和已登录的 Codex。
+
+```sh
+git clone https://github.com/Sailfishc/noop ~/teamagent && cd ~/teamagent && bun install
+
+# 1. 服务端（一个终端）
+cd server && go build -o teamagent-server ./cmd/teamagent-server
+./teamagent-server invite -data ~/teamagent-data -email 你@公司.com -role admin -url http://127.0.0.1:8080
+./teamagent-server -addr 127.0.0.1:8080 -data ~/teamagent-data
+
+# 2. 客户端（另一个终端）
+cd ~/teamagent/app && nsh run
+```
+
+3. 在 App 里选「我有邀请」，粘贴上面打印的邀请链接，绑定验证器 App。
+4. 在「Agent 与机器」里添加机器，把显示的几行写进 `~/.noop/data/config.local.toml`，然后启动守护进程：`cd ~/teamagent && bun run daemon`。
+5. 新建 Agent，机器选刚才那台，仓库路径填一个本地仓库（比如 `~/work/demo`），然后建一个频道把它拉进来。
+6. 在频道里发「@它 帮我加一个 hello.txt」。主人给自己的 Agent 派活不需要确认，会直接开工。任务卡会依次显示「等机器认领 → 进行中 → 待验收」，Agent 的总结出现在线程里，改动在仓库的 `agent/T-0001` 分支上。
+7. 在线程里回复一句，Agent 会接着同一个会话继续做。
+
+如果这个仓库没有 `origin`，Agent 的改动只留在本地分支上，不会推送或开 PR。要试 PR，就用一个有 GitHub 远端的仓库，并在 `config.local.toml` 里配好 `[git.github]`。
 
 ### 5. Ant Code webhook（可选）
 

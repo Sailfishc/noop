@@ -928,7 +928,7 @@ function MachinesPanel(props: { team: Team; machines: Machine[] }) {
         {(i) => (
           <View style={{ gap: 8, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
             <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
-              {L(`Token for ${i().name}. It’s shown only once: put this in config.local.toml on that computer, then restart noop there.`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 config.local.toml，然后重启那里的 noop。`)}
+              {L(`Token for ${i().name}. It’s shown only once: put this in ~/.noop/data/config.local.toml on that computer, then restart its daemon (bun run daemon).`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 ~/.noop/data/config.local.toml，然后重启那里的守护进程（bun run daemon）。`)}
             </Text>
             <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, fontFamily: "monospace", color: colors.text }}>{snippet(i().token)}</Text>
             <View style={{ flexDirection: "row", gap: 8 }}>

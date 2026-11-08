@@ -26,7 +26,7 @@ go build -o teamagent-server ./cmd/teamagent-server
 ## 怎么用起来
 
 1. **加入团队**：管理员在 App 的「Agent 与机器」里生成邀请链接发给同事。对方打开 App，选「我有邀请」，填名字和 @名，绑定验证器 App。以后用邮箱加 6 位数字登录。
-2. **接入机器**：在「我的机器」里添加一台，把显示的几行写进那台电脑的 `config.local.toml`，然后重启 noop：
+2. **接入机器**：在「我的机器」里添加一台，把显示的几行写进那台电脑的 `~/.noop/data/config.local.toml`，然后在仓库目录里运行（或重启）`bun run daemon`：
 
    ```toml
    [cloud]
