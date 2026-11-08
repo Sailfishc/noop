@@ -23,6 +23,7 @@ type channelView struct {
 	Slug     string   `json:"slug"`
 	Name     string   `json:"name"`
 	Topic    string   `json:"topic"`
+	Repo     string   `json:"repo"` // default repository of its tasks: host/owner/name, "" = none
 	Archived bool     `json:"archived"`
 	Created  int64    `json:"created"`
 	Members  []member `json:"members"`
@@ -31,8 +32,8 @@ type channelView struct {
 
 func (h *Hub) channel(id string) (channelView, bool) {
 	var c channelView
-	err := h.db.QueryRow("SELECT id, slug, name, topic, archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
-		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Archived, &c.Created)
+	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Archived, &c.Created)
 	if err != nil {
 		return c, false
 	}
@@ -255,9 +256,18 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 	var b struct {
 		Name     *string `json:"name"`
 		Topic    *string `json:"topic"`
+		Repo     *string `json:"repo"`
 		Archived *bool   `json:"archived"`
 	}
 	_ = q.json(&b)
+	if b.Repo != nil {
+		r := normRemote(*b.Repo)
+		if r == "" && strings.TrimSpace(*b.Repo) != "" {
+			errJSON(w, 400, "仓库要写成地址，比如 https://github.com/owner/name")
+			return
+		}
+		h.must(h.db.Exec("UPDATE channels SET repo = ? WHERE id = ?", r, c.ID))
+	}
 	if b.Name != nil {
 		if n := trimmed(*b.Name, 40); n != "" {
 			h.must(h.db.Exec("UPDATE channels SET name = ? WHERE id = ?", n, c.ID))

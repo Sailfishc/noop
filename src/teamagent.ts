@@ -8,10 +8,11 @@ import { dirname, join } from "node:path";
 import { type Cfg, HOME_DIR } from "./core";
 import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
 import { gitAfterRun, refreshPRs } from "./gitflow";
+import { repoBook, type RepoBook } from "./repos";
 
 export type TeamAgent = {
   id: string; handle: string; name: string; owner_id: string; machine_id: string | null; runtime: string; dispatch: string; autonomy: string;
-  confirm?: boolean; model?: string; description?: string; repo?: string;
+  confirm?: boolean; model?: string; description?: string; repo?: string; memory?: string;
 };
 export type TeamMessage = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: { kind: "user" | "agent"; id: string };
@@ -121,7 +122,7 @@ let handler: Handler = (m, agents) => console.log(`teamagent: ${agents.map((a) =
 /** Who acts on a message for this machine's agents (M2: the dispatcher). */
 export const onAgentMessage = (h: Handler) => { handler = h; };
 
-export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: string) => void; afterRun?: AfterRun; worker?: Partial<WorkerOptions> } = {}) {
+export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: string) => void; afterRun?: AfterRun; worker?: Partial<WorkerOptions>; repos?: RepoBook } = {}) {
   if (!teamEnabled(cfg)) return null;
   const base = String(cfg.cloud.url).replace(/\/$/, "");
   const auth = { Authorization: `Bearer ${cfg.server.token}` };
@@ -138,11 +139,14 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     if (r.status === 401) log("服务端不认这个机器 token（机器被移除了？）：在 App 的「我的机器」里重新添加");
     return r.ok ? (r.json() as Promise<any>) : null;
   };
+  // the checkouts here, by remote; tasks name their repository by remote and the machine finds (or clones) it
+  const roots = Array.isArray(cfg.teamagent?.roots) ? cfg.teamagent.roots.map(String) : undefined;
+  const repos = opts.repos ?? repoBook({ roots, clones: join(HOME_DIR, "teamagent", "repos"), extra: () => agents.map((a) => a.repo ?? "").filter(Boolean) });
   // runtimes and Git credentials change rarely and cost a few process spawns and HTTP calls: look every 10 minutes
   let probe: { at: number; runtime_info: RuntimeInfo[]; git: GitCred[] } | null = null;
   const report = async () => {
     if (!probe || Date.now() - probe.at > 10 * 60_000) probe = { at: Date.now(), runtime_info: detectRuntimes(), git: await detectGit(cfg) };
-    const body = { ...machineReport(cfg), runtime_info: probe.runtime_info, git: probe.git };
+    const body = { ...machineReport(cfg), runtime_info: probe.runtime_info, git: probe.git, repos: repos.list() };
     const r = await api("/api/v1/machine", { method: "PUT", body: JSON.stringify(body) });
     if (r?.agents) agents = r.agents;
     return r;
@@ -168,6 +172,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
 
   const worker = createWorker({
     api: (path, init) => api(path, init), maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
+    resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
     workRoot: join(HOME_DIR, "teamagent", "work"), logDir: join(HOME_DIR, "logs", "teamagent"), ...opts.worker,
   });
   const mine = (agentId: string) => agents.some((a) => a.id === agentId);

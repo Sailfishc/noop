@@ -71,10 +71,17 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
     },
     [`PATCH ${URL}/api/v1/tasks/*`]: (r: { url: string; body?: string | null }) => {
       const id = r.url.match(/tasks\/([^/?]+)/)![1];
-      const t = { ...live.get(id), ...JSON.parse(r.body!) };
-      log.acts.push(`${id} acceptance`);
+      const b = JSON.parse(r.body!);
+      const t = { ...live.get(id), ...b, ...(b.repo !== undefined ? { repo: b.repo.replace(/^https?:\/\//, "") } : {}) };
+      log.acts.push(`${id} ${Object.keys(b).join(",")}${b.repo !== undefined ? ` ${b.repo}` : ""}`);
       live.set(id, t);
       return { body: t };
+    },
+    [`GET ${URL}/api/v1/repos`]: { body: { repos: [{ remote: "github.com/acme/pay", name: "pay", machines: ["m_1"] }, { remote: "code.corp.com/fin/ledger", name: "ledger", machines: [] }] } },
+    [`PATCH ${URL}/api/v1/channels/c_1`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.patches.push({ channel: b });
+      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, "") } };
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
@@ -536,6 +543,48 @@ describe("channel v2", () => {
     await app.waitUntil(() => log.acts.includes("T-0001 acceptance"));
     await app.waitFor("text:P99 < 200ms");
   });
+
+  test("where a task runs: a general task until a repository is picked, before it first runs", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({ created_by: "u_1", state: "pending" })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-repo");
+    expect(app.shows("text:none: a general task in an empty folder")).toBe(true);
+    expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
+    await app.press("id:task-T-0001-repo-edit");
+    await app.waitFor("id:task-T-0001-repo-picker-pay");
+    expect(app.shows("text:code.corp.com/fin/ledger")).toBe(true);
+    await app.press("id:task-T-0001-repo-picker-pay");
+    await app.waitUntil(() => log.acts.includes("T-0001 repo github.com/acme/pay"));
+    await app.waitFor("id:task-T-0001-repo-label");
+    expect(app.shows("text:acme/pay")).toBe(true);
+  });
+
+  test("a task that already ran keeps its repository", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-repo");
+    expect(app.shows("text:acme/pay")).toBe(true);
+    expect(app.shows("id:task-T-0001-repo-edit")).toBe(false);
+  });
+
+  test("a channel's default repository is set from its members panel", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-repo");
+    expect(app.shows("text:/^None: tasks run where the message says/")).toBe(true);
+    await app.press("id:channel-repo-edit");
+    await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
+    await app.press("id:channel-repo-picker-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ channel: { repo: "https://github.com/acme/web" } });
+    await app.waitFor("id:channel-repo-label");
+    expect(app.shows("text:acme/web")).toBe(true);
+  });
 });
 
 describe("tasks", () => {
@@ -593,5 +642,20 @@ describe("tasks", () => {
     await app.press("id:agent-repo-save-acha");
     await app.waitUntil(() => log.patches.length === 1);
     expect(log.patches).toEqual([{ repo: "~/work/pay" }]);
+  });
+
+  test("an agent's memory is edited in Settings › My agents; its machine lists the repositories it has", async () => {
+    const log = newLog();
+    const withRepos = { ...mac, repos: [{ remote: "github.com/acme/pay", name: "pay" }] };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [withRepos] } } } });
+    await app.press("id:user-menu");
+    await app.press("id:menu-agents");
+    await app.type("id:agent-memory-acha", "- 支付服务用 make test");
+    await app.press("id:agent-memory-save-acha");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches).toEqual([{ memory: "- 支付服务用 make test" }]);
+    await app.press("id:settings-nav-machines");
+    await app.waitFor("id:machine-m_1-repos");
+    expect(app.shows("text:acme/pay")).toBe(true);
   });
 });

@@ -9,7 +9,7 @@ import { LOGO } from "./logo";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
-  type Agent, type Member, type Message, type Session, type Task, type TaskState, type Team,
+  repoLabel, type Agent, type Member, type Message, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
@@ -635,7 +635,7 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
     <View style={{ flex: 1 }}>
       <Header
         title={`# ${channel()?.name ?? ""}`}
-        subtitle={channel()?.topic || undefined}
+        subtitle={[channel()?.topic, channel()?.repo ? repoLabel(channel()!.repo!) : ""].filter(Boolean).join(" · ") || undefined}
         back={props.back}
         onBack={props.onBack}
         right={
@@ -695,6 +695,43 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
   );
 }
 
+/** The channel's default repository: where its tasks run when the message names none. */
+function ChannelRepo(props: { team: Team; channelId: string }) {
+  const t = props.team;
+  const editing = signal(false);
+  const channel = () => t.channels().find((c) => c.id === props.channelId);
+  const repo = () => channel()?.repo ?? "";
+  return (
+    <View testID="channel-repo" style={{ gap: 6, paddingTop: 10 }}>
+      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("DEFAULT REPOSITORY", "默认仓库")}</Text>
+      <If when={!editing()}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.text : colors.muted }}>
+            {repo() ? repoLabel(repo()) : L("None: tasks run where the message says, or as general tasks.", "没有：任务按消息里写的仓库做，没写就是通用任务。")}
+          </Text>
+          <Btn small kind="ghost" testID="channel-repo-edit" label={repo() ? L("Change", "更换") : L("Set", "设置")} onPress={() => editing.set(true)} />
+        </View>
+        <Text style={{ fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("A repository named in the message, or used earlier in the thread, comes first.", "消息里写了仓库地址、或者线程里之前用过仓库时，以那个为准。")}</Text>
+      </If>
+      <If when={editing()}>
+        <RepoPicker
+          team={t}
+          value={repo()}
+          testID="channel-repo-picker"
+          noneLabel={L("Clear", "清除")}
+          onCancel={() => editing.set(false)}
+          onPick={async (remote) => {
+            const r = await t.patchChannel(props.channelId, { repo: remote });
+            if (!r.ok) return failed(r);
+            editing.set(false);
+            return null;
+          }}
+        />
+      </If>
+    </View>
+  );
+}
+
 /** The channel's people, and its agents by owner (with runtime and state); add or remove members. */
 function MembersPanel(props: { team: Team; channelId: string; back?: boolean; onClose: () => void; onAgent: (handle: string) => void }) {
   const t = props.team;
@@ -748,6 +785,7 @@ function MembersPanel(props: { team: Team; channelId: string; back?: boolean; on
       />
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 16, paddingBottom: 16, gap: 4 }}>
         <ErrorNote text={error()} testID="members-error" />
+        <ChannelRepo team={t} channelId={props.channelId} />
         <If when={adding()}>
           <View style={{ gap: 2, marginTop: 10, padding: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
             <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.muted }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>
@@ -847,7 +885,10 @@ function TaskFacts(props: { team: Team; task: Task }) {
         <If when={agent()?.model}>{plain(agent()?.model ?? "")}</If>
         {plain(machine()?.name ?? L("no machine", "没有机器"), `task-${task().id}-machine`)}
       </>)}
-      {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
+      <TaskRepo team={t} task={task()} />
+      <If when={task().repo || agent()?.repo}>
+        {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
+      </If>
       <If when={task().mandate}>
         {fact(L("Mandate", "授权"), <Text testID={`task-${task().id}-mandate`} style={{ flex: 1, flexShrink: 1, fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>)}
       </If>
@@ -890,6 +931,99 @@ export function mandateLine(t: Team, task: Task): string {
     L(`autonomy: ${autonomy}`, `自主程度：${autonomy}`),
     L(`may only push ${m.branch} and open a PR`, `只能推 ${m.branch} 并开 PR`),
   ].filter(Boolean).join(" · ");
+}
+
+/** Pick a repository: one the team's machines have, or an address typed in. "" = none. */
+function RepoPicker(props: { team: Team; value: string; testID: string; onPick: (remote: string) => Promise<string | null>; onCancel: () => void; noneLabel: string }) {
+  const known = signal<Repo[]>([]);
+  const draft = signal(props.value ? `https://${props.value}` : "");
+  const busy = signal(false);
+  const error = signal("");
+  void props.team.repos().then((r) => known.set(r));
+  const shown = () => {
+    const q = draft().trim().toLowerCase().replace(/^https?:\/\//, "");
+    return known().filter((r) => !q || r.remote.toLowerCase().includes(q)).slice(0, 8);
+  };
+  async function pick(remote: string) {
+    busy.set(true);
+    error.set("");
+    const e = await props.onPick(remote);
+    busy.set(false);
+    if (e) error.set(e);
+  }
+  return (
+    <View testID={props.testID} style={{ gap: 6, padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
+      <Input
+        testID={`${props.testID}-input`}
+        value={draft()}
+        autoFocus
+        placeholder={L("https://github.com/owner/name, or pick one below", "https://github.com/owner/name，或从下面选")}
+        class="placeholder:text-faint"
+        onChange={({ value }) => draft.set(value)}
+        onSubmit={() => void pick(draft().trim())}
+        style={{ height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, color: colors.text }}
+      />
+      <Each of={shown()} key={(r) => r.remote}>
+        {(r) => (
+          <View role="button" testID={`${props.testID}-${r().name}`} onPress={() => void pick(r().remote)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 32, paddingHorizontal: 8, borderRadius: 7 }}>
+            <Icon name="code" size={13} tint={colors.muted} />
+            <Text style={{ flex: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{repoLabel(r().remote)}</Text>
+            <Text style={{ fontSize: 12, color: colors.faint }}>{L(`${r().machines.length} machine${r().machines.length === 1 ? "" : "s"}`, `${r().machines.length} 台机器有`)}</Text>
+          </View>
+        )}
+      </Each>
+      <If when={!known().length}>
+        <Text style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.faint }}>{L("No machine has reported a repository yet; type its address. A machine without it clones it.", "还没有机器上报仓库，直接填地址即可。没有这个仓库的机器会自己克隆。")}</Text>
+      </If>
+      <ErrorNote text={error()} />
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+        <If when={props.value}><Btn small kind="ghost" testID={`${props.testID}-none`} label={props.noneLabel} onPress={() => void pick("")} /></If>
+        <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={props.onCancel} />
+        <Btn small kind="primary" testID={`${props.testID}-save`} label={L("Save", "保存")} busy={busy()} disabled={!draft().trim()} onPress={() => void pick(draft().trim())} />
+      </View>
+    </View>
+  );
+}
+
+/** Where the task runs: its repository (changeable until it first ran), the agent's own checkout, or none. */
+function TaskRepo(props: { team: Team; task: Task }) {
+  const t = props.team;
+  const editing = signal(false);
+  const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
+  const can = () => isParty(props.task, t.me(), agent()) && props.task.runs === 0 && !["done", "closed"].includes(props.task.state);
+  const label = () => props.task.repo
+    ? repoLabel(props.task.repo)
+    : agent()?.repo ? L(`the agent’s checkout ${agent()!.repo}`, `Agent 的本地仓库 ${agent()!.repo}`) : L("none: a general task in an empty folder", "没有：通用任务，在一个空目录里做");
+  return (
+    <View testID={`task-${props.task.id}-repo`} style={{ gap: 6 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 22 }}>
+        <Text style={{ width: 68, fontSize: 12.5, color: colors.faint }}>{L("Repository", "仓库")}</Text>
+        <If when={props.task.repo} else={<Text testID={`task-${props.task.id}-repo-label`} style={{ flex: 1, fontSize: 13, color: props.task.repo || agent()?.repo ? colors.text : colors.muted }}>{label()}</Text>}>
+          <View role="link" style={{ flex: 1 }} onPress={() => void openUrl(`https://${props.task.repo}`)} hoverStyle={hovered()}>
+            <Text testID={`task-${props.task.id}-repo-label`} style={{ fontSize: 13, color: colors.accent }}>{label()}</Text>
+          </View>
+        </If>
+        <If when={can() && !editing()}>
+          <Btn small kind="ghost" testID={`task-${props.task.id}-repo-edit`} label={L("Change", "更换")} onPress={() => editing.set(true)} />
+        </If>
+      </View>
+      <If when={editing()}>
+        <RepoPicker
+          team={t}
+          value={props.task.repo ?? ""}
+          testID={`task-${props.task.id}-repo-picker`}
+          noneLabel={L("No repository", "不用仓库")}
+          onCancel={() => editing.set(false)}
+          onPick={async (remote) => {
+            const r = await t.setTaskRepo(props.task.id, remote);
+            if (!r.ok) return failed(r);
+            editing.set(false);
+            return null;
+          }}
+        />
+      </If>
+    </View>
+  );
 }
 
 /** What "done" means for the task: people write it (the creator or the agent's owner), the agent proposes it when none. */

@@ -77,6 +77,7 @@ type taskView struct {
 	Title       string        `json:"title"`
 	Body        string        `json:"body"`
 	Acceptance  string        `json:"acceptance"` // what "done" means; people write it, the agent may propose it
+	Repo        string        `json:"repo"`       // where it runs: host/owner/name ("" = a general task); see teamrepos.go
 	Mandate     *mandateView  `json:"mandate"`
 	State       string        `json:"state"`
 	Step        string        `json:"step"`
@@ -94,7 +95,7 @@ type taskView struct {
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, '')`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -107,7 +108,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate); err != nil {
+			&t.Acceptance, &mandate, &t.Repo); err != nil {
 			panic(err)
 		}
 		if mandate != "" {
@@ -256,12 +257,13 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined bool) {
 			text = r.Text + "\n\n" + text
 		}
 	}
+	repo := h.taskRepo(m.Text, root, m.ChannelID)
 	branch := "agent/" + id
 	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
 		Branch: branch, Runtime: a.Runtime, Model: a.Model}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
-		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, now, now))
+		branch, repo, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, now, now))
 	h.taskChanged(id)
 }
 
@@ -393,7 +395,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
-// v1TaskPatch: the creator or the agent's owner writes down what "done" means.
+// v1TaskPatch: the creator or the agent's owner writes down what "done" means, or (before it ever ran) where it runs.
 func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
 	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed)
 	if !ok {
@@ -401,8 +403,22 @@ func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
 	}
 	var b struct {
 		Acceptance *string `json:"acceptance"`
+		Repo       *string `json:"repo"`
 	}
 	_ = q.json(&b)
+	if b.Repo != nil {
+		r := normRemote(*b.Repo)
+		if r == "" && strings.TrimSpace(*b.Repo) != "" {
+			errJSON(w, 400, "仓库要写成地址，比如 https://github.com/owner/name")
+			return
+		}
+		if t.Runs > 0 && r != t.Repo {
+			errJSON(w, 409, "任务已经开始过了，不能再换仓库；新开一个任务吧")
+			return
+		}
+		h.setTask(t.ID, map[string]any{"repo": r})
+		h.taskChanged(t.ID)
+	}
 	if b.Acceptance != nil {
 		h.setTask(t.ID, map[string]any{"acceptance": clip(strings.TrimSpace(*b.Acceptance), 4000)})
 		h.taskChanged(t.ID)
@@ -557,10 +573,19 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		PR       *prView       `json:"pr"`
 		// Acceptance: the agent's proposed criteria, kept only while people have written none
 		Acceptance *string `json:"acceptance"`
+		// Memory: the agent's memory.md as it wants it now (it learned something lasting)
+		Memory *string `json:"memory"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
 		return
+	}
+	if b.Memory != nil {
+		if m := clip(strings.TrimSpace(*b.Memory), memoryChars); m != a.Memory {
+			h.must(h.db.Exec("UPDATE agents SET memory = ? WHERE id = ?", m, a.ID))
+			a, _ = h.agent(a.ID)
+			h.broadcastPeople(obj{"type": "agent", "agent": a})
+		}
 	}
 	cols := map[string]any{}
 	if b.Acceptance != nil && t.Acceptance == "" {
