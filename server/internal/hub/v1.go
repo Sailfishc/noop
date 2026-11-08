@@ -57,6 +57,19 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("PATCH /api/v1/messages/{id}", anyone, h.v1Edit)
 	r("GET /api/v1/updates", anyone, h.v1Updates)
 
+	r("GET /api/v1/tasks", anyone, h.v1Tasks)
+	r("GET /api/v1/tasks/{id}", anyone, h.v1Task)
+	r("GET /api/v1/inbox", person, h.v1Inbox)
+	r("POST /api/v1/tasks/{id}/confirm", person, h.v1TaskConfirm)
+	r("POST /api/v1/tasks/{id}/decline", person, h.v1TaskDecline)
+	r("POST /api/v1/tasks/{id}/cancel", person, h.v1TaskCancel)
+	r("POST /api/v1/tasks/{id}/accept", person, h.v1TaskAccept)
+	r("POST /api/v1/tasks/{id}/decide", person, h.v1TaskDecide)
+	r("GET /api/v1/machine/tasks", machine, h.v1MachineTasks)
+	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)
+	r("POST /api/v1/tasks/{id}/report", machine, h.v1TaskReport)
+	r("POST /api/v1/hooks/gitlab", public, h.v1GitlabHook)
+
 	m.HandleFunc("GET /api/v1/stream", h.v1Stream)
 	m.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) { errJSON(w, 404, "not found") })
 	return m

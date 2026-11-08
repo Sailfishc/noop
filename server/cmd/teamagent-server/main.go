@@ -66,6 +66,7 @@ func main() {
 	data := flag.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
 	static := flag.String("static", env("TEAMAGENT_STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
 	owners := flag.String("owners", env("TEAMAGENT_OWNER_EMAIL", ""), "owner emails allowed to sign in, comma-separated")
+	hookSecret := flag.String("git-webhook-secret", env("TEAMAGENT_GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
 	flag.Parse()
 
 	token := os.Getenv("TEAMAGENT_TOKEN")
@@ -94,7 +95,7 @@ func main() {
 			emails = append(emails, e)
 		}
 	}
-	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static}, db)
+	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
 
 	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

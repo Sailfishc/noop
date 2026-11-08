@@ -1,0 +1,668 @@
+package hub
+
+import (
+	"crypto/subtle"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+)
+
+// Tasks: a person @-mentions an agent in a channel and the message becomes a Task (T-0001) whose thread is that
+// message's thread. The agent's owner confirms it when the agent's dispatch rule asks for that; the agent's machine
+// claims it (one claim wins), runs it, and reports back. Everything a person says in the thread later reaches the
+// task: while it runs it waits for the next turn, after it stopped it reopens it.
+//
+// States: pending (waits for the owner) → queued (waits for the machine) → running → review | needs_decision |
+// blocked | failed, and done (accepted) or closed (cancelled, declined, not allowed).
+
+const (
+	taskPending       = "pending"
+	taskQueued        = "queued"
+	taskRunning       = "running"
+	taskNeedsDecision = "needs_decision"
+	taskReview        = "review"
+	taskBlocked       = "blocked"
+	taskFailed        = "failed"
+	taskDone          = "done"
+	taskClosed        = "closed"
+)
+
+// stopped: a run ended there; a person's reply in the thread starts the next run.
+var stoppedStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true, taskDone: true}
+
+// what a machine may report when a run ends
+var reportStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true}
+
+type decisionView struct {
+	Question       string   `json:"question"`
+	Options        []string `json:"options"`
+	Recommendation string   `json:"recommendation,omitempty"`
+	Answer         string   `json:"answer,omitempty"`
+	AnsweredBy     string   `json:"answered_by,omitempty"`
+}
+
+// prView: the change request the task produced (a GitHub PR, an Ant Code PR (GitLab MR)).
+type prView struct {
+	Provider string `json:"provider"` // github | gitlab
+	URL      string `json:"url"`
+	Number   int64  `json:"number"`
+	Title    string `json:"title,omitempty"`
+	State    string `json:"state"`  // open | merged | closed
+	Checks   string `json:"checks"` // pending | success | failure | none
+	Repo     string `json:"repo,omitempty"`
+}
+
+type taskView struct {
+	ID          string        `json:"id"`
+	ChannelID   string        `json:"channel_id"`
+	ThreadID    string        `json:"thread_id"`
+	AgentID     string        `json:"agent_id"`
+	CreatedBy   string        `json:"created_by"`
+	Title       string        `json:"title"`
+	Body        string        `json:"body"`
+	State       string        `json:"state"`
+	Step        string        `json:"step"`
+	Summary     string        `json:"summary"`
+	Decision    *decisionView `json:"decision"`
+	PR          *prView       `json:"pr"`
+	Branch      string        `json:"branch"`
+	Session     string        `json:"session"`
+	ClaimedBy   *string       `json:"claimed_by"`
+	ConfirmedBy *string       `json:"confirmed_by"`
+	Runs        int64         `json:"runs"`
+	Created     int64         `json:"created"`
+	Updated     int64         `json:"updated"`
+	seenSeq     int64
+}
+
+const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq`
+
+func scanTasks(rows *sql.Rows, err error) []taskView {
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []taskView{}
+	for rows.Next() {
+		var t taskView
+		var decision, pr string
+		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
+			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq); err != nil {
+			panic(err)
+		}
+		if decision != "" {
+			t.Decision = &decisionView{}
+			_ = json.Unmarshal([]byte(decision), t.Decision)
+		}
+		if pr != "" {
+			t.PR = &prView{}
+			_ = json.Unmarshal([]byte(pr), t.PR)
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func (h *Hub) task(id string) (taskView, bool) {
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE id = ? OR num = ?", id, taskNum(id)))
+	if len(ts) == 0 {
+		return taskView{}, false
+	}
+	return ts[0], true
+}
+
+var taskIDRE = regexp.MustCompile(`^T-(\d+)$`)
+
+func taskNum(id string) int64 {
+	var n int64 = -1
+	if m := taskIDRE.FindStringSubmatch(id); m != nil {
+		_, _ = fmt.Sscan(m[1], &n)
+	}
+	return n
+}
+
+func (h *Hub) taskChanged(id string) {
+	if t, ok := h.task(id); ok {
+		h.broadcastChannel(t.ChannelID, obj{"type": "task", "task": t})
+	}
+}
+
+func (h *Hub) setTask(id string, cols map[string]any) {
+	sets, args := []string{"updated = ?"}, []any{h.nowMs()}
+	for k, v := range cols {
+		sets = append(sets, k+" = ?")
+		args = append(args, v)
+	}
+	args = append(args, id)
+	h.must(h.db.Exec("UPDATE tasks_v1 SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...))
+}
+
+func jsonOrNil(v any) any {
+	if v == nil {
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+// taskTitle: the message's first line without the agents' @handles, at most 60 characters.
+func taskTitle(text string) string {
+	line := strings.TrimSpace(strings.SplitN(strings.TrimSpace(text), "\n", 2)[0])
+	line = strings.TrimSpace(mentionRE.ReplaceAllStringFunc(line, func(s string) string {
+		if strings.HasPrefix(s, "@") {
+			return ""
+		}
+		return s[:1]
+	}))
+	if line == "" {
+		line = "（无标题）"
+	}
+	if utf8.RuneCountInString(line) > 60 {
+		line = string([]rune(line)[:59]) + "…"
+	}
+	return line
+}
+
+// onPosted: what a new message means for tasks. A person's reply in a task's thread reaches its tasks; a person's
+// @agent elsewhere hands that agent a task (one per agent and thread).
+func (h *Hub) onPosted(m messageView) {
+	if m.Author.Kind != "user" {
+		return
+	}
+	root := m.ID
+	if m.ThreadID != nil {
+		root = *m.ThreadID
+		for _, t := range scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ?", root)) {
+			h.followUp(t)
+		}
+	}
+	for _, mm := range m.Mentions {
+		if mm.Kind != "agent" || !h.isMember(m.ChannelID, "agent", mm.ID) {
+			continue
+		}
+		if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?", root, mm.ID) > 0 {
+			continue // already on it: followUp took it
+		}
+		h.createTask(m, root, mm.ID)
+	}
+}
+
+func (h *Hub) createTask(m messageView, root, agentID string) {
+	a, ok := h.agent(agentID)
+	if !ok {
+		return
+	}
+	state, summary := taskQueued, ""
+	switch {
+	case m.Author.ID == a.OwnerID:
+	case a.Dispatch == "owner":
+		state, summary = taskClosed, "@"+a.Handle+" 只接主人派的活"
+	case a.Dispatch == "confirm":
+		state = taskPending
+	}
+	var n int64
+	_ = h.db.QueryRow("SELECT COALESCE(MAX(num), 0) + 1 FROM tasks_v1").Scan(&n)
+	id := fmt.Sprintf("T-%04d", n)
+	now := h.nowMs()
+	text := m.Text
+	if root != m.ID { // a reply: the task is about the thread
+		if r, ok := h.message(root); ok {
+			text = r.Text + "\n\n" + m.Text
+		}
+	}
+	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, state, summary, branch, created, updated)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID, taskTitle(m.Text), text, state, summary,
+		"agent/"+id, now, now))
+	h.taskChanged(id)
+}
+
+// followUp: a person said something in the task's thread.
+func (h *Hub) followUp(t taskView) {
+	if stoppedStates[t.State] {
+		h.setTask(t.ID, map[string]any{"state": taskQueued, "step": ""})
+		h.taskChanged(t.ID)
+	}
+	// pending / queued: the claim brings the message along; running: the report sees it and queues the next turn;
+	// closed: not reopened (cancelled on purpose)
+}
+
+// unseen: people's messages in the thread the agent has not been given yet.
+func (h *Hub) unseen(t taskView) []messageView {
+	return scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE (m.thread_id = ? OR m.id = ?) AND m.seq > ?
+		AND m.author_kind = 'user' ORDER BY m.seq`, t.ThreadID, t.ThreadID, t.seenSeq))
+}
+
+// ---------------------------------------------------------------- people
+
+func (h *Hub) v1Tasks(w http.ResponseWriter, q *request) {
+	where, args := []string{"1 = 1"}, []any{}
+	if c := q.query("channel"); c != "" {
+		where, args = append(where, "channel_id = ?"), append(args, c)
+	}
+	if s := q.query("state"); s != "" {
+		where, args = append(where, "state = ?"), append(args, s)
+	}
+	if t := q.query("thread"); t != "" {
+		where, args = append(where, "thread_id = ?"), append(args, t)
+	}
+	limit := clampInt(q.query("limit"), 100, 1, 500)
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE "+strings.Join(where, " AND ")+" ORDER BY num DESC LIMIT ?", append(args, limit)...))
+	out := []taskView{}
+	for _, t := range ts {
+		if h.canRead(q.who, t.ChannelID) {
+			out = append(out, t)
+		}
+	}
+	writeJSON(w, 200, obj{"tasks": out})
+}
+
+func (h *Hub) v1Task(w http.ResponseWriter, q *request) {
+	t, ok := h.task(q.r.PathValue("id"))
+	if !ok || !h.canRead(q.who, t.ChannelID) {
+		errJSON(w, 404, "not found")
+		return
+	}
+	writeJSON(w, 200, t)
+}
+
+// v1Inbox: what waits for this person: tasks for their agents to confirm, decisions and results to look at.
+func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
+	me := q.who.userID
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 t WHERE
+		(t.state = 'pending' AND t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?))
+		OR (t.state = 'needs_decision' AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		OR (t.state = 'review' AND t.created_by = ?)
+		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me))
+	writeJSON(w, 200, obj{"tasks": ts})
+}
+
+// taskFor: the task in the path, if this person may act on it as `who` ("owner": the agent's owner; "party": its
+// creator or the agent's owner; admins count as both).
+func (h *Hub) taskFor(w http.ResponseWriter, q *request, who string, states ...string) (taskView, agentView, bool) {
+	t, ok := h.task(q.r.PathValue("id"))
+	if !ok {
+		errJSON(w, 404, "not found")
+		return t, agentView{}, false
+	}
+	a, _ := h.agent(t.AgentID)
+	me := q.who.userID
+	allowed := me == a.OwnerID || h.isAdmin(me) || (who == "party" && me == t.CreatedBy)
+	if !allowed {
+		if who == "owner" {
+			errJSON(w, 403, "只有 Agent 的主人能做这个决定")
+		} else {
+			errJSON(w, 403, "只有发起人或 Agent 的主人能操作")
+		}
+		return t, a, false
+	}
+	for _, s := range states {
+		if t.State == s {
+			return t, a, true
+		}
+	}
+	errJSON(w, 409, "任务现在是 "+t.State+"，不能这样操作")
+	return t, a, false
+}
+
+func (h *Hub) v1TaskConfirm(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "owner", taskPending)
+	if !ok {
+		return
+	}
+	h.setTask(t.ID, map[string]any{"state": taskQueued, "confirmed_by": q.who.userID})
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "owner", taskPending)
+	if !ok {
+		return
+	}
+	var b struct{ Reason string }
+	_ = q.json(&b)
+	summary := "主人没有接这个活"
+	if r := trimmed(b.Reason, 300); r != "" {
+		summary += "：" + r
+	}
+	h.setTask(t.ID, map[string]any{"state": taskClosed, "summary": summary})
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed)
+	if !ok {
+		return
+	}
+	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消")})
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+func (h *Hub) v1TaskAccept(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskReview)
+	if !ok {
+		return
+	}
+	h.setTask(t.ID, map[string]any{"state": taskDone})
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// v1TaskDecide: one of the decision card's options (or words of one's own). It is said in the thread, which sends
+// the task back to its agent with the answer.
+func (h *Hub) v1TaskDecide(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskNeedsDecision)
+	if !ok {
+		return
+	}
+	var b struct{ Choice string }
+	_ = q.json(&b)
+	choice := trimmed(b.Choice, 2000)
+	if choice == "" || t.Decision == nil {
+		errJSON(w, 400, "choice required")
+		return
+	}
+	t.Decision.Answer, t.Decision.AnsweredBy = choice, q.who.userID
+	h.setTask(t.ID, map[string]any{"decision": jsonOrNil(t.Decision)})
+	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", q.who.userID}, "决定："+choice)
+	h.onPosted(m)
+	t, _ = h.task(t.ID)
+	h.taskChanged(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// ---------------------------------------------------------------- machines
+
+// machineTask: the task in the path, if it belongs to one of this machine's agents.
+func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentView, bool) {
+	t, ok := h.task(q.r.PathValue("id"))
+	if !ok {
+		errJSON(w, 404, "not found")
+		return t, agentView{}, false
+	}
+	a, _ := h.agent(t.AgentID)
+	if a.MachineID == nil || *a.MachineID != q.who.machineID {
+		errJSON(w, 403, "这个任务的 Agent 不在这台机器上")
+		return t, a, false
+	}
+	return t, a, true
+}
+
+// v1MachineTasks: the work waiting for this machine, and what it was running (to pick up after a restart).
+func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
+	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
+		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
+			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
+		return
+	}
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')
+		AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+	out := []taskView{}
+	for _, t := range ts {
+		if t.State == taskQueued || (t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID) {
+			out = append(out, t)
+		}
+	}
+	writeJSON(w, 200, obj{"tasks": out})
+}
+
+const contextMessages = 12
+const contextChars = 600
+
+func clip(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n]) + "…"
+}
+
+// v1TaskClaim: the machine takes a queued task (the first claim wins) and gets what the run needs: the task, the
+// channel's purpose and latest messages, the thread, and the people's messages it has not seen yet. Claiming a task
+// it already runs again (after the daemon restarted) is allowed.
+func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
+	t, a, ok := h.machineTask(w, q)
+	if !ok {
+		return
+	}
+	mine := t.State == taskRunning && t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID
+	if t.State != taskQueued && !mine {
+		errJSON(w, 409, "任务现在是 "+t.State+"，不能认领")
+		return
+	}
+	fresh := h.unseen(t)
+	thread := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.id = ? OR m.thread_id = ? ORDER BY m.seq", t.ThreadID, t.ThreadID))
+	var seen int64
+	for _, m := range thread {
+		seen = max(seen, m.Seq)
+	}
+	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": ""}
+	if !mine {
+		cols["runs"] = t.Runs + 1
+	}
+	h.setTask(t.ID, cols)
+	recent := scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.channel_id = ? AND m.thread_id IS NULL
+		ORDER BY m.seq DESC LIMIT ?`, t.ChannelID, contextMessages))
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
+	for i := range recent {
+		recent[i].Text = clip(recent[i].Text, contextChars)
+	}
+	c, _ := h.channel(t.ChannelID)
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	people := map[string]string{}
+	for _, m := range append(append([]messageView{}, thread...), recent...) {
+		if m.Author.Kind == "user" {
+			if u, ok := h.user(m.Author.ID); ok {
+				people[u.ID] = u.Name + " (@" + u.Handle + ")"
+			}
+		} else if ag, ok := h.agent(m.Author.ID); ok {
+			people[ag.ID] = ag.Name + " (@" + ag.Handle + ")"
+		}
+	}
+	creator, _ := h.user(t.CreatedBy)
+	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic},
+		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine})
+}
+
+// v1TaskReport: the machine says how the run goes. {step, session, branch} while it runs; {state, summary, decision}
+// when the run ends; {pr} whenever the change request changes. The summary goes to the thread as the agent.
+func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
+	t, a, ok := h.machineTask(w, q)
+	if !ok {
+		return
+	}
+	var b struct {
+		State    string        `json:"state"`
+		Step     *string       `json:"step"`
+		Summary  string        `json:"summary"`
+		Session  *string       `json:"session"`
+		Branch   *string       `json:"branch"`
+		Decision *decisionView `json:"decision"`
+		PR       *prView       `json:"pr"`
+	}
+	if err := q.json(&b); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	cols := map[string]any{}
+	if b.PR != nil {
+		cols["pr"] = jsonOrNil(b.PR)
+		if b.PR.State == "merged" && (t.State == taskReview || t.State == taskBlocked) {
+			cols["state"] = taskDone
+		}
+	}
+	if b.Session != nil {
+		cols["session"] = trimmed(*b.Session, 200)
+	}
+	if b.Branch != nil {
+		cols["branch"] = trimmed(*b.Branch, 200)
+	}
+	if b.State != "" || b.Step != nil {
+		if t.State != taskRunning || t.ClaimedBy == nil || *t.ClaimedBy != q.who.machineID {
+			errJSON(w, 409, "任务现在是 "+t.State+"，这次运行已经无效")
+			return
+		}
+	}
+	if b.Step != nil {
+		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
+	}
+	if b.State != "" {
+		if !reportStates[b.State] {
+			errJSON(w, 400, "state 只能是 review、needs_decision、blocked 或 failed")
+			return
+		}
+		state := b.State
+		summary := trimmed(b.Summary, 8000)
+		cols["summary"], cols["step"] = summary, ""
+		if state == taskNeedsDecision {
+			if b.Decision == nil || strings.TrimSpace(b.Decision.Question) == "" {
+				errJSON(w, 400, "needs_decision 要带 decision.question")
+				return
+			}
+			d := decisionView{Question: trimmed(b.Decision.Question, 300), Recommendation: trimmed(b.Decision.Recommendation, 100)}
+			for _, o := range b.Decision.Options {
+				if o = trimmed(o, 300); o != "" && len(d.Options) < 6 {
+					d.Options = append(d.Options, o)
+				}
+			}
+			cols["decision"] = jsonOrNil(d)
+		}
+		text := summary
+		if state == taskNeedsDecision {
+			text = strings.TrimSpace(summary + "\n\n" + b.Decision.Question)
+		}
+		if text != "" {
+			h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, text)
+		}
+		if len(h.unseen(t)) > 0 {
+			state = taskQueued // people said more while it ran: the next run answers them
+		}
+		cols["state"] = state
+	}
+	if len(cols) > 0 {
+		h.setTask(t.ID, cols)
+		h.taskChanged(t.ID)
+	}
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// insertMessage posts a message (no checks) and sends it out.
+func (h *Hub) insertMessage(channelID string, thread *string, author member, text string) messageView {
+	var th any
+	if thread != nil {
+		th = *thread
+	}
+	mentions, _ := json.Marshal(h.mentions(text))
+	id := newID("msg_")
+	h.must(h.db.Exec(`INSERT INTO messages (id, channel_id, thread_id, author_kind, author_id, text, mentions, attachments, created)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?)`, id, channelID, th, author.Kind, author.ID, text, string(mentions), h.nowMs()))
+	m, _ := h.message(id)
+	h.broadcastChannel(channelID, obj{"type": "message", "message": m})
+	return m
+}
+
+// v1GitlabHook: Ant Code (GitLab-based) tells us a PR (merge request) changed: its state and pipeline reach the task
+// whose branch it is. Push and TagPush events are acknowledged and ignored.
+func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
+	secret := h.cfg.GitWebhookSecret
+	if secret == "" || subtle.ConstantTimeCompare([]byte(q.r.Header.Get("X-Gitlab-Token")), []byte(secret)) != 1 {
+		errJSON(w, 401, "unauthorized")
+		return
+	}
+	var b struct {
+		Kind  string `json:"object_kind"`
+		Attrs struct {
+			IID          int64  `json:"iid"`
+			SourceBranch string `json:"source_branch"`
+			State        string `json:"state"`
+			URL          string `json:"url"`
+			Title        string `json:"title"`
+			Ref          string `json:"ref"`
+			Status       string `json:"status"`
+		} `json:"object_attributes"`
+		MR *struct {
+			IID          int64  `json:"iid"`
+			SourceBranch string `json:"source_branch"`
+		} `json:"merge_request"`
+		Project struct {
+			Path string `json:"path_with_namespace"`
+		} `json:"project"`
+	}
+	if err := q.json(&b); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	branch, state, checks := "", "", ""
+	switch b.Kind {
+	case "merge_request":
+		branch = b.Attrs.SourceBranch
+		switch b.Attrs.State {
+		case "merged":
+			state = "merged"
+		case "closed":
+			state = "closed"
+		default:
+			state = "open"
+		}
+	case "pipeline":
+		branch = b.Attrs.Ref
+		if b.MR != nil && b.MR.SourceBranch != "" {
+			branch = b.MR.SourceBranch
+		}
+		switch b.Attrs.Status {
+		case "success":
+			checks = "success"
+		case "failed", "canceled":
+			checks = "failure"
+		default:
+			checks = "pending"
+		}
+	default:
+		writeJSON(w, 200, obj{"ok": true, "ignored": b.Kind})
+		return
+	}
+	if !strings.HasPrefix(branch, "agent/") {
+		writeJSON(w, 200, obj{"ok": true, "ignored": "not a task branch"})
+		return
+	}
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE branch = ? ORDER BY num DESC LIMIT 1", branch))
+	if len(ts) == 0 {
+		writeJSON(w, 200, obj{"ok": true, "ignored": "no task"})
+		return
+	}
+	t := ts[0]
+	pr := prView{Provider: "gitlab", State: "open", Checks: "none", Repo: b.Project.Path}
+	if t.PR != nil {
+		pr = *t.PR
+	}
+	if b.Kind == "merge_request" {
+		pr.State, pr.Number, pr.Title = state, b.Attrs.IID, b.Attrs.Title
+		if b.Attrs.URL != "" {
+			pr.URL = b.Attrs.URL
+		}
+	} else {
+		pr.Checks = checks
+	}
+	cols := map[string]any{"pr": jsonOrNil(pr)}
+	if pr.State == "merged" && (t.State == taskReview || t.State == taskBlocked) {
+		cols["state"] = taskDone
+	}
+	h.setTask(t.ID, cols)
+	h.taskChanged(t.ID)
+	writeJSON(w, 200, obj{"ok": true, "task": t.ID})
+}

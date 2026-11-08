@@ -17,10 +17,33 @@ const msg = (over: Record<string, unknown>) => ({
 const m1 = msg({ id: "msg_1", seq: 1, text: "@acha 看下慢查询", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }], reply_count: 1 });
 const r1 = msg({ id: "msg_2", seq: 2, thread_id: "msg_1", author: { kind: "agent", id: "a_1" }, text: "收到，在看" });
 
-type Log = { posts: any[]; patches: any[]; created: any[] };
-function server(log: Log, over: Record<string, unknown> = {}) {
+type Log = { posts: any[]; patches: any[]; created: any[]; acts: string[] };
+const task = (over: Record<string, unknown>) => ({
+  id: "T-0001", channel_id: "c_1", thread_id: "msg_1", agent_id: "a_1", created_by: "u_2", title: "看下慢查询", body: "@acha 看下慢查询",
+  state: "pending", step: "", summary: "", decision: null, pr: null, branch: "agent/T-0001", claimed_by: null, confirmed_by: null, runs: 0,
+  created: T0, updated: T0, ...over,
+});
+function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = []) {
   let seq = 10;
+  const live = new Map(tasks.map((t) => [t.id, t]));
+  const act = (name: string, change: (t: any, body: any) => void) => (r: { url: string; body?: string | null }) => {
+    const id = r.url.match(/tasks\/([^/]+)\//)![1];
+    const body = r.body ? JSON.parse(r.body) : {};
+    log.acts.push(`${id} ${name}${body.choice ? ` ${body.choice}` : ""}`);
+    const t = { ...live.get(id) };
+    change(t, body);
+    live.set(id, t);
+    return { body: t };
+  };
+  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
   return {
+    [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
+    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
+    [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
+    [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
+    [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
+    [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
+    [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
     [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
     [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
@@ -51,7 +74,7 @@ function server(log: Log, over: Record<string, unknown> = {}) {
     ...over,
   };
 }
-const newLog = (): Log => ({ posts: [], patches: [], created: [] });
+const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });
 
 describe("team sign in", () => {
   test("an invite link: name and @handle, bind the authenticator, then the workspace", async () => {
@@ -223,5 +246,62 @@ describe("agents and machines", () => {
     await app.press("id:sign-out");
     await app.waitFor("id:team-signin");
     expect(app.storage()["team.session"]).toBe(undefined);
+  });
+});
+
+describe("tasks", () => {
+  test("an @agent's task shows on its message; the owner starts it; it waits for the machine", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({})]) });
+    await app.waitFor("id:task-T-0001");
+    expect(app.shows("text:Waiting for its owner")).toBe(true);
+    await app.press("id:task-T-0001-confirm");
+    await app.waitFor("text:Waiting for its machine");
+    expect(log.acts).toEqual(["T-0001 confirm"]);
+    expect(app.shows("text:/张伟的 Mac will pick it up/")).toBe(true);
+    expect(app.shows("id:task-T-0001-confirm")).toBe(false);
+  });
+
+  test("a decision card: the recommended option is marked, a press answers it", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "needs_decision", decision: { question: "现在上线吗？", options: ["A: 现在上", "B: 夜里再上"], recommendation: "B" } });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("text:现在上线吗？");
+    await app.press("id:task-T-0001-option-1");
+    await app.waitFor("text:Waiting for its machine");
+    expect(log.acts).toEqual(["T-0001 decide B: 夜里再上"]);
+  });
+
+  test("ready for review: the PR and its checks show, and the creator accepts it", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "review", pr: { provider: "gitlab", url: "https://code.corp/pay/-/merge_requests/3", number: 3, state: "open", checks: "success" } });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("id:task-T-0001-pr");
+    expect(app.shows("text:PR #3 · checks passed")).toBe(true);
+    await app.press("id:task-T-0001-accept");
+    await app.waitFor("text:Done");
+    expect(log.acts).toEqual(["T-0001 accept"]);
+  });
+
+  test("waiting for you: the sidebar counts it, the list opens its thread", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({}), task({ id: "T-0002", state: "running", step: "运行 bun test" })]) });
+    await app.waitFor("id:open-inbox-unread");
+    expect(app.shows("text:@acha · 运行 bun test")).toBe(true);
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0001-open");
+    expect(app.shows("id:task-T-0002")).toBe(false);
+    await app.press("id:task-T-0001-open");
+    await app.waitFor("收到，在看");
+  });
+
+  test("an agent's repository is set in Agents & machines", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
+    await app.press("id:open-settings");
+    await app.type("id:agent-repo-acha", "~/work/pay");
+    await app.press("id:agent-repo-save-acha");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches).toEqual([{ repo: "~/work/pay" }]);
   });
 });

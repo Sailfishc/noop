@@ -2,13 +2,13 @@
 // Screens: sign in (an invite, or email + authenticator code), the channel list, a channel, a thread, and
 // "Agents & machines" (your machines and their tokens, your agents and how they take work, inviting people).
 // Wide windows show the list, the channel and an open thread side by side; narrow ones one at a time.
-import { cleanup, Clipboard, computed, effect, List, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
+import { cleanup, Clipboard, computed, effect, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
 import { Input } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
 import {
-  call, createTeam, errorOf, type Reply, isMember, normalizeServer, parseInvite, TEAM_KEYS, textParts,
-  type Agent, type Autonomy, type Channel, type Dispatch, type Machine, type Member, type Message, type Session, type Team,
+  call, createTeam, errorOf, type Reply, isMember, isParty, normalizeServer, parseInvite, TEAM_KEYS, textParts,
+  type Agent, type Autonomy, type Channel, type Dispatch, type Machine, type Member, type Message, type Session, type Task, type TaskState, type Team,
 } from "./api";
 
 const WIDE = 720;
@@ -317,7 +317,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
 
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "settings" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "settings" } | { kind: "inbox" } | { kind: "home" };
 
 function Workspace(props: { team: Team; onSignOut: () => void }) {
   const t = props.team;
@@ -335,11 +335,11 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     open({ kind: "channel", id: first.id });
   });
 
-  function open(p: Page) {
+  function open(p: Page, threadId: string | null = null) {
     if (p.kind === "channel") t.openChannel(p.id);
     else t.leaveView();
     page.set(p);
-    thread.set(null);
+    thread.set(threadId);
     showList.set(false);
   }
 
@@ -356,6 +356,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     if (p.kind === "channel") return <ChannelView team={t} id={p.id} back={!wide()} onBack={() => { t.leaveView(); showList.set(true); }} thread={thread()} onThread={(id) => thread.set(id)} />;
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
     if (p.kind === "settings") return <Settings team={t} back={!wide()} onBack={() => showList.set(true)} />;
+    if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
         <If when={t.loaded()} else={<Spinner size={20} tint={colors.muted} />}>
@@ -448,6 +449,7 @@ function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onS
           )}
         </Each>
         <View style={{ height: 14 }} />
+        <Row id="inbox" testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
         <Row id="settings" testID="open-settings" icon="settings" label={L("Agents & machines", "Agent 与机器")} active={props.page.kind === "settings"} onPress={() => props.onOpen({ kind: "settings" })} />
         <Row id="lang" testID="toggle-lang" icon="globe" label={lang() === "zh" ? "English" : "中文"} active={false} onPress={() => { const next = lang() === "zh" ? "en" : "zh"; lang.set(next); void Storage.setItem(LANG_KEY, next); }} />
         <Row id="signout" testID="sign-out" icon="external" label={L("Sign out", "退出登录")} active={false} onPress={props.onSignOut} />
@@ -505,6 +507,9 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void }) {
             {(p) => (p().mention ? <Text style={{ color: colors.accent, fontWeight: "500" }}>{p().text}</Text> : <Text>{p().text}</Text>)}
           </Each>
         </Text>
+        <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
+          {(task) => <TaskCard team={props.team} task={task()} />}
+        </Each>
         <If when={props.onThread}>
           <View role="button" testID={`thread-${props.m.id}`} onPress={() => props.onThread!()} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 26, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6 }}>
             <Icon name="reply" size={14} tint={props.m.reply_count ? colors.accent : colors.faint} />
@@ -711,6 +716,138 @@ function NewChannel(props: { team: Team; back: boolean; onBack: () => void; onCr
   );
 }
 
+// ---------------------------------------------------------------- tasks
+
+const STATE: Record<TaskState, { label: () => string; tone: "accent" | "warn" | "danger" | "up" | "muted" }> = {
+  pending: { label: () => L("Waiting for its owner", "等主人确认"), tone: "warn" },
+  queued: { label: () => L("Waiting for its machine", "等机器认领"), tone: "muted" },
+  running: { label: () => L("Working", "进行中"), tone: "accent" },
+  needs_decision: { label: () => L("Needs a decision", "等人决定"), tone: "warn" },
+  review: { label: () => L("Ready for review", "待验收"), tone: "accent" },
+  blocked: { label: () => L("Blocked", "受阻"), tone: "danger" },
+  failed: { label: () => L("Failed", "失败"), tone: "danger" },
+  done: { label: () => L("Done", "已完成"), tone: "up" },
+  closed: { label: () => L("Closed", "已关闭"), tone: "muted" },
+};
+const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
+
+function prLine(pr: NonNullable<Task["pr"]>) {
+  const state = pr.state === "merged" ? L("merged", "已合并") : pr.state === "closed" ? L("closed", "已关闭") : "";
+  const checks = pr.checks === "success" ? L("checks passed", "CI 通过") : pr.checks === "failure" ? L("checks failed", "CI 失败") : pr.checks === "pending" ? L("checks running", "CI 运行中") : "";
+  return [`PR #${pr.number}`, state, checks].filter(Boolean).join(" · ");
+}
+
+/** A task on its request message (and in the inbox): its state, what it does now, and what this person can do. */
+function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void }) {
+  const t = props.team;
+  const task = () => props.task;
+  const agent = () => t.agents().find((a) => a.id === task().agent_id);
+  const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
+  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const me = () => t.me();
+  const isOwner = () => !!me() && (me()!.id === agent()?.owner_id || me()!.role === "admin");
+  const party = () => isParty(task(), me(), agent());
+  const busy = signal("");
+  const error = signal("");
+  const st = () => STATE[task().state] ?? STATE.queued;
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
+    busy.set(action);
+    error.set("");
+    const r = await t.act(task().id, action, body);
+    busy.set("");
+    if (!r.ok) error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+  }
+  const waiting = () => {
+    const s = task().state;
+    if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
+    if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
+    if (s === "running") return task().step || L("Working…", "干活中…");
+    return "";
+  };
+  return (
+    <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 560 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
+        <Text style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{task().title}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+          <If when={task().state === "running"}>
+            <Spinner size={11} tint={colors.accent} />
+          </If>
+          <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(st().tone) }}>{st().label()}</Text>
+        </View>
+      </View>
+      <Text style={{ fontSize: 12.5, color: colors.muted }}>
+        {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
+      </Text>
+      <If when={task().pr}>
+        {(pr) => (
+          <View role="link" testID={`task-${task().id}-pr`} onPress={() => void openUrl(pr().url)} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, borderRadius: 6 }}>
+            <Icon name="merge" size={14} tint={pr().checks === "failure" ? colors.danger : colors.accent} />
+            <Text style={{ fontSize: 13, color: pr().checks === "failure" ? colors.danger : colors.accent }}>{prLine(pr())}</Text>
+          </View>
+        )}
+      </If>
+      <If when={task().state === "needs_decision" ? task().decision : null}>
+        {(d) => (
+          <View style={{ gap: 6 }}>
+            <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{d().question}</Text>
+            <If when={party()} else={<Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Its creator or the agent’s owner decides.", "由发起人或 Agent 的主人决定。")}</Text>}>
+              <View style={{ gap: 6 }}>
+                <Each of={d().options ?? []} key="index">
+                  {(o, i) => (
+                    <Btn
+                      small
+                      testID={`task-${task().id}-option-${i()}`}
+                      kind={d().recommendation && o().startsWith(d().recommendation!) ? "primary" : "plain"}
+                      label={o()}
+                      busy={busy() === "decide"}
+                      onPress={() => act("decide", { choice: o() })}
+                    />
+                  )}
+                </Each>
+              </View>
+            </If>
+          </View>
+        )}
+      </If>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        <If when={task().state === "pending" && isOwner()}>
+          <Btn small kind="primary" testID={`task-${task().id}-confirm`} label={L("Start it", "确认开工")} busy={busy() === "confirm"} onPress={() => act("confirm")} />
+          <Btn small testID={`task-${task().id}-decline`} label={L("Decline", "不接")} busy={busy() === "decline"} onPress={() => act("decline")} />
+        </If>
+        <If when={task().state === "review" && party()}>
+          <Btn small kind="primary" testID={`task-${task().id}-accept`} label={L("Accept", "验收通过")} busy={busy() === "accept"} onPress={() => act("accept")} />
+        </If>
+        <If when={party() && !["done", "closed"].includes(task().state) && !(task().state === "pending" && isOwner())}>
+          <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
+        </If>
+        <If when={props.onOpen}>
+          <Btn small kind="ghost" testID={`task-${task().id}-open`} label={L("Open thread", "打开线程")} onPress={() => props.onOpen!()} />
+        </If>
+      </View>
+      <ErrorNote text={error()} testID={`task-${task().id}-error`} />
+    </View>
+  );
+}
+
+function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (t: Task) => void }) {
+  const t = props.team;
+  const items = () => t.inbox().map((id) => t.tasks()[id]).filter(Boolean);
+  effect(() => void t.loadInbox());
+  return (
+    <View style={{ flex: 1 }}>
+      <Header title={L("Waiting for you", "待你决定")} subtitle={L("Tasks to confirm, decisions to make, results to accept", "要你确认的活、要你做的决定、要你验收的结果")} back={props.back} onBack={props.onBack} />
+      <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 10, maxWidth: 640 }}>
+        <If when={items().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
+          <Each of={items()} key={(x) => x.id}>
+            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x())} />}
+          </Each>
+        </If>
+      </Scroll>
+    </View>
+  );
+}
+
 // ---------------------------------------------------------------- agents & machines
 
 const DISPATCH: { value: Dispatch; label: () => string; note: () => string }[] = [
@@ -847,6 +984,7 @@ function AgentsPanel(props: { team: Team; agents: Agent[]; machines: Machine[] }
               <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Runs on", "运行在")}</Text>
               <Choice testID={`agent-machine-${a().handle}`} options={props.machines.map((m) => ({ value: m.id, label: m.name }))} value={a().machine_id ?? ""} onChange={(v) => t.patchAgent(a().id, { machine_id: v })} />
             </If>
+            <AgentRepo team={t} agent={a()} />
             <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Who can hand it work", "谁能派活")}</Text>
             <Choice testID={`agent-dispatch-${a().handle}`} options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={a().dispatch} onChange={(v) => t.patchAgent(a().id, { dispatch: v })} />
             <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === a().dispatch)?.note() ?? ""}</Text>
@@ -871,6 +1009,32 @@ function AgentsPanel(props: { team: Team; agents: Agent[]; machines: Machine[] }
         </View>
       </If>
     </Panel>
+  );
+}
+
+/** The repository its tasks run in: a checkout on its machine; each task gets a worktree of it on agent/T-xxxx. */
+function AgentRepo(props: { team: Team; agent: Agent }) {
+  const value = signal(props.agent.repo ?? "");
+  const busy = signal(false);
+  const saved = signal(false);
+  const changed = () => value().trim() !== (props.agent.repo ?? "");
+  async function save() {
+    busy.set(true);
+    const r = await props.team.patchAgent(props.agent.id, { repo: value().trim() });
+    busy.set(false);
+    saved.set(r.ok);
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Repository on its machine", "它在机器上用的代码仓库")}</Text>
+      <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+        <View style={{ flex: 1 }}>
+          <Field value={value()} onChange={(v) => { value.set(v); saved.set(false); }} onSubmit={save} placeholder="~/work/orders" testID={`agent-repo-${props.agent.handle}`} />
+        </View>
+        <Btn small testID={`agent-repo-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+      <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("A git checkout path. Each task works in its own worktree on branch agent/T-xxxx; the machine pushes it and opens the PR. Empty: tasks get an empty folder.", "填本机上 git 仓库的路径。每个任务在自己的 worktree 里干活（分支 agent/T-xxxx），由机器推送并开 PR；留空则每个任务一个空目录。")}</Text>
+    </View>
   );
 }
 
