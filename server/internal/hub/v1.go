@@ -22,7 +22,7 @@ const (
 func (h *Hub) v1Routes() *http.ServeMux {
 	m := http.NewServeMux()
 	r := func(pattern string, a access, f func(http.ResponseWriter, *request)) {
-		m.HandleFunc(pattern, h.v1Handler(a, f))
+		m.HandleFunc(pattern, h.v1Handler(a, f, defaultLimit))
 	}
 
 	r("POST /api/v1/login", public, h.v1Login)
@@ -76,6 +76,12 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)
 	r("POST /api/v1/tasks/{id}/report", machine, h.v1TaskReport)
 	r("POST /api/v1/hooks/gitlab", public, h.v1GitlabHook)
+	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/file", h.v1Handler(machine, h.v1OutputUpload, maxOutputFile+1))
+	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/preview", h.v1Handler(machine, h.v1OutputPreview, maxUpload+1))
+	r("GET /api/v1/outputs/{id}/link", person, h.v1OutputLink)
+	r("POST /api/v1/hooks/wait/{token}", public, h.v1WaitHook)
+	r("POST /api/v1/tasks/{id}/wait", machine, h.v1WaitCheck)
+	r("GET /api/v1/outputs/{id}/content", public, h.v1OutputContent)
 
 	m.HandleFunc("GET /api/v1/stream", h.v1Stream)
 	m.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) { errJSON(w, 404, "not found") })
@@ -83,9 +89,9 @@ func (h *Hub) v1Routes() *http.ServeMux {
 }
 
 // v1Handler reads the body (without the lock), checks the credential, then runs f with h.mu held.
-func (h *Hub) v1Handler(a access, f func(http.ResponseWriter, *request)) http.HandlerFunc {
+func (h *Hub) v1Handler(a access, f func(http.ResponseWriter, *request), limit int64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		body, ok := readBody(w, r, defaultLimit)
+		body, ok := readBody(w, r, limit)
 		if !ok {
 			return
 		}

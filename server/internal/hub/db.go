@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS tasks_v1 (id TEXT PRIMARY KEY, num INTEGER NOT NULL U
   seen_seq INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS tasks_v1_thread ON tasks_v1 (thread_id);
 CREATE INDEX IF NOT EXISTS tasks_v1_agent ON tasks_v1 (agent_id, state);
+CREATE TABLE IF NOT EXISTS task_outputs (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+  status TEXT NOT NULL, url TEXT NOT NULL DEFAULT '', name TEXT NOT NULL DEFAULT '', mime TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 0, service TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+  media TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', versions TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS task_outputs_task ON task_outputs (task_id, created);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client ON messages (author_kind, author_id, client_id) WHERE client_id IS NOT NULL;
 `
 
@@ -102,6 +107,9 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN repo TEXT NOT NULL DEFAULT ''", // host/owner/name, "" = a general task
 		"ALTER TABLE channels ADD COLUMN repo TEXT NOT NULL DEFAULT ''", // the channel's default repository
 		"ALTER TABLE agents ADD COLUMN memory TEXT NOT NULL DEFAULT ''", // the agent's memory.md: what it keeps between tasks
+		"ALTER TABLE tasks_v1 ADD COLUMN wait TEXT",                     // what a waiting task waits for (teamwaits.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN wait_token TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE tasks_v1 ADD COLUMN result TEXT NOT NULL DEFAULT ''", // confirmed | unconfirmed: did the agent see the result
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

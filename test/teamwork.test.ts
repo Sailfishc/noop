@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
-import { createWorker, followUpPrompt, gateEnv, parseTaskResult, prepareWorkdir, taskPrompt, type Claim } from "../src/teamwork";
+import { createWorker, fetchInputs, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
   const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -144,7 +144,9 @@ test("a task gets its own worktree on agent/T-xxxx, and the agent's git cannot p
     await expect(prepareWorkdir(claim({ id: "T-0003", repo: "github.com/acme/x" }), join(W, "work"), async () => { throw new Error("克隆也失败了"); }))
       .rejects.toThrow("克隆也失败了");
     const general = await prepareWorkdir(claim({ id: "T-0004" }), join(W, "work"));
-    expect(general).toEqual({ cwd: join(W, "work", "T-0004"), writable: [] });
+    expect(general).toEqual({ cwd: join(W, "work", "T-0004"), writable: [], files: join(W, "work", "T-0004") });
+    expect(own.files).toBe(join(W, "work", "T-0002.files"));
+    expect(own.writable).toContain(own.files!);
   } finally {
     rmSync(W, { recursive: true, force: true });
   }
@@ -265,4 +267,86 @@ test("the agent's runtime and model run the task; criteria the agent chose go ba
   expect(last("T-0001").acceptance).toBe("- P99 < 200ms");
   expect(last("T-0002").acceptance).toBeUndefined();
   rmSync(W, { recursive: true, force: true });
+});
+
+test("out/ goes to the thread (new or changed files only); the thread's attachments come into in/", async () => {
+  const D = realpathSync(mkdtempSync(join(tmpdir(), "teamfiles-")));
+  mkdirSync(join(D, "in"), { recursive: true });
+  mkdirSync(join(D, "out", "data"), { recursive: true });
+  writeFileSync(join(D, "out", "report.md"), "# v1");
+  writeFileSync(join(D, "out", "data", "a.csv"), "a,b");
+  writeFileSync(join(D, "out", ".draft"), "x");
+  expect(outFiles(join(D, "out"))).toEqual(["data/a.csv", "report.md"]);
+  const sent: string[] = [];
+  const files: FileApi = {
+    upload: async (_t, name, data) => { sent.push(`${name}=${new TextDecoder().decode(data)}`); return name !== "bad.txt"; },
+    preview: async () => true,
+    download: async (p) => (p === "/media/1-photo.png" ? new TextEncoder().encode("PNG") : null),
+  };
+  expect(await uploadOut(files, "T-0001", D)).toEqual([]);
+  expect(sent).toEqual(["data/a.csv=a,b", "report.md=# v1"]);
+  writeFileSync(join(D, "out", "report.md"), "# v2");
+  writeFileSync(join(D, "out", "bad.txt"), "?");
+  expect(await uploadOut(files, "T-0001", D)).toEqual(["bad.txt 上传失败"]);
+  expect(sent.slice(2)).toEqual(["bad.txt=?", "report.md=# v2"]); // a.csv did not change
+
+  const c = claim();
+  c.thread[0]!.attachments = ["/media/1-photo.png", "/media/gone.png"];
+  await fetchInputs(files, c, D);
+  expect(readFileSync(join(D, "in", "1-photo.png"), "utf8")).toBe("PNG");
+  rmSync(D, { recursive: true, force: true });
+});
+
+test("prompts tell where inputs are and where outputs go; external results come back in the result", () => {
+  const p = taskPrompt(claim(), { cwd: "/w/T-0001", writable: [], files: "/w/T-0001" });
+  expect(p).toContain("Files people attached to the thread are in /w/T-0001/in");
+  expect(p).toContain("/w/T-0001/out: every file there is uploaded to the thread");
+  const r = parseTaskResult('```json\n{"status":"review","summary":"s","outputs":[{"kind":"external","title":"底座模型","external_id":"job-1","status":"pending"}]}\n```');
+  expect(r.outputs).toEqual([{ kind: "external", title: "底座模型", external_id: "job-1", status: "pending" }]);
+});
+
+test("waiting: the run ends with what wakes it; the machine runs the check; a cancel cancels the outside job; the woken turn is told why", async () => {
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwait-")));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt = fakeRuntime([
+    { text: '已提交\n```json\n{"status":"waiting","summary":"已提交云端建模","outputs":[{"kind":"external","title":"底座模型","external_id":"job-1","status":"pending"}],"wait":{"how":"poll","check":"echo \'{\\"state\\":\\"pending\\",\\"note\\":\\"排队第 2\\"}\'","every":"5m","deadline":"6h","cancel":"echo cancelled > cancelled.txt"}}\n```' },
+    { text: '```json\n{"status":"review","summary":"模型好了","result":"confirmed"}\n```' },
+  ], seen);
+  const api = fakeApi({ "T-0001": { ...claim(), callback_url: "http://hub/api/v1/hooks/wait/abc" } }, calls);
+  const w = createWorker({ api: async (p, i) => (p === "/api/v1/machine/tasks?waiting=1" ? { tasks: [{ ...claim().task, state: "waiting", wait: { next_at: 0 } }] } : api(p, i)), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(seen[0].prompt).toContain("Callback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): http://hub/api/v1/hooks/wait/abc");
+  const reports = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report" && (c.body.state || c.body.outputs)).map((c) => c.body);
+  expect(reports[0]).toEqual({ outputs: [{ kind: "external", title: "底座模型", external_id: "job-1", status: "pending" }] });
+  expect(reports[1]).toMatchObject({ state: "waiting", wait: { how: "poll", every: 300, expect: 0, deadline: 21600, what: "" } });
+
+  await w.checkWaits();
+  await Bun.sleep(100);
+  expect(calls.filter((c) => c.path === "/api/v1/tasks/T-0001/wait").map((c) => c.body)).toEqual([{ state: "pending", note: "排队第 2" }]);
+
+  // woken: the next turn says why
+  const api2 = fakeApi({ "T-0001": { ...claim({ session: "thr_1" }), wake: { reason: "done", note: "模型好了", at: 1 } } }, calls);
+  const w2 = createWorker({ api: api2, maxParallel: 1, workRoot: W, runtimes: { codex: rt }, log: () => {} });
+  w2.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w2.idle();
+  expect(seen[1].prompt).toContain("you are woken because your check command says the outside job is done");
+  expect(seen[1].prompt).toContain("Last note: 模型好了");
+  expect(calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report" && c.body.state).at(-1)!.body).toMatchObject({ state: "review", result: "confirmed" });
+
+  // cancelled: the outside job too, once
+  w.onTask({ ...claim().task, state: "closed" } as any, () => true);
+  await Bun.sleep(200);
+  expect(readFileSync(join(W, "T-0001", "cancelled.txt"), "utf8").trim()).toBe("cancelled");
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("waiting results: a wait with no way to wake is not a wait; durations; check output", () => {
+  expect(parseTaskResult('```json\n{"status":"waiting","summary":"s"}\n```')).toMatchObject({ status: "review", result: "unconfirmed" });
+  expect(parseTaskResult('```json\n{"status":"waiting","summary":"s","wait":{"how":"poll"}}\n```').wait!.how).toBe("timer"); // nothing to run
+  expect([seconds("90s"), seconds("5m"), seconds("2h"), seconds("1d"), seconds(30), seconds("soon")]).toEqual([90, 300, 7200, 86400, 30, 0]);
+  expect(parseCheck('working…\n{"state":"done","note":"ok"}')).toEqual({ state: "done", note: "ok" });
+  expect(parseCheck("nothing")).toBe(null);
 });
