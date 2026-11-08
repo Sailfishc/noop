@@ -30,9 +30,13 @@ const (
 )
 
 type principal struct {
-	machine bool
-	session string // sha256 of the session id
+	machine   bool
+	session   string // sha256 of the session id
+	userID    string // the person signed in (a session), or the machine's owner (a machine token)
+	machineID string // a per-machine token; "" for the shared legacy token
 }
+
+const machineTokenPrefix = "tam_"
 
 func credential(r *http.Request) string {
 	if a := r.Header.Get("authorization"); strings.HasPrefix(a, "Bearer ") {
@@ -53,21 +57,39 @@ func (h *Hub) who(r *http.Request) *principal {
 	if h.cfg.Token != "" && sameStr(t, h.cfg.Token) {
 		return &principal{machine: true}
 	}
+	if strings.HasPrefix(t, machineTokenPrefix) {
+		var mid, owner string
+		var disabled bool
+		err := h.db.QueryRow(`SELECT m.id, m.owner_id, u.disabled FROM machines m JOIN users u ON u.id = m.owner_id WHERE m.token_hash = ?`,
+			sha256hex([]byte(t))).Scan(&mid, &owner, &disabled)
+		if err != nil || disabled {
+			return nil
+		}
+		h.must(h.db.Exec("UPDATE machines SET last_seen = ? WHERE id = ?", h.nowMs(), mid))
+		return &principal{machine: true, machineID: mid, userID: owner}
+	}
 	if !hex64.MatchString(t) {
 		return nil
 	}
 	id := sha256hex([]byte(t))
 	var lastSeen int64
-	var email, scope string
-	var scopeN *string
-	if err := h.db.QueryRow("SELECT last_seen, email, scope FROM sessions WHERE id = ?", id).Scan(&lastSeen, &email, &scopeN); err != nil {
+	var email, scope, userID string
+	var scopeN, userN *string
+	if err := h.db.QueryRow("SELECT last_seen, email, scope, user_id FROM sessions WHERE id = ?", id).Scan(&lastSeen, &email, &scopeN, &userN); err != nil {
 		return nil
 	}
 	if scopeN != nil {
 		scope = *scopeN
 	}
+	if userN != nil {
+		userID = *userN
+	}
 	now := h.nowMs()
-	if !h.ownerOk(email) || now-lastSeen > sessionIdle.Milliseconds() {
+	allowed := h.ownerOk(email)
+	if userID != "" { // a person's session lives as long as the person is enabled
+		allowed = h.count("SELECT COUNT(*) FROM users WHERE id = ? AND disabled = 0", userID) == 1
+	}
+	if !allowed || now-lastSeen > sessionIdle.Milliseconds() {
 		h.must(h.db.Exec("DELETE FROM sessions WHERE id = ?", id))
 		return nil
 	}
@@ -77,7 +99,7 @@ func (h *Hub) who(r *http.Request) *principal {
 	if now-lastSeen > seenEvery.Milliseconds() {
 		h.must(h.db.Exec("UPDATE sessions SET last_seen = ? WHERE id = ?", now, id))
 	}
-	return &principal{session: id}
+	return &principal{session: id, userID: userID}
 }
 
 func normEmail(e string) string { return strings.ToLower(strings.TrimSpace(e)) }

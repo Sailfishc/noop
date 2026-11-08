@@ -2,7 +2,12 @@
 //
 //	TEAMAGENT_TOKEN=<machine token> teamagent-server -addr :8080 -data /var/lib/teamagent
 //
-// Point every machine at it with [cloud] url = "http://<host>:8080" and [server] token = <the same token> in noop.toml.
+//	teamagent-server invite -data /var/lib/teamagent -email you@company.com -role admin
+//
+// The invite prints a link: the first admin opens it, binds an authenticator app, and invites everyone else from
+// the app. Each person adds their machines there and puts each machine's token in its noop.toml
+// ([cloud] url = "http://<host>:8080", [server] token = "tam_…"). TEAMAGENT_TOKEN, a token shared by every machine,
+// is the legacy noop setup and optional.
 package main
 
 import (
@@ -10,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -29,16 +35,43 @@ func env(k, def string) string {
 	return def
 }
 
+func invite(args []string) {
+	fs := flag.NewFlagSet("invite", flag.ExitOnError)
+	data := fs.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
+	email := fs.String("email", "", "the person's email")
+	role := fs.String("role", "admin", "admin or member")
+	base := fs.String("url", env("TEAMAGENT_URL", ""), "the server's address, to print a full link")
+	_ = fs.Parse(args)
+	if err := os.MkdirAll(*data, 0o700); err != nil {
+		log.Fatal(err)
+	}
+	db, err := hub.OpenDB(filepath.Join(*data, "hub.db"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+	code, err := hub.New(hub.Config{}, db).CreateInvite(*email, *role, "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("邀请 %s（%s），7 天内有效：\n  %s/invite/%s\n", *email, *role, strings.TrimRight(*base, "/"), code)
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "invite" {
+		invite(os.Args[2:])
+		return
+	}
 	addr := flag.String("addr", env("TEAMAGENT_ADDR", ":8080"), "listen address")
 	data := flag.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
 	static := flag.String("static", env("TEAMAGENT_STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
 	owners := flag.String("owners", env("TEAMAGENT_OWNER_EMAIL", ""), "owner emails allowed to sign in, comma-separated")
+	hookSecret := flag.String("git-webhook-secret", env("TEAMAGENT_GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
 	flag.Parse()
 
 	token := os.Getenv("TEAMAGENT_TOKEN")
-	if len(token) < 16 {
-		log.Fatal("TEAMAGENT_TOKEN must be set to the machines' token (at least 16 characters)")
+	if token != "" && len(token) < 16 {
+		log.Fatal("TEAMAGENT_TOKEN, when set, must be at least 16 characters")
 	}
 	var smtp *hub.SMTPConfig
 	if s := os.Getenv("TEAMAGENT_SMTP"); s != "" {
@@ -62,7 +95,7 @@ func main() {
 			emails = append(emails, e)
 		}
 	}
-	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static}, db)
+	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
 
 	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() {

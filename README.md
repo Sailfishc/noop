@@ -1,76 +1,137 @@
-# Noop
+# TeamAgent
 
-Your own AI team, so your day can be a no-op.
+一个团队里的几个人，加上每个人自己的几个 AI Agent，在同一个地方一起干活。
 
-[Website](https://huacnlee.github.io/noop/) · [Download the app](https://github.com/huacnlee/noop/releases) · [Install](#install)
+TeamAgent 是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，TeamAgent 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人自己的电脑上用 Codex 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
 
-<img width="2000" height="1390" alt="The Noop app: the team channel with agent updates, beside lists of tasks" src="website/public/screenshot.png" />
+## 它是什么样的
 
-Noop runs a small team of Claude Code and Codex agents on your own computers. They do your daily work, decide what they can based on how you've decided before, and only ask you when something really needs you — with a short list of options you answer in one tap.
+- **每个 Agent 都有主人。** Agent 跑在主人的机器上，用主人的仓库和凭证。主人决定谁能给它派活：只有主人、需要主人确认（默认）、或者频道里谁都能直接派。
+- **派活就是 @。** 在频道里 @Agent 说一句话，就生成一张任务卡。主人点「确认开工」后，机器认领任务，在 `agent/T-xxxx` 分支的独立 worktree 里用 Codex 干活，进度实时显示在卡片上。
+- **需要人的时候才打扰人。** Agent 遇到要拍板的事会给出几个选项，出现在「待你决定」里，点一下就继续。在任务线程里回复，Agent 会接着上次的会话继续做。
+- **代码只能经过 PR。** Agent 自己推不了代码。机器只推 `agent/` 开头的分支，并在 GitHub 或 Ant Code（基于 GitLab）上开 PR，合并永远由人来做。PR 合并后任务自动完成。
+- **自己部署，依赖很少。** 服务端是一个 Go 二进制文件加一个 SQLite 文件，部署在内网一台机器上。机器只向外连服务端，服务端不需要能访问机器。
 
-- **Works for you, not with you** — give it a goal in one sentence; it breaks the work down, runs it in parallel and comes back with results.
-- **Learns how you decide** — starts cautious, asks more early on, and takes over more as it proves it decides like you.
-- **Quiet** — no noise, no raw errors. You hear about results and decisions, nothing else.
-- **Yours** — runs on your machines and your own free Cloudflare account. No shared service, no one else's server.
+v1 的范围：10 人以内、每人 1–2 个 Agent；运行时只有 Codex（Claude Code 在第二阶段）；客户端先保证 macOS Apple 芯片。
 
-**If this helps you, please [sponsor me](https://github.com/sponsors/huacnlee).**
+## 组成
 
-## Install
+| 部分 | 目录 | 说明 |
+| --- | --- | --- |
+| 服务端 | `server/` | Go，单个二进制。账号与邀请、频道、消息、任务、「待你决定」、Git webhook。数据在一个 SQLite 文件里 |
+| 机器守护进程 | `src/` | TypeScript / Bun。每台跑 Agent 的电脑上一个，负责认领任务、调 Codex、推分支、开 PR、查 CI |
+| 客户端 | `app/` | 基于 [NSH](https://github.com/longbridge/nsh) 的跨平台 App（macOS、Linux、Windows、iOS、Android、Web） |
 
-On an always-on Linux machine, once — it becomes the primary:
-
-```bash
-curl -fsSL https://huacnlee.github.io/noop/install.sh | bash -s -- --primary
+```
+ 人（客户端）──┐                         ┌── 机器 A：守护进程 → Codex → agent/T-0001 → PR
+              ├──► TeamAgent 服务端 ◄────┤
+ 人（客户端）──┘   （内网，Go + SQLite）    └── 机器 B：守护进程 → Codex → …
+                        ▲
+                        └── Ant Code / GitHub webhook（PR 合并）
 ```
 
-You'll be asked to log in to your Cloudflare account once (the free plan is enough).
+## 部署
 
-Add more machines whenever you like — they help when they're online and are never waited for:
+完整的参数和接口见 [server/README.md](server/README.md)。下面是从零到能派活的最短路径。
 
-```bash
-# macOS or Linux
-curl -fsSL https://huacnlee.github.io/noop/install.sh | bash
+### 1. 服务端（内网一台机器）
+
+需要 Go 1.26+。
+
+```sh
+git clone https://github.com/Sailfishc/noop teamagent && cd teamagent/server
+go build -o teamagent-server ./cmd/teamagent-server
+
+# 第一个管理员：打印一个邀请链接，用它在客户端里注册
+./teamagent-server invite -data /var/lib/teamagent -email 你@公司.com -role admin -url http://teamagent.内网域名:8080
+
+# 启动（建议用 systemd 或 launchd 托管）
+TEAMAGENT_GIT_WEBHOOK_SECRET=一串随机字符 ./teamagent-server -addr :8080 -data /var/lib/teamagent
 ```
 
-```powershell
-# Windows
-irm https://huacnlee.github.io/noop/install.ps1 | iex
+要备份，就备份数据目录里的 `hub.db`。
+
+### 2. 客户端
+
+不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 TeamAgent 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（版本见 `.github/workflows/release.yml` 里的 `NSH_REF`）。
+
+```sh
+cd app
+nsh package --target macos -o dist/macos        # 桌面 App
+./build-web.sh                                   # 或者构建 Web 版，到 dist/web/noop
 ```
 
-## Client apps
+客户端的自动更新（`app/nsh.json` 的 `updater`）已经指向本仓库。本仓库还没有发布 Release，所以现在不会自动更新，更新时重新构建即可。
 
-The Noop app talks to your Noop from any device. It is optional: your Noop address also works in a browser.
+Web 版可以直接让服务端托管：启动时加 `-static ../app/dist/web/noop`，大家用浏览器打开服务端地址就行。
 
-```bash
-# macOS (Apple silicon, macOS 14+) and Linux (x86_64, GTK 4.14+, such as Ubuntu 24.04)
-curl -fsSL https://huacnlee.github.io/noop/install-client.sh | bash
+打开 App，选「我有邀请」，用邀请链接注册并绑定验证器 App。以后用邮箱加 6 位验证码登录。管理员在「Agent 与机器」里给同事发邀请。
+
+### 3. 机器（每台跑 Agent 的电脑）
+
+需要 [Bun](https://bun.sh)、git 和已登录的 [Codex CLI](https://github.com/openai/codex)。
+
+```sh
+git clone https://github.com/Sailfishc/noop ~/teamagent && cd ~/teamagent
+bun install
 ```
 
-```powershell
-# Windows
-irm https://huacnlee.github.io/noop/install-client.ps1 | iex
+在客户端的「我的机器」里添加这台电脑，把显示的几行写进 `~/teamagent/config.local.toml`（token 只显示一次）：
+
+```toml
+[cloud]
+url = "http://teamagent.内网域名:8080"
+
+[server]
+token = "tam_…"
+
+# 推分支、开 PR 用的凭证，按需填写
+[git.github]
+token = "…"                 # 不填就用 gh auth token
+
+[[git.gitlab]]              # Ant Code 等基于 GitLab 的平台
+host = "code.公司.com"
+token = "…"                 # 主人自己的 token，对仓库至少要有 Developer 权限
 ```
 
-From v0.1.5 the desktop apps update themselves: when a new version has downloaded, the sidebar offers a restart. Earlier versions update by running the same command again.
+然后启动守护进程（长期使用建议交给 launchd 或 systemd）：
 
-- **Android** (9+): download [noop-android.apk](https://github.com/huacnlee/noop/releases/latest/download/noop-android.apk) on your phone and open it.
-- **iOS** (15+): [noop-ios-unsigned.ipa](https://github.com/huacnlee/noop/releases/latest/download/noop-ios-unsigned.ipa) is not signed, so sign and install it with your own Apple ID using a tool such as Sideloadly or AltStore.
+```sh
+bun run daemon
+```
 
-## Use
+守护进程会跟随这个仓库的 `main` 自动更新：发现 `origin/main` 有新提交时，先跑 `bun test`，通过了才切换，失败就回滚。所以 `main` 就是线上版本，合进 `main` 的东西会自动到达所有机器。
 
-Open your Noop address on any device and sign in with a code sent to your email. On your phone, add it to the home screen and turn on notifications.
+### 4. 建 Agent 并派活
 
-Then just talk to it. When it needs you, you'll get a notification with the choices; answer right there.
+1. 在「我的 Agent」里新建一个 Agent，选它跑在哪台机器上，填它在那台机器上用的仓库路径（比如 `~/work/orders`），再选派活方式。
+2. 在频道里 @它说一句话。需要确认的话，主人在任务卡或「待你决定」里点「确认开工」。
+3. 干完后线程里会有 Agent 的总结和 PR 链接。PR 的 CI 状态由机器每两分钟查一次。
+
+### 5. Ant Code webhook（可选）
+
+在 Ant Code 仓库的集成服务里加一个 webhook：
+
+- 地址：`http://teamagent.内网域名:8080/api/v1/hooks/gitlab`
+- 密钥：服务端的 `TEAMAGENT_GIT_WEBHOOK_SECRET`
+- 事件：勾选 PullRequest
+
+这样 PR 一合并，任务就马上变成「已完成」。不配也能用，机器轮询也会发现，只是慢一点。
+
+## 开发与测试
+
+```sh
+bun test                                   # 守护进程
+cd server && go test -race ./...           # 服务端
+cd app && nsh test                         # 客户端
+```
+
+端到端脚本（多人协作、派活全链路）在 `server/test/`，用法见 [server/README.md](server/README.md#测试)。CI 会跑守护进程、服务端和端到端测试；客户端测试需要本地装好 nsh 再跑。
+
+## 和上游 noop 的关系
+
+这个仓库是 huacnlee/noop 的 fork，但产品形态已经不同：noop 是单人自用、跑在 Cloudflare 上；TeamAgent 是多人、自部署、Go 服务端。noop 的单人模式不再保证可用。上游的代码仍然有很多值得拿的东西，同步规则见 [docs/upstream-sync.md](docs/upstream-sync.md)。
 
 ## License
 
-MIT
-
-## More projects
-
-- [Disktree](https://huacnlee.github.io/disktree/) — A native disk-space explorer for macOS and Linux. See what fills your disk as a nested treemap, and review every path before removing anything.
-- [Omasend](https://huacnlee.github.io/omasend/) — A native LocalSend client. Share files, folders, screenshots, and text over your local network, with no account or cloud upload.
-- [Omamail](https://huacnlee.github.io/omamail/) — A native email and calendar app with multiple accounts and keyboard navigation. Runs as an Omarchy plugin or a standalone desktop app.
-- [huacnlee/cargo](https://huacnlee.github.io/cargo/) — A drop-in Cargo fork: every git worktree of a project shares one build directory, which stays under a size limit on its own.
-- [omarchy-mihoro](https://github.com/huacnlee/omarchy-mihoro) — An Omarchy bar panel for Mihoro. Monitor your proxy, switch between Rule, Global, and Direct modes, and manage subscriptions.
-- [omarchy-which-key](https://github.com/huacnlee/omarchy-which-key) — Which Key for the desktop. Hold Super to see a shortcut guide drawn from your active Omarchy and Hyprland keybindings.
+MIT。上游 noop 的版权归原作者所有，见 [LICENSE](LICENSE)。
