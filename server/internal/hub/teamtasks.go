@@ -17,7 +17,8 @@ import (
 // task: while it runs it waits for the next turn, after it stopped it reopens it.
 //
 // States: pending (waits for the owner) → queued (waits for the machine) → running → review | needs_decision |
-// blocked | failed, and done (accepted) or closed (cancelled, declined, not allowed).
+// blocked | failed | waiting (an outside result: teamwaits.go), and done (accepted) or closed (cancelled, declined,
+// not allowed).
 
 const (
 	taskPending       = "pending"
@@ -35,7 +36,7 @@ const (
 var stoppedStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true, taskDone: true}
 
 // what a machine may report when a run ends
-var reportStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true}
+var reportStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true, taskWaiting: true}
 
 type decisionView struct {
 	Question       string   `json:"question"`
@@ -85,6 +86,8 @@ type taskView struct {
 	Decision    *decisionView `json:"decision"`
 	PR          *prView       `json:"pr"`
 	Outputs     []outputView  `json:"outputs"` // what came out: the PR, files, external results (teamoutputs.go)
+	Wait        *waitView     `json:"wait"`    // what it waits for while waiting
+	Result      string        `json:"result"`  // confirmed | unconfirmed: whether the agent saw the result ("" = not said)
 	Branch      string        `json:"branch"`
 	Session     string        `json:"session"`
 	ClaimedBy   *string       `json:"claimed_by"`
@@ -96,7 +99,7 @@ type taskView struct {
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -106,11 +109,15 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate string
+		var decision, pr, mandate, wait string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result); err != nil {
 			panic(err)
+		}
+		if wait != "" {
+			t.Wait = &waitView{}
+			_ = json.Unmarshal([]byte(wait), t.Wait)
 		}
 		if mandate != "" {
 			t.Mandate = &mandateView{}
@@ -270,6 +277,14 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined bool) {
 
 // followUp: a person said something in the task's thread.
 func (h *Hub) followUp(t taskView) {
+	if t.State == taskWaiting { // people said something: the agent hears it now, not after the wait
+		w := t.Wait
+		if w == nil {
+			w = &waitView{}
+		}
+		h.wakeTask(t.ID, w, "message", "", "")
+		return
+	}
 	if stoppedStates[t.State] {
 		h.setTask(t.ID, map[string]any{"state": taskQueued, "step": ""})
 		h.taskChanged(t.ID)
@@ -386,7 +401,7 @@ func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
 }
 
 func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
-	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed)
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting)
 	if !ok {
 		return
 	}
@@ -398,7 +413,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 
 // v1TaskPatch: the creator or the agent's owner writes down what "done" means, or (before it ever ran) where it runs.
 func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
-	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed)
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting)
 	if !ok {
 		return
 	}
@@ -481,6 +496,12 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 
 // v1MachineTasks: the work waiting for this machine, and what it was running (to pick up after a restart).
 func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
+	if q.query("waiting") == "1" { // its tasks that wait on a check command it runs
+		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'waiting' AND json_extract(wait, '$.how') = 'poll'
+			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+		writeJSON(w, 200, obj{"tasks": ts})
+		return
+	}
 	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
 		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
 			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
@@ -526,7 +547,11 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	for _, m := range thread {
 		seen = max(seen, m.Seq)
 	}
-	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": ""}
+	var woke *wake
+	if t.Wait != nil {
+		woke = t.Wait.Wake
+	}
+	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil}
 	if !mine {
 		cols["runs"] = t.Runs + 1
 	}
@@ -554,7 +579,8 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	}
 	creator, _ := h.user(t.CreatedBy)
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic},
-		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine})
+		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
+		"wake": woke, "callback_url": callbackURL(q.r, h.callbackToken(t.ID))})
 }
 
 // v1TaskReport: the machine says how the run goes. {step, session, branch} while it runs; {state, summary, decision}
@@ -578,6 +604,10 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Memory *string `json:"memory"`
 		// Outputs: results kept elsewhere (an external service), new or changed
 		Outputs []outputReport `json:"outputs"`
+		// Wait: with state waiting, what wakes it
+		Wait *waitRequest `json:"wait"`
+		// Result: confirmed | unconfirmed, whether the agent saw the outcome it worked for
+		Result string `json:"result"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -620,8 +650,19 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if b.State != "" {
 		if !reportStates[b.State] {
-			errJSON(w, 400, "state 只能是 review、needs_decision、blocked 或 failed")
+			errJSON(w, 400, "state 只能是 review、needs_decision、blocked、failed 或 waiting")
 			return
+		}
+		if b.State == taskWaiting {
+			wt, msg := h.newWait(b.Wait)
+			if wt == nil {
+				errJSON(w, 400, msg)
+				return
+			}
+			cols["wait"] = jsonOrNil(wt)
+		}
+		if b.Result == "confirmed" || b.Result == "unconfirmed" {
+			cols["result"] = b.Result
 		}
 		state := b.State
 		summary := trimmed(b.Summary, 8000)

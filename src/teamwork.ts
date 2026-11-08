@@ -2,7 +2,7 @@
 // worktree of the agent's repository on branch agent/T-xxxx) with the agent's runtime, keep the task card's step up
 // to date, and report the result. The next turn of a task (people replied in its thread, or answered its decision)
 // resumes the same runtime session with only what is new.
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
@@ -27,9 +27,16 @@ export type Claim = {
   task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string }; channel: { id: string; name: string; topic: string };
   recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
   creator: { name: string; handle: string }; resumed: boolean;
+  /** Why a waiting task woke (and what a callback posted). */
+  wake?: Wake | null;
+  /** Where an outside service can post to wake this task. */
+  callback_url?: string;
 };
+export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message"; note?: string; payload?: string; at: number };
+/** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
+export type WaitSpec = { how: "callback" | "poll" | "timer"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
 export type TaskResult = {
-  status: "review" | "needs_decision" | "blocked" | "failed";
+  status: "review" | "needs_decision" | "blocked" | "failed" | "waiting";
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
   /** The criteria the agent worked to, when people gave none. */
   acceptance?: string;
@@ -37,6 +44,10 @@ export type TaskResult = {
   memory?: string;
   /** Results kept by outside services it called. */
   outputs?: ExternalOutput[];
+  /** status waiting: what wakes it. */
+  wait?: WaitSpec;
+  /** Whether it saw the outcome it worked for. */
+  result?: "confirmed" | "unconfirmed";
 };
 
 /** Where a task runs. `repo` is the checkout this worktree belongs to. `files`: in/ (what people attached) and out/
@@ -46,7 +57,7 @@ export type Workdir = { cwd: string; repo?: string; base?: string; branch?: stri
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
 
-const STATUSES = new Set(["review", "needs_decision", "blocked", "failed"]);
+const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting"]);
 
 /** The result block at the end of the agent's last message. Without one, the message itself is the summary. */
 export function parseTaskResult(text: string): TaskResult {
@@ -57,6 +68,8 @@ export function parseTaskResult(text: string): TaskResult {
       if (STATUSES.has(r.status)) {
         const options = Array.isArray(r.options) ? r.options.map(String).filter(Boolean) : undefined;
         if (r.status === "needs_decision" && !String(r.question ?? "").trim()) return { ...r, status: "blocked", summary: String(r.summary ?? "") };
+        if (r.status === "waiting" && !["callback", "poll", "timer"].includes(r.wait?.how)) return { ...r, status: "review", result: "unconfirmed", summary: String(r.summary ?? "") };
+        if (r.status === "waiting" && r.wait.how === "poll" && !String(r.wait.check ?? "").trim()) return { ...r, wait: { ...r.wait, how: "timer" }, summary: String(r.summary ?? "") };
         return { ...r, summary: String(r.summary ?? ""), options };
       }
     } catch {}
@@ -70,7 +83,9 @@ const quote = (c: Claim, ms: TeamMessage[]) => ms.map((m) => `- ${who(c, m)}: ${
 
 const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenced \`\`\`json block:
 {
-  "status": "review" | "needs_decision" | "blocked" | "failed",
+  "status": "review" | "needs_decision" | "blocked" | "failed" | "waiting",
+  "result": "review only, when the work depends on an outcome outside your work directory: confirmed (you saw it) | unconfirmed (you could not; say in the summary where and when it will appear)",
+  "wait": {"how": "poll" | "callback" | "timer", "check": "poll: a shell command run in your work directory that prints one JSON line {\"state\": \"pending\" | \"done\" | \"failed\", \"note\": \"progress\"}", "every": "5m", "expect": "2h", "deadline": "6h", "cancel": "optional: a command that cancels the outside job", "what": "what you wait for"},
   "summary": "1-3 sentences for the thread: what you did or found, with file paths, commands and links",
   "question": "needs_decision only: one short question",
   "options": ["A: <recommended> — consequence", "B: ... — consequence"],
@@ -81,7 +96,13 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
   "memory": "only when you learned something that will matter in later tasks (how the team works, a repo's quirks, people's preferences): your whole memory.md as it should be now, short bullet points, under 4000 characters",
   "outputs": [{"kind": "external", "title": "what it is", "service": "which service keeps it", "external_id": "its id there", "url": "https link to it", "status": "pending" | "ready" | "failed", "preview": "optional: path of a small picture of it you saved"}]
 }
-review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
+waiting = you started something outside (a cloud job, a render, a deployment) whose result decides whether the task is
+done, and you found a way to see the result (a status API to poll, the callback address below, or where it will appear
+at a known time): you stop now and are woken when it is time, in the same session. Do not wait in place for more than
+about 10 minutes. If the person's goal does not depend on the result, or you cannot find any way to see it, do not wait:
+report review with result unconfirmed. At most 3 submissions to outside services per task: after 3 unsuccessful ones,
+stop with needs_decision (try again / another way / cancel). Before submitting again after no result, cancel the earlier
+job if you can. review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
 failed = it cannot be done. When the task has acceptance criteria, say in the summary how each one is met (or which is
 not, and why); do not report review while one is unmet. Write summary, question and options in the language the people in the thread use (Simplified
@@ -137,6 +158,27 @@ ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
+${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${RESULT_SPEC}`;
+}
+
+const WAKE: Record<Wake["reason"], string> = {
+  callback: "the outside service called your callback address",
+  done: "your check command says the outside job is done",
+  failed: "your check command says the outside job failed",
+  errors: "your check command failed three times in a row",
+  timer: "the time you set has come",
+  deadline: "the deadline of your wait passed without a result: check once more; if you still cannot confirm it, report review with result unconfirmed (or blocked if it clearly went wrong)",
+  message: "a person said something in the thread",
+};
+
+/** A woken turn: why it woke, what was posted, what people said meanwhile. */
+export function wakePrompt(c: Claim): string {
+  const w = c.wake!;
+  return `You were waiting; you are woken because ${WAKE[w.reason] ?? w.reason}.${w.note ? `\nLast note: ${w.note}` : ""}${w.payload ? `\nWhat was posted to your callback address:\n${w.payload.slice(0, 20000)}` : ""}
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+Look at the result, check it against the acceptance criteria, save what people should see in out/ (a preview picture of
+an outside result too), and report; wait again only if it is still running.
 
 ${RESULT_SPEC}`;
 }
@@ -152,6 +194,37 @@ ${RESULT_SPEC}`;
 }
 
 export type Api = (path: string, init?: RequestInit) => Promise<any>;
+
+/** "90s", "5m", "2h", "1d" or a number of seconds → seconds (0 when it is none of these). */
+export function seconds(v: string | number | undefined): number {
+  if (typeof v === "number") return Math.max(0, Math.round(v));
+  const m = String(v ?? "").trim().match(/^(\d+(?:\.\d+)?)\s*(s|m|min|h|d)?$/i);
+  if (!m) return 0;
+  const n = Number(m[1]), unit = (m[2] ?? "s").toLowerCase();
+  return Math.round(n * (unit === "d" ? 86400 : unit === "h" ? 3600 : unit.startsWith("m") ? 60 : 1));
+}
+
+const waitFile = (root: string, id: string) => join(root, `${id}.wait.json`);
+
+/** The check command's answer: its last JSON line. */
+export function parseCheck(out: string): { state: "pending" | "done" | "failed"; note?: string } | null {
+  for (const line of out.trim().split("\n").reverse()) {
+    try {
+      const j = JSON.parse(line.trim());
+      if (["pending", "done", "failed"].includes(j?.state)) return { state: j.state, note: j.note ? String(j.note).slice(0, 300) : undefined };
+    } catch {}
+  }
+  return null;
+}
+
+async function sh(cmd: string, cwd: string, env: Record<string, string>, timeoutMs = 60_000): Promise<{ code: number; out: string }> {
+  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+  const timer = setTimeout(() => p.kill(), timeoutMs);
+  const [out, err] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+  const code = await p.exited;
+  clearTimeout(timer);
+  return { code, out: code === 0 ? out : (err || out).trim().split("\n").slice(-3).join(" ") };
+}
 
 export type WorkerOptions = {
   api: Api;
@@ -320,7 +393,7 @@ export function createWorker(o: WorkerOptions) {
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
     const resume = t.session;
-    const prompt = !resume ? taskPrompt(c, wd) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const prompt = !resume ? taskPrompt(c, wd) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -366,6 +439,12 @@ export function createWorker(o: WorkerOptions) {
     }
     const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? "", notes.join("；")].filter(Boolean).join("\n\n");
     const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
+    if (result.result === "confirmed" || result.result === "unconfirmed") body.result = result.result;
+    if (result.status === "waiting" && result.wait) {
+      const w = result.wait;
+      writeFileSync(waitFile(root, t.id), JSON.stringify({ check: w.check ?? "", cancel: w.cancel ?? "", cwd: wd.cwd }));
+      body.wait = { how: w.how, every: seconds(w.every), expect: seconds(w.expect), deadline: seconds(w.deadline), what: w.what ?? "" };
+    }
     if (extra?.pr) body.pr = extra.pr;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
@@ -394,7 +473,48 @@ export function createWorker(o: WorkerOptions) {
   function onTask(t: TeamTask, mine: (agentId: string) => boolean) {
     if (!mine(t.agent_id)) return;
     if (t.state === "queued") void claim(t);
-    else if (t.state === "closed" || t.state === "done") kills.get(t.id)?.(); // cancelled while it ran
+    else if (t.state === "closed" || t.state === "done") {
+      kills.get(t.id)?.(); // cancelled while it ran
+      if (t.state === "closed") void cancelOutside(t.id);
+    }
+  }
+
+  /** A cancelled task that was waiting: its outside job is cancelled too, when the agent said how. */
+  async function cancelOutside(id: string) {
+    const f = waitFile(root, id);
+    if (!existsSync(f)) return;
+    try {
+      const w = JSON.parse(readFileSync(f, "utf8"));
+      if (w.cancel && existsSync(w.cwd)) {
+        const r = await sh(w.cancel, w.cwd, (o.env ?? gateEnv)({ cwd: w.cwd, writable: [] }));
+        log(`${id} 已取消，外部任务取消${r.code === 0 ? "成功" : `失败：${r.out}`}`);
+      }
+    } catch {}
+    try { rmSync(f); } catch {}
+  }
+
+  /** The waiting tasks whose check is due: run their check commands here and say what they found. */
+  const checking = new Set<string>();
+  async function checkWaits() {
+    if (stopped) return;
+    const r = await o.api("/api/v1/machine/tasks?waiting=1");
+    for (const t of (r?.tasks ?? []) as (TeamTask & { wait?: { next_at?: number } })[]) {
+      if (checking.has(t.id) || running.has(t.id) || (t.wait?.next_at ?? 0) > Date.now()) continue;
+      checking.add(t.id);
+      void (async () => {
+        let body: Record<string, unknown>;
+        try {
+          const w = JSON.parse(readFileSync(waitFile(root, t.id), "utf8"));
+          if (!w.check) throw new Error("没有查询命令");
+          const res = await sh(w.check, existsSync(w.cwd) ? w.cwd : root, (o.env ?? gateEnv)({ cwd: w.cwd, writable: [] }));
+          const parsed = res.code === 0 ? parseCheck(res.out) : null;
+          body = parsed ?? { error: res.code === 0 ? "查询命令没有输出 {\"state\": …}" : res.out || `退出码 ${res.code}` };
+        } catch (e) {
+          body = { error: e instanceof Error ? e.message : String(e) };
+        }
+        await o.api(`/api/v1/tasks/${t.id}/wait`, { method: "POST", body: JSON.stringify(body) }).catch(() => null);
+      })().finally(() => checking.delete(t.id));
+    }
   }
 
   /** The tasks waiting for this machine (also the ones it ran before a restart). */
@@ -407,7 +527,7 @@ export function createWorker(o: WorkerOptions) {
   }
 
   return {
-    onTask, poll,
+    onTask, poll, checkWaits,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },
