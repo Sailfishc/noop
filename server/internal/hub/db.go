@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQU
 CREATE TABLE IF NOT EXISTS invites (hash TEXT PRIMARY KEY, email TEXT NOT NULL, role TEXT NOT NULL, created_by TEXT,
   created INTEGER NOT NULL, expires INTEGER NOT NULL, pending_secret TEXT, used_by TEXT, used_at INTEGER);
 CREATE TABLE IF NOT EXISTS login_fails (email TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS enroll_codes (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS login_codes (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created INTEGER NOT NULL, expires INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
   os TEXT, arch TEXT, runtimes TEXT, max_sessions INTEGER NOT NULL DEFAULT 3, created INTEGER NOT NULL, last_seen INTEGER);
@@ -99,9 +100,10 @@ func initSchema(db *sql.DB) error {
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE machines ADD COLUMN info TEXT",
-		"ALTER TABLE machines ADD COLUMN join_hash TEXT",                   // a one-time code the install script trades for the token
-		"ALTER TABLE machines ADD COLUMN join_expires INTEGER",             // what the daemon detected: its runtimes and Git credentials (machineInfo)
+		"ALTER TABLE machines ADD COLUMN info TEXT",      // what the daemon detected: its runtimes and Git credentials (machineInfo)
+		"ALTER TABLE machines ADD COLUMN join_hash TEXT", // a one-time code the install script trades for the token
+		"ALTER TABLE machines ADD COLUMN join_expires INTEGER",
+		"ALTER TABLE machines ADD COLUMN machine_key TEXT",                 // the computer's own id (a file in its data dir): joining again finds its record
 		"ALTER TABLE agents ADD COLUMN confirm INTEGER NOT NULL DEFAULT 1", // people other than the owner wait for the owner's yes
 		"ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''",     // "" = the runtime's default model
 		"ALTER TABLE tasks_v1 ADD COLUMN acceptance TEXT NOT NULL DEFAULT ''",

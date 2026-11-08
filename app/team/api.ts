@@ -482,6 +482,15 @@ export function createTeam(s: Session) {
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
   }
+  /** A command that adds my computers: each reports in by itself when it runs it (an hour). */
+  async function enrollMachine() {
+    return api("POST", "/api/v1/machines/enroll");
+  }
+  async function renameMachine(id: string, name: string) {
+    const r = await api("PATCH", `/api/v1/machines/${id}`, { name });
+    if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
+    return r;
+  }
   /** A new one-time join code for a machine (an hour); joining with it replaces the machine's token. */
   async function machineJoinCode(id: string) {
     return api("POST", `/api/v1/machines/${id}/join`);
@@ -554,7 +563,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

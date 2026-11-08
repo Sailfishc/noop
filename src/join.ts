@@ -1,6 +1,7 @@
 // `noop join <server> <code>`: what the one-line installer runs. It trades the one-time join code from the app
 // (我的机器 → 添加机器) for this machine's token and writes both into config.local.toml, keeping everything else.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +22,19 @@ export function setTomlKey(text: string, section: string, key: string, value: st
   return lines.join("\n");
 }
 
+/** This computer's own id, kept in its data dir: joining again from it finds the same machine (and its agents). */
+export function machineKey(data: string): string {
+  const file = join(data, "machine-id");
+  const have = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+  if (have.length >= 16) return have;
+  mkdirSync(data, { recursive: true });
+  const key = randomBytes(16).toString("hex");
+  writeFileSync(file, key + "\n", { mode: 0o600 });
+  return key;
+}
+
+const osName = () => (process.platform === "darwin" ? "macOS" : process.platform);
+
 export type JoinResult = { name: string; file: string };
 
 export async function joinServer(server: string, code: string, opts: { data: string; fetch?: typeof fetch }): Promise<JoinResult> {
@@ -29,7 +43,7 @@ export async function joinServer(server: string, code: string, opts: { data: str
   let r: Response;
   try {
     r = await (opts.fetch ?? fetch)(`${url}/api/v1/machines/join`, {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: code.trim(), host: hostname() }),
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: code.trim(), host: hostname().replace(/\.local$/, ""), os: osName(), arch: process.arch, key: machineKey(opts.data) }),
     });
   } catch (e) {
     throw new Error(`连不上服务端 ${url}：${(e as Error).message}。这台电脑要能访问到这个地址。`);

@@ -7,16 +7,20 @@ import (
 	"time"
 )
 
-// Adding a machine in one line. A person adds a machine in the app and gets a command:
+// Adding a machine in one line. A person asks the app for a command and runs it on the computer:
 //
-//	curl -fsSL <server>/api/v1/install.sh | bash -s -- <server> <join code>
+//	curl -fsSL <server>/api/v1/install.sh | bash -s -- <server> <code>
 //
-// The script installs the daemon and trades the one-time code (an hour) for the machine's token, so the token
-// never sits in a shell history or a chat. A new code can be made for a machine any time; it changes the token.
+// The computer reports in by itself, the way Raft's Computers do: the code stands for the person (te_, an hour,
+// any number of computers), and joining makes the machine from the computer's own name, OS and CPU. Each computer
+// keeps a random id in its data dir; joining again from the same one finds its record (its agents stay) and
+// replaces the token. A machine's own code (tj_, once) reconnects that machine. The token never sits in a shell
+// history or a chat.
 
 const (
-	joinPrefix = "tj_"
-	joinTTL    = time.Hour
+	joinPrefix   = "tj_"
+	enrollPrefix = "te_"
+	joinTTL      = time.Hour
 )
 
 //go:embed install.sh
@@ -28,40 +32,117 @@ func (h *Hub) newJoinCode(machineID string) string {
 	return code
 }
 
-// v1MachineJoinCode: its owner (or an admin) makes a new install command for a machine.
+// v1MachineEnroll: a person gets a command that adds their computers.
+func (h *Hub) v1MachineEnroll(w http.ResponseWriter, q *request) {
+	code := enrollPrefix + randHex(12)
+	h.must(h.db.Exec("DELETE FROM enroll_codes WHERE expires < ?", h.nowMs()))
+	h.must(h.db.Exec("INSERT INTO enroll_codes (hash, user_id, expires) VALUES (?, ?, ?)", sha256hex([]byte(code)), q.who.userID, h.nowMs()+joinTTL.Milliseconds()))
+	writeJSON(w, 200, obj{"join": code, "expires": h.nowMs() + joinTTL.Milliseconds()})
+}
+
+// v1MachineJoinCode: its owner (or an admin) makes a command that reconnects one machine.
 func (h *Hub) v1MachineJoinCode(w http.ResponseWriter, q *request) {
 	id := q.r.PathValue("id")
-	var owner string
-	if h.db.QueryRow("SELECT owner_id FROM machines WHERE id = ?", id).Scan(&owner) != nil {
-		errJSON(w, 404, "not found")
-		return
-	}
-	if owner != q.who.userID && !h.isAdmin(q.who.userID) {
-		errJSON(w, 403, "forbidden")
+	if !h.mayManageMachine(w, q, id) {
 		return
 	}
 	writeJSON(w, 200, obj{"join": h.newJoinCode(id)})
 }
 
-// v1MachineJoin: the install script trades a join code for the machine's token (once).
-func (h *Hub) v1MachineJoin(w http.ResponseWriter, q *request) {
-	var b struct{ Code string }
-	_ = q.json(&b)
-	code := strings.TrimSpace(b.Code)
-	var id, name string
-	var expires int64
-	if !strings.HasPrefix(code, joinPrefix) || h.db.QueryRow("SELECT id, name, COALESCE(join_expires, 0) FROM machines WHERE join_hash = ?",
-		sha256hex([]byte(code))).Scan(&id, &name, &expires) != nil {
-		errJSON(w, 404, "接入码不对或已经用过了，请在客户端里重新生成")
+// v1MachinePatch: its owner (or an admin) renames it.
+func (h *Hub) v1MachinePatch(w http.ResponseWriter, q *request) {
+	id := q.r.PathValue("id")
+	if !h.mayManageMachine(w, q, id) {
 		return
 	}
-	if h.nowMs() > expires {
-		errJSON(w, 410, "接入码已过期，请在客户端里重新生成")
+	var b struct{ Name string }
+	_ = q.json(&b)
+	name := trimmed(b.Name, 60)
+	if name == "" {
+		errJSON(w, 400, "name required")
+		return
+	}
+	h.must(h.db.Exec("UPDATE machines SET name = ? WHERE id = ?", name, id))
+	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", id))[0]
+	h.broadcastPeople(obj{"type": "machine", "machine": m})
+	writeJSON(w, 200, obj{"machine": m})
+}
+
+func (h *Hub) mayManageMachine(w http.ResponseWriter, q *request, id string) bool {
+	var owner string
+	if h.db.QueryRow("SELECT owner_id FROM machines WHERE id = ?", id).Scan(&owner) != nil {
+		errJSON(w, 404, "not found")
+		return false
+	}
+	if owner != q.who.userID && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "forbidden")
+		return false
+	}
+	return true
+}
+
+// v1MachineJoin: the install script trades a code for this computer's token.
+func (h *Hub) v1MachineJoin(w http.ResponseWriter, q *request) {
+	var b struct{ Code, Host, OS, Arch, Key string }
+	_ = q.json(&b)
+	code := strings.TrimSpace(b.Code)
+	key := ""
+	if k := strings.TrimSpace(b.Key); len(k) >= 16 && len(k) <= 128 {
+		key = sha256hex([]byte(k))
+	}
+	now := h.nowMs()
+	var id string
+	switch {
+	case strings.HasPrefix(code, enrollPrefix):
+		var userID string
+		var expires int64
+		if h.db.QueryRow("SELECT user_id, expires FROM enroll_codes WHERE hash = ?", sha256hex([]byte(code))).Scan(&userID, &expires) != nil {
+			errJSON(w, 404, "接入码不对，请在客户端里重新生成")
+			return
+		}
+		if now > expires {
+			errJSON(w, 410, "接入码已过期，请在客户端里重新生成")
+			return
+		}
+		if key == "" || h.db.QueryRow("SELECT id FROM machines WHERE owner_id = ? AND machine_key = ?", userID, key).Scan(&id) != nil {
+			name := trimmed(b.Host, 60)
+			if name == "" {
+				name = "新机器"
+			}
+			id = newID("m_")
+			h.must(h.db.Exec("INSERT INTO machines (id, owner_id, name, token_hash, created, machine_key) VALUES (?, ?, ?, ?, ?, ?)",
+				id, userID, name, "pending:"+randHex(16), now, nullable(key)))
+		}
+	case strings.HasPrefix(code, joinPrefix):
+		var expires int64
+		if h.db.QueryRow("SELECT id, COALESCE(join_expires, 0) FROM machines WHERE join_hash = ?", sha256hex([]byte(code))).Scan(&id, &expires) != nil {
+			errJSON(w, 404, "接入码不对或已经用过了，请在客户端里重新生成")
+			return
+		}
+		if now > expires {
+			errJSON(w, 410, "接入码已过期，请在客户端里重新生成")
+			return
+		}
+		if key != "" {
+			h.must(h.db.Exec("UPDATE machines SET machine_key = ? WHERE id = ?", key, id))
+		}
+	default:
+		errJSON(w, 404, "接入码不对，请在客户端里重新生成")
 		return
 	}
 	token := machineTokenPrefix + randHex(32)
-	h.must(h.db.Exec("UPDATE machines SET token_hash = ?, join_hash = NULL, join_expires = NULL WHERE id = ?", sha256hex([]byte(token)), id))
-	writeJSON(w, 200, obj{"token": token, "machine": obj{"id": id, "name": name}})
+	h.must(h.db.Exec("UPDATE machines SET token_hash = ?, join_hash = NULL, join_expires = NULL, os = COALESCE(NULLIF(?, ''), os), arch = COALESCE(NULLIF(?, ''), arch) WHERE id = ?",
+		sha256hex([]byte(token)), trimmed(b.OS, 30), trimmed(b.Arch, 30), id))
+	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", id))[0]
+	h.broadcastPeople(obj{"type": "machine", "machine": m})
+	writeJSON(w, 200, obj{"token": token, "machine": obj{"id": id, "name": m.Name}})
+}
+
+func nullable(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func (h *Hub) v1InstallScript(w http.ResponseWriter, r *http.Request) {

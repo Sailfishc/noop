@@ -507,13 +507,7 @@ func (h *Hub) v1MachineCreate(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
 	id := q.r.PathValue("id")
-	var owner string
-	if h.db.QueryRow("SELECT owner_id FROM machines WHERE id = ?", id).Scan(&owner) != nil {
-		errJSON(w, 404, "not found")
-		return
-	}
-	if owner != q.who.userID && !h.isAdmin(q.who.userID) {
-		errJSON(w, 403, "forbidden")
+	if !h.mayManageMachine(w, q, id) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM machines WHERE id = ?", id))
