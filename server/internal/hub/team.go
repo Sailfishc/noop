@@ -507,8 +507,8 @@ func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
 // v1MachineReport: the daemon says what it is and what it can run; it gets back the agents it hosts.
 func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	var b struct {
-		OS          string   `json:"os"`
-		Arch        string   `json:"arch"`
+		OS          string        `json:"os"`
+		Arch        string        `json:"arch"`
 		Runtimes    []string      `json:"runtimes"`
 		MaxSessions int           `json:"max_sessions"`
 		RuntimeInfo []runtimeInfo `json:"runtime_info"`
