@@ -143,6 +143,10 @@ export function gitAfterRun(cfg: Cfg, f: Fetch = fetch): AfterRun {
     const notes: string[] = [];
     if (dirty) notes.push("工作区还有没提交的改动，没有包含在 PR 里");
     if (!ahead) return notes.length ? { note: notes.join("；") } : null;
+    if (!(await git(wd.cwd, "remote", "get-url", "origin")).ok) {
+      notes.push(`改动在本地分支 ${wd.branch} 上；仓库没有 origin，没有推送也没有开 PR`);
+      return { note: notes.join("；") };
+    }
     const push = await git(wd.cwd, "push", "--force-with-lease", "origin", `HEAD:refs/heads/${wd.branch}`);
     if (!push.ok) throw new Error(push.err.split("\n").slice(-2).join(" "));
     const remote = parseRemote((await git(wd.cwd, "remote", "get-url", "origin")).out);
