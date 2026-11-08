@@ -262,8 +262,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
   return (
     <View style={{ flex: 1 }}>
       <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), flexDirection: "row", alignItems: "center", gap: 9, paddingLeft: props.inset && chrome().left ? chrome().left + 4 : 16, paddingRight: 16 }}>
-        <Image src={LOGO} accessibilityLabel="" style={{ width: 22, height: 22 }} />
-        <Text style={{ flex: 1, fontSize: 15.5, fontWeight: "700", color: colors.text }}>TeamAgent</Text>
+        {/* no logo or name for now: the bar stays as the window's drag area and the traffic lights' room */}
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
         <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
