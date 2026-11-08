@@ -636,16 +636,24 @@ func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
 		writeJSON(w, 200, obj{"ok": true, "ignored": b.Kind})
 		return
 	}
+	ev := gitEvent{Kind: b.Kind, Project: trimmed(b.Project.Path, 120), Branch: trimmed(branch, 120), Number: b.Attrs.IID, State: state + checks}
+	if b.MR != nil && ev.Number == 0 {
+		ev.Number = b.MR.IID
+	}
 	if !strings.HasPrefix(branch, "agent/") {
+		h.noteGitEvent(ev)
 		writeJSON(w, 200, obj{"ok": true, "ignored": "not a task branch"})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE branch = ? ORDER BY num DESC LIMIT 1", branch))
 	if len(ts) == 0 {
+		h.noteGitEvent(ev)
 		writeJSON(w, 200, obj{"ok": true, "ignored": "no task"})
 		return
 	}
 	t := ts[0]
+	ev.Task = t.ID
+	h.noteGitEvent(ev)
 	pr := prView{Provider: "gitlab", State: "open", Checks: "none", Repo: b.Project.Path}
 	if t.PR != nil {
 		pr = *t.PR

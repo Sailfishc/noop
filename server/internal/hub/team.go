@@ -67,9 +67,32 @@ type machineView struct {
 	MaxSessions int      `json:"max_sessions"`
 	Online      bool     `json:"online"`
 	LastSeen    *int64   `json:"last_seen"`
+	machineInfo
 }
 
-const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen"
+// machineInfo: what the daemon found on its machine, for people to see before they pick a machine and a runtime.
+// Never a secret: a Git credential is only "configured", and as whom.
+type machineInfo struct {
+	RuntimeInfo []runtimeInfo `json:"runtime_info"`
+	Git         []gitCred     `json:"git"`
+}
+
+type runtimeInfo struct {
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Installed bool   `json:"installed"`
+	LoggedIn  *bool  `json:"logged_in"` // nil: unknown
+}
+
+type gitCred struct {
+	Provider   string `json:"provider"` // github | gitlab
+	Host       string `json:"host"`
+	Configured bool   `json:"configured"`
+	User       string `json:"user"`
+	Via        string `json:"via"` // token | gh
+}
+
+const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}')"
 
 func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	if err != nil {
@@ -79,11 +102,23 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	out := []machineView{}
 	for rows.Next() {
 		var m machineView
-		var rt string
-		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen); err != nil {
+		var rt, info string
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(rt), &m.Runtimes)
+		_ = json.Unmarshal([]byte(info), &m.machineInfo)
+		if m.RuntimeInfo == nil { // a daemon from before: what it listed is installed, login unknown
+			for _, r := range m.Runtimes {
+				m.RuntimeInfo = append(m.RuntimeInfo, runtimeInfo{Name: r, Installed: true})
+			}
+		}
+		if m.RuntimeInfo == nil {
+			m.RuntimeInfo = []runtimeInfo{}
+		}
+		if m.Git == nil {
+			m.Git = []gitCred{}
+		}
 		if m.Runtimes == nil {
 			m.Runtimes = []string{}
 		}
@@ -472,12 +507,28 @@ func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
 // v1MachineReport: the daemon says what it is and what it can run; it gets back the agents it hosts.
 func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	var b struct {
-		OS          string   `json:"os"`
-		Arch        string   `json:"arch"`
-		Runtimes    []string `json:"runtimes"`
-		MaxSessions int      `json:"max_sessions"`
+		OS          string        `json:"os"`
+		Arch        string        `json:"arch"`
+		Runtimes    []string      `json:"runtimes"`
+		MaxSessions int           `json:"max_sessions"`
+		RuntimeInfo []runtimeInfo `json:"runtime_info"`
+		Git         []gitCred     `json:"git"`
 	}
 	_ = q.json(&b)
+	var info machineInfo
+	for _, r := range b.RuntimeInfo {
+		if runtimes[r.Name] && len(info.RuntimeInfo) < 8 {
+			r.Version = trimmed(r.Version, 40)
+			info.RuntimeInfo = append(info.RuntimeInfo, r)
+		}
+	}
+	for _, g := range b.Git {
+		if (g.Provider == "github" || g.Provider == "gitlab") && len(info.Git) < 16 {
+			g.Host, g.User, g.Via = trimmed(strings.ToLower(g.Host), 100), trimmed(g.User, 60), trimmed(g.Via, 20)
+			info.Git = append(info.Git, g)
+		}
+	}
+	infoJSON, _ := json.Marshal(info)
 	var rts []string
 	for _, r := range b.Runtimes {
 		if runtimes[r] {
@@ -489,9 +540,10 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	if b.MaxSessions == 0 {
 		maxS = 3
 	}
-	h.must(h.db.Exec("UPDATE machines SET os = ?, arch = ?, runtimes = ?, max_sessions = ?, last_seen = ? WHERE id = ?",
-		trimmed(b.OS, 40), trimmed(b.Arch, 40), string(rt), maxS, h.nowMs(), q.who.machineID))
+	h.must(h.db.Exec("UPDATE machines SET os = ?, arch = ?, runtimes = ?, max_sessions = ?, last_seen = ?, info = ? WHERE id = ?",
+		trimmed(b.OS, 40), trimmed(b.Arch, 40), string(rt), maxS, h.nowMs(), string(infoJSON), q.who.machineID))
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
+	h.broadcastPeople(obj{"type": "machine", "machine": m})
 	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))})
 }
 
