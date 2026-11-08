@@ -987,6 +987,14 @@ async function main() {
         options: { worker: { type: "string" }, token: { type: "string" }, primary: { type: "boolean" } } });
       return init({ ...values, worker: values.worker ?? positionals[0] });
     }
+    case "join": { // the one-line installer: trade the app's join code for this machine's token
+      const [server, code] = rest;
+      if (!server || !code) throw new Error("用法：noop join <服务端地址> <接入码>");
+      const { joinServer } = await import("./join");
+      const { DATA } = await import("./core");
+      const r = await joinServer(server, code, { data: DATA });
+      return void console.log(`已接入 ${server}${r.name ? `：${r.name}` : ""}（配置写在 ${r.file}）`);
+    }
     case "install": return install();
     case "visual": return visual(rest);
     case "doctor": return doctor();

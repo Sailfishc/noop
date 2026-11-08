@@ -43,6 +43,9 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("GET /api/v1/machines", anyone, h.v1Machines)
 	r("POST /api/v1/machines", person, h.v1MachineCreate)
 	r("DELETE /api/v1/machines/{id}", person, h.v1MachineDelete)
+	r("POST /api/v1/machines/{id}/join", person, h.v1MachineJoinCode)
+	r("POST /api/v1/machines/join", public, h.v1MachineJoin)
+	m.HandleFunc("GET /api/v1/install.sh", h.v1InstallScript)
 	r("PUT /api/v1/machine", machine, h.v1MachineReport)
 
 	r("GET /api/v1/repos", anyone, h.v1Repos)

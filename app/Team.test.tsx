@@ -62,8 +62,9 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
     [`POST ${URL}/api/v1/channels/c_2/members`]: { body: { ...ops, members: [...ops.members, { kind: "user", id: "u_1" }] } },
     [`POST ${URL}/api/v1/machines`]: (r: { body?: string | null }) => {
       log.created.push(JSON.parse(r.body!));
-      return { body: { machine: { ...mac, id: "m_2", name: JSON.parse(r.body!).name, online: false, runtimes: [] }, token: "tam_" + "ab".repeat(32) } };
+      return { body: { machine: { ...mac, id: "m_2", name: JSON.parse(r.body!).name, online: false, runtimes: [] }, token: "tam_" + "ab".repeat(32), join: "tj_first" } };
     },
+    [`POST ${URL}/api/v1/machines/m_2/join`]: { body: { join: "tj_again" } },
     [`PATCH ${URL}/api/v1/agents/a_1`]: (r: { body?: string | null }) => {
       const p = JSON.parse(r.body!);
       log.patches.push(p);
@@ -249,15 +250,22 @@ describe("settings", () => {
     await app.waitFor("id:agent-detail-acha");
   });
 
-  test("adding a machine shows its token once, ready to paste; an agent's dispatch scope and confirmation change", async () => {
+  test("adding a machine gives one command to run there, or its token by hand; an agent's dispatch scope and confirmation change", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
     await settings(app, "machines");
     await app.press("id:machine-add");
     await app.type("id:machine-name", "构建机");
     await app.press("id:machine-create");
-    await app.waitFor("id:machine-token");
+    await app.waitFor("id:machine-command");
     expect(log.created).toEqual([{ name: "构建机" }]);
+    expect(app.shows(`text:curl -fsSL ${URL}/api/v1/install.sh | bash -s -- ${URL} tj_first`)).toBe(true);
+    expect(app.shows("id:machine-loopback")).toBe(false);
+    await app.press("id:machine-join-m_2"); // later, or when the code expired: a new one
+    await app.waitFor(`text:/tj_again$/`);
+    expect(app.shows("text:/new token/")).toBe(true);
+    await app.press("id:machine-manual");
+    await app.waitFor("id:machine-token");
     expect(app.shows(`text:/token = "tam_abab/`)).toBe(true);
     expect(app.shows(`text:/url = "${URL}"/`)).toBe(true);
     await app.press("id:settings-nav-agents");

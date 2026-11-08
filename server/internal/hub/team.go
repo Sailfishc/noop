@@ -502,7 +502,7 @@ func (h *Hub) v1MachineCreate(w http.ResponseWriter, q *request) {
 	h.must(h.db.Exec("INSERT INTO machines (id, owner_id, name, token_hash, created) VALUES (?, ?, ?, ?, ?)",
 		id, q.who.userID, name, sha256hex([]byte(token)), h.nowMs()))
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", id))[0]
-	writeJSON(w, 200, obj{"machine": m, "token": token})
+	writeJSON(w, 200, obj{"machine": m, "token": token, "join": h.newJoinCode(id)})
 }
 
 func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {

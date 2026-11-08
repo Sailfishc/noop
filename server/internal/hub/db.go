@@ -99,7 +99,9 @@ func initSchema(db *sql.DB) error {
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE machines ADD COLUMN info TEXT",                        // what the daemon detected: its runtimes and Git credentials (machineInfo)
+		"ALTER TABLE machines ADD COLUMN info TEXT",
+		"ALTER TABLE machines ADD COLUMN join_hash TEXT",     // a one-time code the install script trades for the token
+		"ALTER TABLE machines ADD COLUMN join_expires INTEGER",                        // what the daemon detected: its runtimes and Git credentials (machineInfo)
 		"ALTER TABLE agents ADD COLUMN confirm INTEGER NOT NULL DEFAULT 1", // people other than the owner wait for the owner's yes
 		"ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''",     // "" = the runtime's default model
 		"ALTER TABLE tasks_v1 ADD COLUMN acceptance TEXT NOT NULL DEFAULT ''",

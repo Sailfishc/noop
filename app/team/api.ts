@@ -67,6 +67,14 @@ export type Output = {
   /** progress or why it failed; a PR: its checks */
   note?: string; preview?: boolean; updated: number;
 };
+/** The one line that connects a computer as a machine: installs the daemon, trades the code for its token, runs it as a service. */
+export const installCommand = (server: string, code: string) => {
+  const url = server.replace(/\/+$/, "");
+  return `curl -fsSL ${url}/api/v1/install.sh | bash -s -- ${url} ${code}`;
+};
+/** A server address only the server's own computer can reach. */
+export const isLoopback = (server: string) => /^https?:\/\/(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(server);
+
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
   /** The default repository of its tasks (host/owner/name), "" for none. */
   repo?: string };
@@ -474,6 +482,10 @@ export function createTeam(s: Session) {
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
   }
+  /** A new one-time join code for a machine (an hour); joining with it replaces the machine's token. */
+  async function machineJoinCode(id: string) {
+    return api("POST", `/api/v1/machines/${id}/join`);
+  }
   async function deleteMachine(id: string) {
     const r = await api("DELETE", `/api/v1/machines/${id}`);
     if (r.ok) {
@@ -542,7 +554,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }
