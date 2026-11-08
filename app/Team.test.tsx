@@ -428,6 +428,21 @@ describe("settings", () => {
     await app.waitFor("id:team-signin");
     expect(app.storage()["team.session"]).toBe(undefined);
   });
+
+  test("the appearance: system, light, dark or black, kept on the device", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await settings(app, "general");
+    expect(app.shows("id:appearance-system")).toBe(true);
+    await app.press("id:appearance-black");
+    await app.waitUntil(() => app.storage()["team.appearance"] === "black");
+    await app.press("id:appearance-light");
+    await app.waitUntil(() => app.storage()["team.appearance"] === "light");
+    await app.press("id:appearance-dark");
+    await app.waitUntil(() => app.storage()["team.appearance"] === "dark");
+    const again = await open("./App.tsx", { storage: { ...SESSION, "team.appearance": "black" }, width: 1200, height: 800, network: server(newLog()) });
+    await settings(again, "general");
+    await again.waitFor("id:appearance-black");
+  });
 });
 
 describe("channel v2", () => {

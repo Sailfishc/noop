@@ -6,6 +6,7 @@
 import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
 import { Dialog } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
+import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
   modelsOn, RUNTIMES, runtimeLabel, runtimeOn,
@@ -329,17 +330,29 @@ function DevicesPanel(props: { team: Team }) {
 
 // ---------------------------------------------------------------- 通用
 
+const LOOKS: { value: Appearance; label: () => string }[] = [
+  { value: "system", label: () => L("System", "跟随系统") },
+  { value: "light", label: () => L("Light", "浅色") },
+  { value: "dark", label: () => L("Dark", "深色") },
+  { value: "black", label: () => L("Black", "黑色") },
+];
+
 function GeneralSection() {
   return (
-    <Panel title={L("Language", "语言")}>
-      <Choice
-        testID="lang"
-        options={[{ value: "zh", label: "中文" }, { value: "en", label: "English" }]}
-        value={lang() === "zh" ? "zh" : "en"}
-        onChange={(v) => { lang.set(v); void Storage.setItem(LANG_KEY, v); }}
-      />
-      <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Appearance and notifications come later.", "外观和通知设置之后再加。")}</Text>
-    </Panel>
+    <>
+      <Panel title={L("Appearance", "外观")}>
+        <Choice testID="appearance" options={LOOKS.map((l) => ({ value: l.value, label: l.label() }))} value={appearance()} onChange={pickAppearance} />
+        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Dark is graphite; black is true black, easier on OLED screens. Kept on this device.", "深色是石墨灰，黑色是纯黑，适合 OLED 屏幕和暗光环境。只对这台设备生效。")}</Text>
+      </Panel>
+      <Panel title={L("Language", "语言")}>
+        <Choice
+          testID="lang"
+          options={[{ value: "zh", label: "中文" }, { value: "en", label: "English" }]}
+          value={lang() === "zh" ? "zh" : "en"}
+          onChange={(v) => { lang.set(v); void Storage.setItem(LANG_KEY, v); }}
+        />
+      </Panel>
+    </>
   );
 }
 

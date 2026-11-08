@@ -849,7 +849,7 @@ function TaskFacts(props: { team: Team; task: Task }) {
       </>)}
       {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
       <If when={task().mandate}>
-        {fact(L("Mandate", "授权"), plain(mandateLine(t, task()), `task-${task().id}-mandate`))}
+        {fact(L("Mandate", "授权"), <Text testID={`task-${task().id}-mandate`} style={{ flex: 1, flexShrink: 1, fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>)}
       </If>
       <Acceptance team={t} task={task()} />
       {fact(L("Output", "产出"), task().pr ? (
