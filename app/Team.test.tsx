@@ -7,7 +7,7 @@ const T0 = Date.now() - 3600_000;
 const zw = { id: "u_1", email: "zw@corp.com", handle: "zhangwei", name: "张伟", role: "admin", disabled: false };
 const wl = { id: "u_2", email: "wl@corp.com", handle: "wanglei", name: "王磊", role: "member", disabled: false };
 const mac = { id: "m_1", owner_id: "u_1", name: "张伟的 Mac", os: "darwin", arch: "arm64", runtimes: ["codex"], max_sessions: 3, online: true, last_seen: T0 };
-const acha = { id: "a_1", owner_id: "u_1", machine_id: "m_1", handle: "acha", name: "阿查", description: "", runtime: "codex", dispatch: "confirm", autonomy: "assist" };
+const acha = { id: "a_1", owner_id: "u_1", machine_id: "m_1", handle: "acha", name: "阿查", description: "", runtime: "codex", dispatch: "channel", confirm: true, autonomy: "assist", model: "" };
 const pay = { id: "c_1", slug: "pay", name: "支付后端", topic: "慢查询", archived: false, created: T0, members: [{ kind: "user", id: "u_1" }, { kind: "user", id: "u_2" }, { kind: "agent", id: "a_1" }], last_seq: 2 };
 const ops = { id: "c_2", slug: "ops", name: "运维", topic: "", archived: false, created: T0, members: [{ kind: "user", id: "u_2" }], last_seq: 0 };
 const msg = (over: Record<string, unknown>) => ({
@@ -68,6 +68,13 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
       const p = JSON.parse(r.body!);
       log.patches.push(p);
       return { body: { ...acha, ...p } };
+    },
+    [`PATCH ${URL}/api/v1/tasks/*`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/tasks\/([^/?]+)/)![1];
+      const t = { ...live.get(id), ...JSON.parse(r.body!) };
+      log.acts.push(`${id} acceptance`);
+      live.set(id, t);
+      return { body: t };
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
@@ -235,7 +242,7 @@ describe("settings", () => {
     await app.waitFor("id:agent-detail-acha");
   });
 
-  test("adding a machine shows its token once, ready to paste; an agent's dispatch changes", async () => {
+  test("adding a machine shows its token once, ready to paste; an agent's dispatch scope and confirmation change", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
     await settings(app, "machines");
@@ -247,9 +254,39 @@ describe("settings", () => {
     expect(app.shows(`text:/token = "tam_abab/`)).toBe(true);
     expect(app.shows(`text:/url = "${URL}"/`)).toBe(true);
     await app.press("id:settings-nav-agents");
-    await app.press("id:agent-dispatch-acha-open");
+    expect(app.shows("text:Members of its channels")).toBe(true);
+    expect(app.shows("text:Needs my confirmation")).toBe(true);
+    await app.press("id:agent-dispatch-acha-team");
     await app.waitUntil(() => log.patches.length === 1);
-    expect(log.patches).toEqual([{ dispatch: "open" }]);
+    expect(log.patches).toEqual([{ dispatch: "team" }]);
+    await app.waitFor("text:/joins a channel it isn’t in yet/");
+    await app.press("id:agent-dispatch-acha-confirm");
+    await app.waitUntil(() => log.patches.length === 2);
+    expect(log.patches[1]).toEqual({ confirm: false });
+    await app.press("id:agent-dispatch-acha-owner");
+    await app.waitUntil(() => log.patches.length === 3);
+    expect(app.shows("id:agent-dispatch-acha-confirm")).toBe(false); // only the owner: nobody else to confirm
+  });
+
+  test("an agent's model: the runtime's default, one its machine reported, or another name; a new runtime resets it", async () => {
+    const log = newLog();
+    const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true, models: ["gpt-6-luna"] },
+      { name: "claude", version: "2.1.0", installed: true, logged_in: true, models: ["opus", "sonnet", "haiku"] }] };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [reported] } } } });
+    await settings(app, "agents");
+    await app.waitFor("id:agent-model-acha-default");
+    expect(app.shows("id:agent-model-acha-gpt-6-luna")).toBe(true);
+    await app.press("id:agent-model-acha-gpt-6-luna");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ model: "gpt-6-luna" });
+    await app.type("id:agent-model-acha-input", "gpt-6-luna-mini");
+    await app.press("id:agent-model-acha-use");
+    await app.waitUntil(() => log.patches.length === 2);
+    expect(log.patches[1]).toEqual({ model: "gpt-6-luna-mini" });
+    expect(app.enabled("id:agent-runtime-acha-claude")).toBe(true); // Claude Code is in this version
+    await app.press("id:agent-runtime-acha-claude");
+    await app.waitUntil(() => log.patches.length === 3);
+    expect(log.patches[2]).toEqual({ runtime: "claude", model: "" });
   });
 
   test("a machine shows its runtimes, their login, and the agents on it; removing it says who loses it", async () => {
@@ -265,9 +302,10 @@ describe("settings", () => {
     expect(app.shows("id:machine-remove-confirm-m_1")).toBe(true);
   });
 
-  test("a new agent: a machine first, then a runtime on it; Claude Code waits for phase 2", async () => {
+  test("a new agent: a machine first, then a runtime on it and its model, then who can use it", async () => {
     const created: any[] = [];
-    const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true }] };
+    const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true },
+      { name: "claude", version: "2.1.0", installed: true, logged_in: true, models: ["opus", "sonnet"] }] };
     const app = await open("./App.tsx", {
       storage: SESSION, width: 1200, height: 900,
       network: {
@@ -284,16 +322,20 @@ describe("settings", () => {
     await app.press("id:agent-add");
     await app.waitFor("id:new-agent");
     expect(app.shows("text:/Installed v0.46.0, logged in/")).toBe(true);
-    expect(app.enabled("id:new-agent-runtime-claude")).toBe(false);
-    expect(app.shows("text:Opens in phase 2")).toBe(true);
+    expect(app.enabled("id:new-agent-runtime-pi")).toBe(false); // not installed there
+    expect(app.shows("text:Not installed on 张伟的 Mac")).toBe(true);
+    await app.press("id:new-agent-runtime-claude");
+    await app.press("id:new-agent-model-sonnet");
+    await app.press("id:new-agent-dispatch-team");
+    await app.press("id:new-agent-dispatch-confirm");
     await app.type("id:agent-name", "阿测");
     await app.type("id:agent-handle", "ace");
     await app.type("id:agent-desc", "补测试");
     await app.type("id:agent-repo-new", "~/work/pay");
-    expect(app.shows("text:阿测 · Codex · 张伟的 Mac")).toBe(true);
+    expect(app.shows("text:阿测 · Claude Code sonnet · 张伟的 Mac")).toBe(true);
     await app.press("id:agent-create");
     await app.waitUntil(() => created.length === 1);
-    expect(created[0]).toEqual({ handle: "ace", name: "阿测", description: "补测试", machine_id: "m_1", runtime: "codex", repo: "~/work/pay", dispatch: "confirm" });
+    expect(created[0]).toEqual({ handle: "ace", name: "阿测", description: "补测试", machine_id: "m_1", runtime: "claude", model: "sonnet", repo: "~/work/pay", dispatch: "team", confirm: false });
     await app.waitFor("id:agent-detail-ace");
   });
 
@@ -413,6 +455,19 @@ describe("channel v2", () => {
     await app.waitFor("text:To 阿查 · Codex · 张伟的 Mac, starts without confirmation"); // the owner's own agent
   });
 
+  test("a team-wide agent from elsewhere is offered in the picker and joins the channel it is called in", async () => {
+    const roam = { ...acha, id: "a_2", handle: "roam", name: "游侠", dispatch: "team", confirm: false };
+    const net = { ...server(newLog()), [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, roam] } } };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: net });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@ro");
+    await app.waitFor("id:mention-roam");
+    expect(app.shows("text:/joins this channel when called/")).toBe(true);
+    await app.submit("id:team-composer");
+    await app.type("id:team-composer", "看下");
+    await app.waitFor("text:/To 游侠 · Codex · 张伟的 Mac, starts without confirmation, and it joins this channel/");
+  });
+
   test("an agent that can't take work says why: its runtime isn't logged in", async () => {
     const out = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: false }] };
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/machines`]: { body: { machines: [out] } } } });
@@ -448,6 +503,23 @@ describe("channel v2", () => {
     expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
     await app.press("id:task-T-0001-runlog");
     await app.waitFor("text:Now: 运行 bun test");
+  });
+
+  test("a task's facts: its mandate, and acceptance criteria its creator writes", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "running", confirmed_by: "u_1",
+      mandate: { by: "u_2", rule: "channel", confirm: true, autonomy: "assist", branch: "agent/T-0001", runtime: "codex" } });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-mandate");
+    expect(app.shows("text:asked by 王磊 · rule: Members of its channels · confirmed by 张伟 · autonomy: Assist · may only push agent/T-0001 and open a PR")).toBe(true);
+    expect(app.shows("text:/^None yet: the agent proposes/")).toBe(true);
+    await app.press("id:task-T-0001-acceptance-edit");
+    await app.type("id:task-T-0001-acceptance-input", "P99 < 200ms");
+    await app.press("id:task-T-0001-acceptance-save");
+    await app.waitUntil(() => log.acts.includes("T-0001 acceptance"));
+    await app.waitFor("text:P99 < 200ms");
   });
 });
 
