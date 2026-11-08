@@ -146,7 +146,7 @@ test("a task gets its own worktree on agent/T-xxxx, and the agent's git cannot p
     const general = await prepareWorkdir(claim({ id: "T-0004" }), join(W, "work"));
     expect(general).toEqual({ cwd: join(W, "work", "T-0004"), writable: [], files: join(W, "work", "T-0004") });
     expect(own.files).toBe(join(W, "work", "T-0002.files"));
-    expect(own.writable).toContain(own.files);
+    expect(own.writable).toContain(own.files!);
   } finally {
     rmSync(W, { recursive: true, force: true });
   }
