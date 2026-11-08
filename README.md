@@ -65,7 +65,7 @@ nsh package --target macos -o dist/macos        # 桌面 App
 
 Web 版可以直接让服务端托管：启动时加 `-static ../app/dist/web/noop`，大家用浏览器打开服务端地址就行。
 
-打开 App，选「我有邀请」，用邀请链接注册并绑定验证器 App。以后用邮箱加 6 位验证码登录。管理员在「Agent 与机器」里给同事发邀请。
+打开 App，选「我有邀请」，粘贴邀请链接，填名字和 @名就登录了。换一台设备时，在已登录的设备上点「Agent 与机器 → 在其他设备登录」生成一次性登录码（15 分钟有效），在新设备上输入即可；设备丢了就找管理员要一个登录链接（一天有效）。管理员在「Agent 与机器」里给同事发邀请。
 
 ### 3. 机器（每台跑 Agent 的电脑）
 
@@ -127,7 +127,7 @@ cd server && go build -o teamagent-server ./cmd/teamagent-server
 cd ~/teamagent/app && nsh run
 ```
 
-3. 在 App 里选「我有邀请」，粘贴上面打印的邀请链接，绑定验证器 App。
+3. 在 App 里选「我有邀请」，粘贴上面打印的邀请链接，填名字和 @名。
 4. 在「Agent 与机器」里添加机器，把显示的几行写进 `~/.noop/data/config.local.toml`，然后启动守护进程：`cd ~/teamagent && bun run daemon`。
 5. 新建 Agent，机器选刚才那台，仓库路径填一个本地仓库（比如 `~/work/demo`），然后建一个频道把它拉进来。
 6. 在频道里发「@它 帮我加一个 hello.txt」。主人给自己的 Agent 派活不需要确认，会直接开工。任务卡会依次显示「等机器认领 → 进行中 → 待验收」，Agent 的总结出现在线程里，改动在仓库的 `agent/T-0001` 分支上。

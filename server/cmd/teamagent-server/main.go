@@ -4,8 +4,8 @@
 //
 //	teamagent-server invite -data /var/lib/teamagent -email you@company.com -role admin
 //
-// The invite prints a link: the first admin opens it, binds an authenticator app, and invites everyone else from
-// the app. Each person adds their machines there and puts each machine's token in its noop.toml
+// The invite prints a link: the first admin opens it in the app, which signs them in, and invites everyone else
+// from the app. Each person adds their machines there and puts each machine's token in its config.local.toml
 // ([cloud] url = "http://<host>:8080", [server] token = "tam_…"). TEAMAGENT_TOKEN, a token shared by every machine,
 // is the legacy noop setup and optional.
 package main

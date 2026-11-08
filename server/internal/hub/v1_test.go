@@ -15,7 +15,7 @@ type joined struct {
 	id, session, secret string
 }
 
-// join: invite → bind the authenticator → signed in.
+// join: the invite link signs a new person in at once.
 func (e *env) join(email, handle, role, inviter string) joined {
 	e.t.Helper()
 	var code string
@@ -32,15 +32,13 @@ func (e *env) join(email, handle, role, inviter string) joined {
 		code = r.body["code"].(string)
 	}
 	r := e.do("POST", "/api/v1/invites/"+code+"/accept", "", map[string]any{"name": handle, "handle": handle})
-	secret, _ := r.body["secret"].(string)
-	if r.status != 200 || secret == "" {
+	if r.status != 200 {
 		e.t.Fatalf("accept: %d %s", r.status, r.raw)
 	}
-	r = e.do("POST", "/api/v1/invites/"+code+"/accept", "", map[string]any{"name": handle, "handle": handle, "totp": totpNow(secret, e.now())})
-	if r.status != 200 {
-		e.t.Fatalf("confirm: %d %s", r.status, r.raw)
-	}
-	return joined{id: r.body["user"].(map[string]any)["id"].(string), session: r.body["session"].(string), secret: secret}
+	id := r.body["user"].(map[string]any)["id"].(string)
+	var secret string
+	_ = e.h.db.QueryRow("SELECT totp_secret FROM users WHERE id = ?", id).Scan(&secret)
+	return joined{id: id, session: r.body["session"].(string), secret: secret}
 }
 
 func TestV1PeopleAndSignIn(t *testing.T) {
@@ -76,6 +74,22 @@ func TestV1PeopleAndSignIn(t *testing.T) {
 	e.advance(30 * time.Second)
 	r = e.do("POST", "/api/v1/login", "", map[string]any{"email": "wang@corp.com", "totp": totpNow(lei.secret, e.now())})
 	check(t, "locked after 10 failures", r.status == 429, r)
+
+	// another device: a login code made on a signed-in device, once, for 15 minutes
+	r = e.do("POST", "/api/v1/login-codes", lei.session, nil)
+	code1, _ := r.body["code"].(string)
+	check(t, "a login code", r.status == 200 && len(code1) == 9 && code1[4] == '-' && r.body["path"] == "/login/"+code1, r)
+	r = e.do("POST", "/api/v1/login", "", map[string]any{"code": strings.ToLower(strings.Replace(code1, "-", " ", 1))})
+	check(t, "a login code signs in, typed loosely", r.status == 200 && r.body["user"].(map[string]any)["id"] == lei.id, r)
+	check(t, "a login code works once", e.do("POST", "/api/v1/login", "", map[string]any{"code": code1}).status == 401)
+	code2 := e.do("POST", "/api/v1/login-codes", lei.session, nil).body["code"].(string)
+	e.advance(16 * time.Minute)
+	check(t, "a login code expires", e.do("POST", "/api/v1/login", "", map[string]any{"code": code2}).status == 401)
+	check(t, "a member cannot make a code for someone else", e.do("POST", "/api/v1/login-codes", lei.session, map[string]any{"user_id": admin.id}).status == 403)
+	r = e.do("POST", "/api/v1/login-codes", admin.session, map[string]any{"user_id": lei.id})
+	e.advance(12 * time.Hour)
+	r = e.do("POST", "/api/v1/login", "", map[string]any{"code": "http://teamagent.corp:8080" + r.body["path"].(string)})
+	check(t, "an admin's login link works for a day", r.status == 200 && r.body["user"].(map[string]any)["id"] == lei.id, r)
 
 	// admin disables a member: their sessions stop at once
 	check(t, "a member cannot disable", e.do("PATCH", "/api/v1/users/"+admin.id, lei.session, map[string]any{"disabled": true}).status == 403)

@@ -5,7 +5,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { b32decode, hotp, stepAt } from "../../cloud/src/totp";
 import { startTeamAgent } from "../../src/teamagent";
 
 const BASE = (process.argv[2] ?? "http://127.0.0.1:18082").replace(/\/$/, "");
@@ -61,8 +60,7 @@ chmodSync(join(bin, "codex"), 0o755);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 
 async function accept(code: string, handle: string) {
-  const r1 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle });
-  const r2 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle, totp: await hotp(b32decode(r1.json.secret), stepAt()) });
+  const r2 = await api("POST", `/api/v1/invites/${code}/accept`, "", { name: handle, handle });
   return r2.json as { session: string; user: { id: string } };
 }
 const zw = await accept(INVITE, "zhangwei");

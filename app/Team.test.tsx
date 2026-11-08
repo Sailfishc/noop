@@ -77,7 +77,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
 const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });
 
 describe("team sign in", () => {
-  test("an invite link: name and @handle, bind the authenticator, then the workspace", async () => {
+  test("an invite link: name and @handle, then the workspace", async () => {
     const accepts: any[] = [];
     const app = await open("./App.tsx", {
       width: 1200, height: 800,
@@ -87,12 +87,12 @@ describe("team sign in", () => {
         [`POST ${URL}/api/v1/invites/INVITECODE123/accept`]: (r: { body?: string | null }) => {
           const b = JSON.parse(r.body!);
           accepts.push(b);
-          if (!b.totp) return { body: { secret: "JBSWY3DPEHPK3PXP", uri: "otpauth://totp/TeamAgent:zw@corp.com?secret=JBSWY3DPEHPK3PXP" } };
-          return b.totp === "123456" ? { body: { session: "sess", user: zw } } : { status: 400, body: { error: "验证码不对" } };
+          return b.handle === "taken" ? { status: 409, body: { error: "@taken 已经被占用了" } } : { body: { session: "sess", user: zw } };
         },
       },
     });
     await app.waitFor("id:team-signin");
+    expect(app.shows("id:team-logo")).toBe(true);
     await app.press("id:signin-mode-invite");
     await app.type("id:invite-link", `${URL}/invite/INVITECODE123`);
     await app.press("id:invite-open");
@@ -100,58 +100,58 @@ describe("team sign in", () => {
     expect(app.value("id:invite-handle")).toBe("zw");
     await app.type("id:invite-name", "张伟");
     await app.clear("id:invite-handle");
+    await app.type("id:invite-handle", "taken");
+    await app.press("id:invite-join");
+    await app.waitFor("@taken 已经被占用了");
+    await app.clear("id:invite-handle");
     await app.type("id:invite-handle", "zhangwei");
-    await app.press("id:invite-next");
-    await app.waitFor("id:invite-secret");
-    expect(app.shows("text:JBSW Y3DP EHPK 3PXP")).toBe(true);
-    await app.type("id:invite-totp", "000000");
-    await app.waitFor("验证码不对");
-    await app.type("id:invite-totp", "123456");
+    await app.press("id:invite-join");
     await app.waitFor("id:team-composer");
-    expect(accepts).toEqual([
-      { name: "张伟", handle: "zhangwei" },
-      { name: "张伟", handle: "zhangwei", totp: "000000" },
-      { name: "张伟", handle: "zhangwei", totp: "123456" },
-    ]);
+    expect(accepts).toEqual([{ name: "张伟", handle: "taken" }, { name: "张伟", handle: "zhangwei" }]);
     expect(app.storage()["team.session"]).toBe("sess");
     expect(app.storage()["team.url"]).toBe(URL);
   });
 
-  test("email and the authenticator's 6 digits sign in; a wrong code is explained", async () => {
+  test("a login code, or a pasted login link that brings its server, signs in", async () => {
     const logins: any[] = [];
-    const app = await open("./App.tsx", {
-      width: 1200, height: 800,
-      network: {
-        ...server(newLog()),
-        [`POST ${URL}/api/v1/login`]: (r: { body?: string | null }) => {
-          const b = JSON.parse(r.body!);
-          logins.push(b);
-          return b.totp === "654321" ? { body: { session: "sess", user: zw } } : { status: 401, body: { error: "邮箱或验证码不对" } };
-        },
+    const net = {
+      ...server(newLog()),
+      [`POST ${URL}/api/v1/login`]: (r: { body?: string | null }) => {
+        const b = JSON.parse(r.body!);
+        logins.push(b);
+        return b.code.toUpperCase().endsWith("EFGH") ? { body: { session: "sess", user: zw } } : { status: 401, body: { error: "登录码不对或已过期" } };
       },
-    });
+    };
+    const app = await open("./App.tsx", { width: 1200, height: 800, network: net });
     await app.type("id:team-url", "hub.test:8080/");
-    await app.type("id:team-email", "zw@corp.com");
-    await app.type("id:team-totp", "111111");
-    await app.waitFor("邮箱或验证码不对");
-    expect(app.value("id:team-totp")).toBe("");
-    await app.type("id:team-totp", "654321");
+    await app.type("id:team-code", "WXYZ-2345");
+    await app.press("id:team-login");
+    await app.waitFor("登录码不对或已过期");
+    await app.clear("id:team-code");
+    await app.type("id:team-code", "abcd-efgh");
+    await app.press("id:team-login");
     await app.waitFor("id:team-composer");
-    expect(logins).toEqual([{ email: "zw@corp.com", totp: "111111" }, { email: "zw@corp.com", totp: "654321" }]);
+    expect(logins).toEqual([{ code: "WXYZ-2345" }, { code: "abcd-efgh" }]);
     expect(app.storage()["team.email"]).toBe("zw@corp.com");
+
+    const linked = await open("./App.tsx", { width: 1200, height: 800, network: net });
+    await linked.type("id:team-code", `${URL}/login/ABCD-EFGH`);
+    await linked.press("id:team-login");
+    await linked.waitFor("id:team-composer");
+    expect(linked.storage()["team.url"]).toBe(URL);
   });
 
   test("an unreachable server is told apart; a 401 later sends you back to sign in", async () => {
     const app = await open("./App.tsx", { width: 1200, height: 800, network: {} });
     await app.type("id:team-url", "nowhere.test:1");
-    await app.type("id:team-email", "zw@corp.com");
-    await app.type("id:team-totp", "123456");
+    await app.type("id:team-code", "ABCD-EFGH");
+    await app.press("id:team-login");
     await app.waitFor("text:/连不上服务器|Can’t reach/");
 
     const expired = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/me`]: { status: 401 } } });
     await expired.waitFor("text:/session expired|登录已过期/");
     expect(expired.storage()["team.session"]).toBe(undefined);
-    expect(expired.value("id:team-email")).toBe("zw@corp.com");
+    expect(expired.value("id:team-url")).toBe(URL);
   });
 });
 
@@ -236,6 +236,31 @@ describe("agents and machines", () => {
     await app.press("id:invite-create");
     await app.waitFor("id:invite-url");
     expect(app.shows(`text:${URL}/invite/INVITECODE123`)).toBe(true);
+  });
+
+  test("a login code for another device; an admin makes a login link for a member", async () => {
+    const made: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`POST ${URL}/api/v1/login-codes`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          made.push(b);
+          const code = b.user_id ? "MEMB-ER22" : "ABCD-EFGH";
+          return { body: { code, path: `/login/${code}`, expires: Date.now() + 900_000 } };
+        },
+      },
+    });
+    await app.press("id:open-settings");
+    await app.press("id:login-code-create");
+    await app.waitFor("id:login-code");
+    expect(app.shows("text:ABCD-EFGH")).toBe(true);
+    expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(true);
+    expect(app.shows("id:login-link-zhangwei")).toBe(false); // not for yourself
+    await app.press("id:login-link-wanglei");
+    await app.waitFor(`text:${URL}/login/MEMB-ER22`);
+    expect(made).toEqual([{}, { user_id: "u_2" }]);
   });
 
   test("the language switches and is kept; sign out forgets the session", async () => {
