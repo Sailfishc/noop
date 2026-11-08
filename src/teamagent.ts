@@ -215,7 +215,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     };
     ws.onerror = () => {};
   };
-  const tick = setInterval(() => void report().then(worker.poll), 60_000);
+  const tick = setInterval(() => void report().then(worker.poll).then(worker.checkWaits), 60_000);
   // the PRs this machine opened: their state and CI, every two minutes (a GitLab webhook also tells the server at once)
   const prTick = setInterval(async () => {
     const r = await api("/api/v1/machine/tasks?prs=1");

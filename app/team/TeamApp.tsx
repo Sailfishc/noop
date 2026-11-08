@@ -9,7 +9,7 @@ import { LOGO } from "./logo";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
-  repoLabel, type Agent, type Member, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
+  EXTERNAL_TRIES, repoLabel, type Agent, type Member, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
@@ -893,6 +893,20 @@ function TaskFacts(props: { team: Team; task: Task }) {
         {fact(L("Mandate", "授权"), <Text testID={`task-${task().id}-mandate`} style={{ flex: 1, flexShrink: 1, fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>)}
       </If>
       <Acceptance team={t} task={task()} />
+      <If when={task().state === "waiting" && task().wait}>
+        {fact(L("Waiting", "等待"), <View testID={`task-${task().id}-wait`} style={{ flex: 1, gap: 2 }}>
+          <Each of={waitLines(task())} key="index">{(l) => <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{l()}</Text>}</Each>
+          <Text style={{ fontSize: 12, color: colors.faint }}>{L("Nobody is notified while it waits.", "等待期间不打扰任何人。")}</Text>
+        </View>)}
+      </If>
+      <If when={task().result}>
+        {fact(L("Result", "结果"), <Text testID={`task-${task().id}-result`} style={{ fontSize: 13, fontWeight: "600", color: task().result === "confirmed" ? colors.up : colors.warn }}>
+          {task().result === "confirmed" ? L("Result confirmed", "结果已确认") : L("Submitted, result not confirmed", "已提交，结果未确认")}
+        </Text>)}
+      </If>
+      <If when={externalTries(task())}>
+        {fact(L("Outside", "外部提交"), plain(`${externalTries(task())}/${EXTERNAL_TRIES}`, `task-${task().id}-tries`))}
+      </If>
       <If when={outputsOf(task()).length} else={fact(L("Output", "产出"), plain(task().state === "done" ? L("done, nothing to show", "完成，没有产出") : L("nothing yet", "还没有产出")))}>
         <View style={{ gap: 6 }}>
           <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Output", "产出")}</Text>
@@ -1214,6 +1228,7 @@ const STATE: Record<TaskState, { label: () => string; tone: "accent" | "warn" | 
   pending: { label: () => L("Waiting for its owner", "等主人确认"), tone: "warn" },
   queued: { label: () => L("Waiting for its machine", "等机器认领"), tone: "muted" },
   running: { label: () => L("Working", "进行中"), tone: "accent" },
+  waiting: { label: () => L("Waiting for an outside result", "等待外部结果"), tone: "muted" },
   needs_decision: { label: () => L("Needs a decision", "等人决定"), tone: "warn" },
   review: { label: () => L("Ready for review", "待验收"), tone: "accent" },
   blocked: { label: () => L("Blocked", "受阻"), tone: "danger" },
@@ -1222,6 +1237,36 @@ const STATE: Record<TaskState, { label: () => string; tone: "accent" | "warn" | 
   closed: { label: () => L("Closed", "已关闭"), tone: "muted" },
 };
 const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
+
+const HOW: Record<string, () => string> = {
+  callback: () => L("woken by a callback", "等回调"),
+  poll: () => L("checked now and then", "定时查询"),
+  timer: () => L("looks again at a set time", "到点再看"),
+};
+
+/** What a waiting task waits for, in one short line (its card). */
+export function waitShort(task: Task): string {
+  const w = task.wait;
+  if (!w) return "";
+  const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
+  return [w.what || L("an outside result", "外部结果"), until].join(" · ");
+}
+
+/** The details: how it is watched, when it gives up, the last check and its note. */
+export function waitLines(task: Task): string[] {
+  const w = task.wait;
+  if (!w) return [];
+  const lines = [
+    [w.what || L("an outside result", "外部结果"), HOW[w.how]?.() ?? w.how].join(" · "),
+    [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
+  ];
+  if (w.how === "poll" && w.checks) lines.push(L(`checked ${w.checks}×, last ${time(w.checked ?? 0)}`, `已查 ${w.checks} 次，上次 ${time(w.checked ?? 0)}`) + (w.errors ? L(` (${w.errors} failed)`, `（${w.errors} 次没查到）`) : ""));
+  if (w.note) lines.push(w.note);
+  return lines;
+}
+
+/** Outside submissions so far, of the few a task may make before a person decides. */
+export const externalTries = (task: Task) => outputsOf(task).filter((o) => o.kind === "external").length;
 
 /** The task's outputs; a task from an older server has only its PR. */
 function outputsOf(task: Task): Output[] {
@@ -1334,6 +1379,7 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
     if (s === "running") return task().step || L("Working…", "干活中…");
+    if (s === "waiting") return waitShort(task());
     return "";
   };
   return (
@@ -1411,6 +1457,7 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
 function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (t: Task) => void }) {
   const t = props.team;
   const items = () => t.inbox().map((id) => t.tasks()[id]).filter(Boolean);
+  const waits = () => t.waiting().map((id) => t.tasks()[id]).filter((x) => x?.state === "waiting");
   effect(() => void t.loadInbox());
   return (
     <View style={{ flex: 1 }}>
@@ -1418,6 +1465,14 @@ function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 10, maxWidth: 640 }}>
         <If when={items().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
           <Each of={items()} key={(x) => x.id}>
+            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x())} />}
+          </Each>
+        </If>
+        <If when={waits().length}>
+          <Text testID="inbox-waiting" style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>
+            {L("Waiting for outside results (the agent is woken, not you)", "等外部结果（到时叫醒 Agent，不打扰你）")}
+          </Text>
+          <Each of={waits()} key={(x) => x.id}>
             {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x())} />}
           </Each>
         </If>

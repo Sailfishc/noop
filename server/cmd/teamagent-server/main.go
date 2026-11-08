@@ -98,6 +98,11 @@ func main() {
 	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
 
 	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
+	go func() { // waiting tasks: timers and deadlines
+		for range time.Tick(30 * time.Second) {
+			h.Tick()
+		}
+	}()
 	go func() {
 		log.Printf("teamagent-server listening on %s (data %s)", *addr, *data)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

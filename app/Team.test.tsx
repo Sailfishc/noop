@@ -590,6 +590,28 @@ describe("channel v2", () => {
     expect(links).toEqual(["o_1"]);
   });
 
+  test("a waiting task says what it waits for, how sure its result is, and sits apart from what waits for you", async () => {
+    const wait = { how: "poll", every: 90, expect: T0 + 3_600_000, deadline: T0 + 7_200_000, since: T0, checked: T0 + 60_000, checks: 2, note: "排队第 3 位", what: "3D 云渲染底座模型" };
+    const outputs = [{ id: "o_2", kind: "external", title: "底座模型", service: "3D 云", external_id: "job-1", status: "pending", updated: T0 }];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: server(newLog(), {}, [task({ created_by: "u_1", state: "waiting", runs: 1, wait, result: "unconfirmed", outputs })]),
+    });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-wait");
+    expect(app.shows("text:Waiting for an outside result")).toBe(true);
+    expect(app.shows("text:3D 云渲染底座模型 · checked now and then")).toBe(true);
+    expect(app.shows("text:/^checked 2×/")).toBe(true);
+    expect(app.shows("text:排队第 3 位")).toBe(true);
+    expect(app.shows("text:Submitted, result not confirmed")).toBe(true);
+    expect(app.shows("text:1/3")).toBe(true);
+    await app.press("id:open-inbox");
+    await app.waitFor("id:inbox-waiting");
+    expect(app.shows("id:inbox-empty")).toBe(true); // nothing for you to do
+    expect(app.shows("id:task-T-0001-cancel")).toBe(true);
+  });
+
   test("a task that already ran keeps its repository", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
     await app.waitFor("id:thread-msg_1");

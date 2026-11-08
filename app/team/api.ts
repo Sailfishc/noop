@@ -33,7 +33,7 @@ export type Agent = { id: string; owner_id: string; machine_id: string | null; h
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
   memory?: string };
-export type TaskState = "pending" | "queued" | "running" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
+export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
@@ -46,7 +46,19 @@ export type Task = {
   repo?: string;
   /** What came out of it: its PR first, files from out/, results kept by outside services. */
   outputs?: Output[] | null;
+  /** What it waits for while "waiting" (and why it woke, until its next run). */
+  wait?: Wait | null;
+  /** Whether the agent saw the outcome itself, or only handed the work over. */
+  result?: "confirmed" | "unconfirmed" | "";
 };
+/** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
+export type Wait = {
+  how: "callback" | "poll" | "timer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  checked?: number; checks?: number; errors?: number; note?: string; what?: string;
+  wake?: { reason: string; note?: string; at: number } | null;
+};
+/** How many times a task may hand work to an outside service before a person decides. */
+export const EXTERNAL_TRIES = 3;
 export type Output = {
   id: string; kind: "pr" | "file" | "external"; title: string;
   /** pending | ready | failed; a PR: open | merged | closed */
@@ -206,6 +218,8 @@ export function createTeam(s: Session) {
   const tasks = signal<Record<string, Task>>({});
   /** What waits for this person (tasks to confirm, decisions, results to accept). */
   const inbox = signal<string[]>([]);
+  /** Tasks waiting for an outside result: shown, never notified. */
+  const waiting = signal<string[]>([]);
   /** New top-level messages from others since a channel was last looked at. */
   const unread = signal<Record<string, number>>({});
   let viewing: string | null = null;
@@ -292,6 +306,10 @@ export function createTeam(s: Session) {
     if (!r.ok) return;
     putTasks(r.data.tasks as Task[]);
     inbox.set((r.data.tasks as Task[]).map((t) => t.id));
+    const w = await api("GET", "/api/v1/tasks?state=waiting&limit=100");
+    if (!w.ok) return;
+    putTasks(w.data.tasks as Task[]);
+    waiting.set((w.data.tasks as Task[]).map((t) => t.id));
   }
 
   async function load() {
@@ -522,7 +540,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,

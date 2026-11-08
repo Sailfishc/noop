@@ -79,6 +79,8 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/file", h.v1Handler(machine, h.v1OutputUpload, maxOutputFile+1))
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/preview", h.v1Handler(machine, h.v1OutputPreview, maxUpload+1))
 	r("GET /api/v1/outputs/{id}/link", person, h.v1OutputLink)
+	r("POST /api/v1/hooks/wait/{token}", public, h.v1WaitHook)
+	r("POST /api/v1/tasks/{id}/wait", machine, h.v1WaitCheck)
 	r("GET /api/v1/outputs/{id}/content", public, h.v1OutputContent)
 
 	m.HandleFunc("GET /api/v1/stream", h.v1Stream)
