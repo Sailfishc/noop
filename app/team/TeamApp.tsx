@@ -12,7 +12,7 @@ import {
   type Agent, type Member, type Message, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { SettingsPage, type SettingsTab } from "./settings";
-import { agentState, authorOf, Avatar, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
+import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
 
@@ -160,7 +160,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   keymap.bind("mod+,", () => openSettings(), { when: "always" });
 
   const sidebar = () => (
-    <Sidebar team={t} page={page()} onOpen={open} onSettings={openSettings} onSignOut={props.onSignOut} />
+    <Sidebar team={t} page={page()} inset={wide()} onOpen={open} onSettings={openSettings} onSignOut={props.onSignOut} />
   );
   const main = () => {
     const p = page();
@@ -197,9 +197,15 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
           <If
             when={wide()}
             else={
-              <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={main()}>{(pane) => pane()}</If>}>
-                {sidebar()}
-              </If>
+              <View style={{ flex: 1 }}>
+                {/* one pane at a time: the window's title bar gets its own strip above it */}
+                <If when={chrome().left}>
+                  <View desktop={{ windowDrag: true }} style={{ height: chrome().height }} />
+                </If>
+                <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={main()}>{(pane) => pane()}</If>}>
+                  {sidebar()}
+                </If>
+              </View>
             }
           >
             <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
@@ -223,7 +229,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   );
 }
 
-function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
+function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Page) => void; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
   const t = props.team;
   const mine = computed(() => {
     const me = t.me();
@@ -255,7 +261,7 @@ function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onS
   );
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 10 }}>
+      <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), flexDirection: "row", alignItems: "center", gap: 9, paddingLeft: props.inset && chrome().left ? chrome().left + 4 : 16, paddingRight: 16 }}>
         <Image src={LOGO} accessibilityLabel="" style={{ width: 22, height: 22 }} />
         <Text style={{ flex: 1, fontSize: 15.5, fontWeight: "700", color: colors.text }}>TeamAgent</Text>
       </View>
@@ -676,7 +682,6 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           channelId={props.id}
           testID="team-composer"
           placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-          hint={L("Type @ to pick an agent or a person.", "输入 @ 选择 Agent 或同事。")}
           onSend={(text) => t.send(props.id, text)}
         />
       </If>

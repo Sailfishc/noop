@@ -1,11 +1,14 @@
 // TeamAgent's small shared pieces: buttons, fields, avatars, badges, headers.
 import { Text, View, type JSX, type ViewStyle } from "nsh";
 import { Input } from "nsh/base";
+import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
 import { blockedReason, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
+/** The window's own title bar area (its traffic lights on macOS): content at the window's top left keeps clear of it. */
+export const chrome = () => (hasWindow ? titleBar() : { height: 0, left: 0, right: 0 });
 export const unreachable = (url: string) => L(`Can’t reach ${url}. Check the address and your network.`, `连不上服务器 ${url}，请检查地址和网络`);
 
 // ---------------------------------------------------------------- small pieces
@@ -154,7 +157,7 @@ export const time = (ms: number) => {
 
 export function Header(props: { title: string; subtitle?: string; back?: boolean; onBack?: () => void; right?: JSX.Element; backLabel?: string }) {
   return (
-    <View style={{ minHeight: 56, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+    <View desktop={{ windowDrag: true }} style={{ minHeight: 56, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <If when={props.back}>
         <View role="button" testID="back" accessibilityLabel={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
           <Icon name="back" size={18} tint={colors.text} />

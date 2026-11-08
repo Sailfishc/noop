@@ -344,7 +344,7 @@ describe("settings", () => {
     expect(made).toEqual([{}, { user_id: "u_2" }]);
   });
 
-  test("Git platforms: an admin adds Ant Code; its webhook and each machine's credentials show, never a token", async () => {
+  test("Git platforms: an admin adds a GitLab-based platform; its webhook and each machine's credentials show, never a token", async () => {
     const saved: any[] = [];
     const reported = { ...mac, git: [{ provider: "github", host: "github.com", configured: true, user: "zw", via: "gh" }, { provider: "gitlab", host: "code.corp.com", configured: false, user: "", via: "" }] };
     const app = await open("./App.tsx", {
@@ -364,10 +364,11 @@ describe("settings", () => {
     await app.waitFor("id:git-platform-github.com");
     expect(app.shows("text:✓ gh login · zw")).toBe(true);
     await app.press("id:git-platform-add");
+    expect(app.texts().some((x) => x.includes("Ant Code"))).toBe(false); // the UI says "GitLab-based", no product names
     await app.type("id:git-host", "code.corp.com");
     await app.press("id:git-platform-save");
     await app.waitFor("id:git-webhook-url");
-    expect(saved).toEqual([{ platforms: [{ kind: "gitlab", name: "Ant Code", host: "code.corp.com", api: "" }] }]);
+    expect(saved).toEqual([{ platforms: [{ kind: "gitlab", name: "", host: "code.corp.com", api: "" }] }]);
     expect(app.shows(`text:${URL}/api/v1/hooks/gitlab`)).toBe(true);
     expect(app.shows("text:/Secret set/")).toBe(true);
     expect(app.shows("id:git-cred-m_1-code.corp.com")).toBe(true);
@@ -391,6 +392,7 @@ describe("channel v2", () => {
   test("@ opens a picker of the channel's agents (runtime, state) then people; Enter inserts", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
     await app.waitFor("id:team-composer");
+    expect(app.shows("text:/Type @ to pick/")).toBe(false); // no standing hint under the box
     await app.type("id:team-composer", "请 @");
     await app.waitFor("id:mention-picker");
     expect(app.shows("id:mention-acha")).toBe(true);

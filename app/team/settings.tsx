@@ -1,7 +1,7 @@
 // TeamAgent settings: a page of its own (bottom-left menu, or ⌘,), in three groups:
 //   个人: 账号 (profile, sign in on another device, signed-in devices, sign out), 通用 (language)
 //   Agent 工作: 我的 Agent (list + detail; New agent picks a machine, then a runtime on it), 我的机器 (runtimes, Git credentials, agents)
-//   团队·管理员: 成员与邀请, Git 平台 (the team's platforms, the Ant Code webhook, each machine's credentials)
+//   团队·管理员: 成员与邀请, Git 平台 (the team's platforms, the GitLab webhook, each machine's credentials)
 // An agent = one machine + one runtime on it + a repo + who can hand it work. A machine hosts many agents.
 import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
 import { Dialog } from "nsh/base";
@@ -11,7 +11,7 @@ import {
   RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type GitCred, type GitPlatform, type GitSettings, type Machine, type Team,
 } from "./api";
-import { agentState, Avatar, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
+import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git";
 
@@ -57,11 +57,15 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
   const creating = signal<{ machine?: string } | null>(null);
 
   const nav = () => (
-    <Scroll testID="settings-nav" style={{ flex: 1 }} contentStyle={{ padding: 10, gap: 2 }}>
-      <View role="button" testID="settings-back" onPress={props.onClose} hoverStyle={hovered()} style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, borderRadius: 8, marginBottom: 8 }}>
-        <Icon name="back" size={15} tint={colors.muted} />
-        <Text style={{ fontSize: 14, color: colors.muted }}>{L("Back to workspace", "返回工作区")}</Text>
+    <View style={{ flex: 1 }}>
+      {/* the back button shares the title bar's row, right of the window's controls */}
+      <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), justifyContent: "center", paddingLeft: wide() && chrome().left ? chrome().left : 10, paddingRight: 10 }}>
+        <View role="button" testID="settings-back" onPress={props.onClose} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 32, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, borderRadius: 8 }}>
+          <Icon name="back" size={15} tint={colors.muted} />
+          <Text style={{ fontSize: 14, color: colors.muted }}>{L("Back to workspace", "返回工作区")}</Text>
+        </View>
       </View>
+    <Scroll testID="settings-nav" style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 10, paddingBottom: 10, gap: 2 }}>
       <Each of={NAV}>
         {(g) => (
           <View style={{ gap: 2, paddingBottom: 10 }}>
@@ -89,6 +93,7 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
         )}
       </Each>
     </Scroll>
+    </View>
   );
 
   const content = (tab: SettingsTab) => {
@@ -107,9 +112,9 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
       <If
         when={wide()}
         else={
-          <If when={props.tab} else={<View style={{ flex: 1, backgroundColor: colors.sidebar }}>{nav()}</View>}>
+          <If when={props.tab} else={<View style={{ flex: 1, backgroundColor: colors.sidebar, paddingTop: chrome().left ? chrome().height : 0 }}>{nav()}</View>}>
             {(tab) => (
-              <View style={{ flex: 1 }}>
+              <View style={{ flex: 1, paddingTop: chrome().left ? chrome().height : 0 }}>
                 <View style={{ height: 52, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
                   <View role="button" testID="back" accessibilityLabel={L("Back", "返回")} onPress={() => props.onTab(null)} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
                     <Icon name="back" size={18} tint={colors.text} />
@@ -923,11 +928,11 @@ function GitSection(props: { team: Team }) {
             )}
           </Each>
           <If when={!platforms().some((p) => p.kind === "gitlab")}>
-            <Text style={{ fontSize: 13, color: colors.faint }}>{admin() ? L("Using Ant Code or another GitLab? Add it so people see its webhook and their machines’ credentials.", "用 Ant Code 或其他 GitLab？加上它，大家就能看到 webhook 和自己机器的凭证状态。") : L("An admin adds the team’s GitLab-based platforms.", "基于 GitLab 的平台由管理员添加。")}</Text>
+            <Text style={{ fontSize: 13, color: colors.faint }}>{admin() ? L("Using a GitLab-based platform? Add it so people see its webhook and their machines’ credentials.", "用基于 GitLab 的平台？加上它，大家就能看到 webhook 和自己机器的凭证状态。") : L("An admin adds the team’s GitLab-based platforms.", "基于 GitLab 的平台由管理员添加。")}</Text>
           </If>
           <If when={admin() && !editing()}>
             <View style={{ flexDirection: "row" }}>
-              <Btn small testID="git-platform-add" icon="plus" label={L("Add platform", "添加平台")} onPress={() => editing.set({ index: -1, p: { kind: "gitlab", name: "Ant Code", host: "", api: "" } })} />
+              <Btn small testID="git-platform-add" icon="plus" label={L("Add platform", "添加平台")} onPress={() => editing.set({ index: -1, p: { kind: "gitlab", name: "", host: "", api: "" } })} />
             </View>
           </If>
           <If when={editing()}>
@@ -991,9 +996,9 @@ function PlatformForm(props: { value: GitPlatform; busy: boolean; isNew: boolean
   const api = signal(props.value.api);
   return (
     <Panel title={props.isNew ? L("Add platform", "添加平台") : L("Edit platform", "修改平台")}>
-      <Choice testID="git-kind" options={[{ value: "gitlab", label: L("GitLab-based (Ant Code)", "基于 GitLab（Ant Code）") }, { value: "github", label: "GitHub" }]} value={kind()} onChange={(v) => kind.set(v)} />
+      <Choice testID="git-kind" options={[{ value: "gitlab", label: L("GitLab-based", "基于 GitLab") }, { value: "github", label: "GitHub" }]} value={kind()} onChange={(v) => kind.set(v)} />
       <View style={{ flexDirection: "row", gap: 10 }}>
-        <View style={{ flex: 1 }}><Field label={L("Name", "名称")} value={name()} onChange={(v) => name.set(v)} placeholder="Ant Code" testID="git-name" /></View>
+        <View style={{ flex: 1 }}><Field label={L("Name", "名称")} value={name()} onChange={(v) => name.set(v)} placeholder={L("e.g. Company GitLab", "比如：公司 GitLab")} testID="git-name" /></View>
         <View style={{ flex: 1 }}><Field label={L("Host", "域名")} value={host()} onChange={(v) => host.set(v)} placeholder="code.corp.com" testID="git-host" /></View>
       </View>
       <Field label={L("API (optional)", "API 地址（可选）")} value={api()} onChange={(v) => api.set(v)} placeholder={kind() === "github" ? "https://api.github.com" : `https://${host() || "code.corp.com"}/api/v4`} testID="git-api" />
