@@ -2,9 +2,10 @@
 // Screens: sign in (an invite, or email + authenticator code), the channel list, a channel, a thread, and
 // "Agents & machines" (your machines and their tokens, your agents and how they take work, inviting people).
 // Wide windows show the list, the channel and an open thread side by side; narrow ones one at a time.
-import { cleanup, Clipboard, computed, effect, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
+import { cleanup, Clipboard, computed, effect, Image, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
 import { Input } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
+import { LOGO } from "./logo";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
 import {
   call, createTeam, errorOf, type Reply, isMember, isParty, normalizeServer, parseInvite, TEAM_KEYS, textParts,
@@ -245,6 +246,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
       <View testID="team-signin" style={{ minHeight: windowSize().height, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, paddingVertical: 48 }}>
         <View style={{ width: "100%", maxWidth: 440, gap: 22 }}>
           <View style={{ alignItems: "center", gap: 10 }}>
+            <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
             <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text }}>TeamAgent</Text>
             <Text style={{ fontSize: 15, lineHeight: 22, color: colors.muted, textAlign: "center" }}>
               {mode() === "login" ? L("Sign in with your email and the 6 digits in your authenticator app.", "用邮箱和验证器 App 上的 6 位数字登录。") : L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")}
