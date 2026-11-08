@@ -11,3 +11,21 @@ jobs:
       - run: bunx tsc --noEmit
       - run: bun test
       - run: git config --global user.name ci && git config --global user.email ci@ci && ./test/e2e.sh
+  server:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: server } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: server/go.mod, cache-dependency-path: server/go.sum }
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - run: |
+          go build -o /tmp/teamagent-server ./cmd/teamagent-server
+          TEAMAGENT_TOKEN=ci-token-0123456789 /tmp/teamagent-server -addr 127.0.0.1:18080 -data /tmp/ta &
+          sleep 1
+          TEAMAGENT_TOKEN=ci-token-0123456789 bun test/e2e-claim.ts http://127.0.0.1:18080
