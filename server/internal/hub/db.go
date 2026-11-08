@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL
   os TEXT, arch TEXT, runtimes TEXT, max_sessions INTEGER NOT NULL DEFAULT 3, created INTEGER NOT NULL, last_seen INTEGER);
 CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, machine_id TEXT, handle TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', runtime TEXT NOT NULL DEFAULT 'codex',
-  dispatch TEXT NOT NULL DEFAULT 'confirm', autonomy TEXT NOT NULL DEFAULT 'assist', created INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+  dispatch TEXT NOT NULL DEFAULT 'channel', autonomy TEXT NOT NULL DEFAULT 'assist', created INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '',
   created_by TEXT, created INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS channel_members (channel_id TEXT NOT NULL, kind TEXT NOT NULL, member_id TEXT NOT NULL, joined INTEGER NOT NULL,
@@ -94,9 +94,22 @@ func initSchema(db *sql.DB) error {
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE machines ADD COLUMN info TEXT", // what the daemon detected: its runtimes and Git credentials (machineInfo)
+		"ALTER TABLE machines ADD COLUMN info TEXT",                        // what the daemon detected: its runtimes and Git credentials (machineInfo)
+		"ALTER TABLE agents ADD COLUMN confirm INTEGER NOT NULL DEFAULT 1", // people other than the owner wait for the owner's yes
+		"ALTER TABLE agents ADD COLUMN model TEXT NOT NULL DEFAULT ''",     // "" = the runtime's default model
+		"ALTER TABLE tasks_v1 ADD COLUMN acceptance TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE tasks_v1 ADD COLUMN mandate TEXT",
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	// dispatch used to say both who and whether to confirm: owner | confirm (channel, confirm) | open (channel, no confirm)
+	for _, up := range []string{
+		"UPDATE agents SET dispatch = 'channel', confirm = 0 WHERE dispatch = 'open'",
+		"UPDATE agents SET dispatch = 'channel', confirm = 1 WHERE dispatch = 'confirm'",
+	} {
+		if _, err := db.Exec(up); err != nil {
 			return err
 		}
 	}

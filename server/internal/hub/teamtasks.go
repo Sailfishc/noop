@@ -56,6 +56,18 @@ type prView struct {
 	Repo     string `json:"repo,omitempty"`
 }
 
+// mandateView: on whose word the agent works and how far it may go, fixed when the task is made.
+type mandateView struct {
+	By       string `json:"by"`               // who asked
+	Rule     string `json:"rule"`             // the agent's dispatch scope then: owner | channel | team
+	Confirm  bool   `json:"confirm"`          // it waited for the owner's yes (confirmed_by says who gave it)
+	Joined   bool   `json:"joined,omitempty"` // the @mention brought the agent into the channel (team scope)
+	Autonomy string `json:"autonomy"`         // cautious | assist | auto
+	Branch   string `json:"branch"`           // the only branch it may push; changes go to a PR, never straight in
+	Runtime  string `json:"runtime"`
+	Model    string `json:"model,omitempty"`
+}
+
 type taskView struct {
 	ID          string        `json:"id"`
 	ChannelID   string        `json:"channel_id"`
@@ -64,6 +76,8 @@ type taskView struct {
 	CreatedBy   string        `json:"created_by"`
 	Title       string        `json:"title"`
 	Body        string        `json:"body"`
+	Acceptance  string        `json:"acceptance"` // what "done" means; people write it, the agent may propose it
+	Mandate     *mandateView  `json:"mandate"`
 	State       string        `json:"state"`
 	Step        string        `json:"step"`
 	Summary     string        `json:"summary"`
@@ -80,7 +94,7 @@ type taskView struct {
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, '')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -90,10 +104,15 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr string
+		var decision, pr, mandate string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
-			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq); err != nil {
+			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
+			&t.Acceptance, &mandate); err != nil {
 			panic(err)
+		}
+		if mandate != "" {
+			t.Mandate = &mandateView{}
+			_ = json.Unmarshal([]byte(mandate), t.Mandate)
 		}
 		if decision != "" {
 			t.Decision = &decisionView{}
@@ -182,17 +201,39 @@ func (h *Hub) onPosted(m messageView) {
 		}
 	}
 	for _, mm := range m.Mentions {
-		if mm.Kind != "agent" || !h.isMember(m.ChannelID, "agent", mm.ID) {
+		if mm.Kind != "agent" {
 			continue
+		}
+		joined := false
+		if !h.isMember(m.ChannelID, "agent", mm.ID) {
+			a, ok := h.agent(mm.ID)
+			if !ok || a.Dispatch != "team" {
+				continue // not here, and only a team-wide agent comes when called
+			}
+			h.addMember(m.ChannelID, member{"agent", a.ID})
+			h.channelChanged(m.ChannelID)
+			joined = true
 		}
 		if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?", root, mm.ID) > 0 {
 			continue // already on it: followUp took it
 		}
-		h.createTask(m, root, mm.ID)
+		h.createTask(m, root, mm.ID, joined)
 	}
 }
 
-func (h *Hub) createTask(m messageView, root, agentID string) {
+// acceptanceRE: "验收：…" / "验收标准：…" / "Acceptance: …" on a line of its own starts the acceptance criteria.
+var acceptanceRE = regexp.MustCompile(`(?im)^\s*(验收标准|验收|acceptance criteria|acceptance)\s*[:：]\s*`)
+
+// splitAcceptance: the message without its acceptance criteria, and the criteria.
+func splitAcceptance(text string) (string, string) {
+	loc := acceptanceRE.FindStringIndex(text)
+	if loc == nil {
+		return text, ""
+	}
+	return strings.TrimSpace(text[:loc[0]]), strings.TrimSpace(text[loc[1]:])
+}
+
+func (h *Hub) createTask(m messageView, root, agentID string, joined bool) {
 	a, ok := h.agent(agentID)
 	if !ok {
 		return
@@ -202,22 +243,25 @@ func (h *Hub) createTask(m messageView, root, agentID string) {
 	case m.Author.ID == a.OwnerID:
 	case a.Dispatch == "owner":
 		state, summary = taskClosed, "@"+a.Handle+" 只接主人派的活"
-	case a.Dispatch == "confirm":
+	case a.Confirm:
 		state = taskPending
 	}
 	var n int64
 	_ = h.db.QueryRow("SELECT COALESCE(MAX(num), 0) + 1 FROM tasks_v1").Scan(&n)
 	id := fmt.Sprintf("T-%04d", n)
 	now := h.nowMs()
-	text := m.Text
+	text, acceptance := splitAcceptance(m.Text)
 	if root != m.ID { // a reply: the task is about the thread
 		if r, ok := h.message(root); ok {
-			text = r.Text + "\n\n" + m.Text
+			text = r.Text + "\n\n" + text
 		}
 	}
-	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, state, summary, branch, created, updated)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID, taskTitle(m.Text), text, state, summary,
-		"agent/"+id, now, now))
+	branch := "agent/" + id
+	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
+		Branch: branch, Runtime: a.Runtime, Model: a.Model}
+	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
+		branch, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, now, now))
 	h.taskChanged(id)
 }
 
@@ -345,6 +389,24 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消")})
 	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// v1TaskPatch: the creator or the agent's owner writes down what "done" means.
+func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed)
+	if !ok {
+		return
+	}
+	var b struct {
+		Acceptance *string `json:"acceptance"`
+	}
+	_ = q.json(&b)
+	if b.Acceptance != nil {
+		h.setTask(t.ID, map[string]any{"acceptance": clip(strings.TrimSpace(*b.Acceptance), 4000)})
+		h.taskChanged(t.ID)
+	}
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)
 }
@@ -493,12 +555,17 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Branch   *string       `json:"branch"`
 		Decision *decisionView `json:"decision"`
 		PR       *prView       `json:"pr"`
+		// Acceptance: the agent's proposed criteria, kept only while people have written none
+		Acceptance *string `json:"acceptance"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
 		return
 	}
 	cols := map[string]any{}
+	if b.Acceptance != nil && t.Acceptance == "" {
+		cols["acceptance"] = clip(strings.TrimSpace(*b.Acceptance), 4000)
+	}
 	if b.PR != nil {
 		cols["pr"] = jsonOrNil(b.PR)
 		if b.PR.State == "merged" && (t.State == taskReview || t.State == taskBlocked) {

@@ -13,8 +13,10 @@ export type PR = { provider: string; url: string; number: number; title?: string
 export type TeamTask = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   state: string; step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; session: string;
-  claimed_by: string | null; runs: number;
+  claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
 };
+/** On whose word the agent works and how far it may go (fixed when the task was made). */
+export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string };
 export type Claim = {
   task: TeamTask; agent: TeamAgent & { repo?: string }; channel: { id: string; name: string; topic: string };
   recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
@@ -23,6 +25,8 @@ export type Claim = {
 export type TaskResult = {
   status: "review" | "needs_decision" | "blocked" | "failed";
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
+  /** The criteria the agent worked to, when people gave none. */
+  acceptance?: string;
 };
 
 /** Where a task runs. `repo` is the agent's checkout this worktree belongs to. */
@@ -61,11 +65,13 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
   "options": ["A: <recommended> — consequence", "B: ... — consequence"],
   "recommendation": "A",
   "pr_title": "review with commits only: the pull request title",
-  "pr_body": "review with commits only: what changed and how it was verified"
+  "pr_body": "review with commits only: what changed and how it was verified",
+  "acceptance": "only when the task came without acceptance criteria: the criteria you worked to, one per line"
 }
 review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
-failed = it cannot be done. Write summary, question and options in the language the people in the thread use (Simplified
+failed = it cannot be done. When the task has acceptance criteria, say in the summary how each one is met (or which is
+not, and why); do not report review while one is unmet. Write summary, question and options in the language the people in the thread use (Simplified
 Chinese unless they write otherwise), plain text, no emoji.`;
 
 const RULES = (wd: Workdir) => wd.repo
@@ -76,6 +82,20 @@ const RULES = (wd: Workdir) => wd.repo
   : `# Rules
 - Work in ${wd.cwd} (an empty work directory for this task); put any files you produce there.
 - Never push to remote repositories, merge, or publish anything.`;
+
+const AUTONOMY: Record<string, string> = {
+  cautious: "cautious: before any change beyond reading and investigating, stop with needs_decision and propose what you would do",
+  assist: "assist: do the work on your branch; stop with needs_decision before anything hard to undo or outside the request",
+  auto: "auto: carry the task through on your branch without stopping for routine choices; still stop before anything irreversible",
+};
+
+/** Who handed the task over, under which rule, and how far the agent may go. */
+function mandateLine(c: Claim): string {
+  const m = c.task.mandate;
+  if (!m) return "";
+  const rule = m.rule === "owner" ? "only your owner hands you work" : m.rule === "team" ? "anyone in the team may hand you work" : "members of your channels may hand you work";
+  return `\nMandate: ${rule}${m.confirm ? "; your owner confirmed this task" : ""}. Autonomy ${AUTONOMY[m.autonomy] ?? m.autonomy}.`;
+}
 
 /** The first turn: who the agent is, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir): string {
@@ -90,9 +110,12 @@ ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest
 ${quote(c, c.recent) || "(none)"}
 
 # Task ${t.id}: ${t.title}
-Asked by ${c.creator.name} (@${c.creator.handle}).
+Asked by ${c.creator.name} (@${c.creator.handle}).${mandateLine(c)}
 The request and its thread:
 ${quote(c, c.thread)}
+
+# Acceptance criteria
+${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
 
 ${RESULT_SPEC}`;
 }
@@ -213,7 +236,7 @@ export function createWorker(o: WorkerOptions) {
       else stepTimer ??= setTimeout(flushStep, every - (Date.now() - lastStep));
     };
     const start = (resumeId: string, text: string) => rt.start({
-      cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent,
+      cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined,
       env: (o.env ?? gateEnv)(wd), logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
     });
     log(`${t.id} @${c.agent.handle} 开工：${t.title}${resume ? "（续）" : ""}`);
@@ -235,6 +258,7 @@ export function createWorker(o: WorkerOptions) {
     const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? ""].filter(Boolean).join("\n\n");
     const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
     if (extra?.pr) body.pr = extra.pr;
+    if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
     await report(t.id, body);
     log(`${t.id} → ${result.status}`);

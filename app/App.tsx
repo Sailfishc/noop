@@ -45,6 +45,7 @@ import * as nshUpdater from "nsh/updater";
 import { CLIENT_VERSION } from "./version";
 import { TeamApp } from "./team/TeamApp";
 import { TEAM_KEYS } from "./team/api";
+import { loadAppearance } from "./team/appearance";
 import { createSettingsToast, SettingsToast } from "./settings-toast";
 import { agentDisplayName, avatarOf } from "./avatars";
 import { CheckMark } from "./ui/icons";
@@ -5312,6 +5313,7 @@ function Root() {
 }
 
 function TeamRoot() {
+  void loadAppearance();
   if (hasWindow) currentWindow().set({ title: "TeamAgent", titleBar: { style: "hidden", height: size.bar } });
   Scrollbar.setTheme(scrollbarTheme);
   return (

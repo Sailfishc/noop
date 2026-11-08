@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test";
-import { addressedTo, detectGit, detectRuntimes, isMachineToken, machineReport, teamEnabled, type TeamAgent, type TeamMessage } from "../src/teamagent";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { addressedTo, CLAUDE_MODELS, detectGit, detectRuntimes, isMachineToken, machineReport, teamEnabled, type TeamAgent, type TeamMessage } from "../src/teamagent";
 
 const agent = (id: string, handle: string): TeamAgent =>
-  ({ id, handle, name: handle, owner_id: "u_1", machine_id: "m_1", runtime: "codex", dispatch: "confirm", autonomy: "assist" });
+  ({ id, handle, name: handle, owner_id: "u_1", machine_id: "m_1", runtime: "codex", dispatch: "channel", autonomy: "assist" });
 const msg = (over: Partial<TeamMessage>): TeamMessage =>
   ({ id: "msg_1", seq: 1, channel_id: "c_1", thread_id: null, author: { kind: "user", id: "u_2" }, text: "", mentions: [], created: 0, ...over });
 
@@ -26,14 +29,25 @@ test("the machine tells which runtimes it has and whether they are logged in", (
     "codex --version": { code: 0, out: "codex-cli 0.46.0" },
     "codex login status": { code: 0, out: "Logged in using ChatGPT" },
     "claude --version": { code: 0, out: "1.0.98 (Claude Code)" },
+    "claude auth status": { code: 0, out: '{"loggedIn": true}' },
+    "pi --version": { code: 0, out: "0.73.1" },
+    "pi --list-models": { code: 0, out: "provider  model  context\nanthropic  claude-sonnet-5-5  1M\nopenai  gpt-5.5  400K" },
   };
-  expect(detectRuntimes((c) => out[c.join(" ")] ?? null)).toEqual([
-    { name: "codex", version: "0.46.0", installed: true, logged_in: true },
-    { name: "claude", version: "1.0.98", installed: true, logged_in: null },
+  const home = mkdtempSync(join(tmpdir(), "ta-home-"));
+  mkdirSync(join(home, ".codex"));
+  writeFileSync(join(home, ".codex", "config.toml"), 'model = "gpt-6-luna"\n');
+  expect(detectRuntimes((c) => out[c.join(" ")] ?? null, home)).toEqual([
+    { name: "codex", version: "0.46.0", installed: true, logged_in: true, models: ["gpt-6-luna"] },
+    { name: "claude", version: "1.0.98", installed: true, logged_in: true, models: CLAUDE_MODELS },
+    { name: "pi", version: "0.73.1", installed: true, logged_in: true, models: ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"] },
   ]);
   out["codex login status"] = { code: 1, out: "Not logged in" };
   delete out["claude --version"];
-  expect(detectRuntimes((c) => out[c.join(" ")] ?? null)).toEqual([{ name: "codex", version: "0.46.0", installed: true, logged_in: false }]);
+  out["pi --list-models"] = { code: 0, out: "No models available. Use /login" };
+  expect(detectRuntimes((c) => out[c.join(" ")] ?? null, "/nonexistent")).toEqual([
+    { name: "codex", version: "0.46.0", installed: true, logged_in: false, models: [] },
+    { name: "pi", version: "0.73.1", installed: true, logged_in: false, models: [] },
+  ]);
   expect(detectRuntimes(() => null)).toEqual([]);
 });
 

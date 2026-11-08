@@ -6,12 +6,12 @@ import (
 )
 
 func TestMachineInfoGitAndSessions(t *testing.T) {
-	e := newTaskEnv(t, "confirm")
+	e := newTaskEnv(t, "channel", true)
 	// the daemon reports its runtimes and Git credentials; tokens never travel, only who they are
 	r := e.do("PUT", "/api/v1/machine", e.token, map[string]any{"os": "darwin", "arch": "arm64", "runtimes": []string{"codex", "claude"},
 		"runtime_info": []any{
 			map[string]any{"name": "codex", "version": "0.46.0", "installed": true, "logged_in": true},
-			map[string]any{"name": "claude", "version": "2.1.0", "installed": true, "logged_in": false},
+			map[string]any{"name": "claude", "version": "2.1.0", "installed": true, "logged_in": false, "models": []any{"opus", "claude-sonnet-5-5", "bad model;"}},
 			map[string]any{"name": "evil", "installed": true},
 		},
 		"git": []any{map[string]any{"provider": "gitlab", "host": "Code.Corp.com", "configured": true, "user": "wanglei", "via": "token"}, map[string]any{"provider": "svn", "host": "x"}}})
@@ -19,6 +19,7 @@ func TestMachineInfoGitAndSessions(t *testing.T) {
 	m := r.body["machine"].(map[string]any)
 	ri := m["runtime_info"].([]any)
 	check(t, "known runtimes only", len(ri) == 2 && ri[1].(map[string]any)["logged_in"] == false, r)
+	check(t, "with their models, odd names dropped", len(ri[1].(map[string]any)["models"].([]any)) == 2, r)
 	g := m["git"].([]any)
 	check(t, "git credential status", len(g) == 1 && g[0].(map[string]any)["host"] == "code.corp.com" && g[0].(map[string]any)["user"] == "wanglei", r)
 	r = e.do("GET", "/api/v1/machines", e.zw.session, nil)

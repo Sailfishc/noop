@@ -7,7 +7,7 @@ export type Member = { kind: "user" | "agent"; id: string };
 export type Mention = Member & { handle: string };
 export type User = { id: string; email: string; handle: string; name: string; role: "admin" | "member"; disabled: boolean };
 /** A runtime its machine found: installed or not, its version, and whether it is logged in (null: can't tell). */
-export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null };
+export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null; models?: string[] | null };
 /** Whether its machine can push to a Git platform, and as whom; the token itself never leaves the machine. */
 export type GitCred = { provider: "github" | "gitlab"; host: string; configured: boolean; user: string; via: string };
 export type Machine = {
@@ -18,16 +18,21 @@ export type GitPlatform = { kind: "gitlab" | "github"; name: string; host: strin
 export type GitEvent = { at: number; kind: string; project: string; branch: string; number: number; state: string; task: string };
 export type GitSettings = { platforms: GitPlatform[]; webhook: { path: string; secret_set: boolean }; events: GitEvent[] };
 export type Device = { id: string; ua: string; created: number; last_seen: number; current: boolean };
-export type Dispatch = "owner" | "confirm" | "open";
+/** Who may hand an agent work: only its owner, members of a channel it is in, or anyone in the team. */
+export type Dispatch = "owner" | "channel" | "team";
 export type Autonomy = "cautious" | "assist" | "auto";
-export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch; autonomy: Autonomy; repo?: string; archived?: boolean };
+export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
+  /** Work from people other than the owner waits for the owner's yes. */
+  confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean };
 export type TaskState = "pending" | "queued" | "running" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
+/** On whose word the agent works and how far it may go, fixed when the task was made. */
+export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string; state: TaskState;
   step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; claimed_by: string | null; confirmed_by: string | null;
-  runs: number; created: number; updated: number;
+  runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
 };
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number };
 export type Message = {
@@ -98,11 +103,15 @@ export function mergeMessages(list: readonly Message[], incoming: readonly Messa
 const upsert = <T extends { id: string }>(list: readonly T[], item: T): T[] =>
   list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item];
 
-/** The runtimes an agent can run on. v1 runs Codex; Claude Code opens in phase 2. */
+/** The runtimes an agent can run on. */
 export const RUNTIMES = [
   { name: "codex", label: "Codex", ready: true },
-  { name: "claude", label: "Claude Code", ready: false },
+  { name: "claude", label: "Claude Code", ready: true },
+  { name: "pi", label: "Pi", ready: true },
 ] as const;
+
+/** The models its machine says a runtime offers (the runtime's own default, "", is always a choice too). */
+export const modelsOn = (m: Machine | undefined, runtime: string): string[] => runtimeOn(m, runtime)?.models ?? [];
 export const runtimeLabel = (name: string) => RUNTIMES.find((r) => r.name === name)?.label ?? name;
 
 /** What its machine says about a runtime (an old daemon reports only names: installed, login unknown). */
@@ -125,7 +134,7 @@ export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): st
 /** Who must say yes before a message @ing this agent becomes work: none (it starts), its owner, or it won't take it. */
 export function dispatchFor(a: Agent, me: User | null): "start" | "confirm" | "refused" {
   if (me && me.id === a.owner_id) return "start";
-  return a.dispatch === "owner" ? "refused" : a.dispatch === "confirm" ? "confirm" : "start";
+  return a.dispatch === "owner" ? "refused" : a.confirm ? "confirm" : "start";
 }
 
 /** The trailing "@prefix" being typed at the end of `text` (null when the end isn't a mention). */
@@ -439,6 +448,12 @@ export function createTeam(s: Session) {
     }
     return r;
   }
+  /** The creator or the agent's owner writes down what "done" means. */
+  async function setAcceptance(id: string, acceptance: string) {
+    const r = await api("PATCH", `/api/v1/tasks/${id}`, { acceptance });
+    if (r.ok) putTasks([r.data as Task]);
+    return r;
+  }
   const taskOfThread = (rootId: string) => Object.values(tasks()).filter((t) => t.thread_id === rootId).sort((a, b) => a.created - b.created);
 
   async function logout() {
@@ -461,7 +476,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, taskOfThread, loadInbox,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, setAcceptance, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember,
     createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,

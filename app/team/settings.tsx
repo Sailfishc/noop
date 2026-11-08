@@ -6,9 +6,10 @@
 import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
 import { Dialog } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
+import { appearance, type Appearance, pickAppearance } from "./appearance";
+import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
-  RUNTIMES, runtimeLabel, runtimeOn,
+  modelsOn, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type GitCred, type GitPlatform, type GitSettings, type Machine, type Team,
 } from "./api";
 import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
@@ -17,10 +18,79 @@ export type SettingsTab = "account" | "general" | "agents" | "machines" | "peopl
 
 export const DISPATCH: { value: Dispatch; label: () => string; note: () => string }[] = [
   { value: "owner", label: () => L("Only me", "只有我"), note: () => L("Only you can hand it work.", "只有你能给它派活。") },
-  { value: "confirm", label: () => L("Anyone, I confirm", "任何人，我确认"), note: () => L("Anyone can @ it; you confirm before it starts.", "谁都能 @它，开工前由你确认。") },
-  { value: "open", label: () => L("Anyone", "任何人"), note: () => L("Anyone in its channels can hand it work.", "它所在频道的人都能直接派活。") },
+  { value: "channel", label: () => L("Members of its channels", "所在频道的成员"), note: () => L("Anyone in a channel it is in can @ it.", "它所在频道里的人都能 @它派活。") },
+  { value: "team", label: () => L("The whole team", "整个团队"), note: () => L("Anyone can @ it, in any channel; it joins a channel it isn’t in yet when called there.", "团队里任何人都能 @它；在它还没加入的频道被 @ 时，它会自动加入。") },
 ];
-const AUTONOMY: { value: Autonomy; label: () => string; note: () => string }[] = [
+const confirmNote = () => L("Work from anyone else waits for your “Start it”. What you hand it yourself starts at once.", "别人派的活，开工前要你点「确认开工」；你自己派的直接开工。");
+
+/** Who may hand it work, and whether others' work waits for the owner: the scope, then the confirm switch. */
+function DispatchControls(props: { dispatch: Dispatch; confirm: boolean; onDispatch: (v: Dispatch) => void; onConfirm: (v: boolean) => void; testID: string }) {
+  return (
+    <View style={{ gap: 8 }}>
+      <Choice testID={props.testID} options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={props.dispatch} onChange={props.onDispatch} />
+      <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === props.dispatch)?.note() ?? ""}</Text>
+      <If when={props.dispatch !== "owner"}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 4 }}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{L("Needs my confirmation", "需要我确认")}</Text>
+            <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{confirmNote()}</Text>
+          </View>
+          <Toggle testID={`${props.testID}-confirm`} value={props.confirm} label={L("Needs my confirmation", "需要我确认")} onChange={props.onConfirm} />
+        </View>
+      </If>
+    </View>
+  );
+}
+
+/** The model of an agent's runtime: the runtime's default, one its machine reported, or any name typed in. */
+export function ModelPicker(props: { models: string[]; value: string; onChange: (v: string) => void; testID: string }) {
+  const query = signal("");
+  const shown = () => {
+    const q = query().trim().toLowerCase();
+    const list = q ? props.models.filter((m) => m.toLowerCase().includes(q)) : props.models;
+    return list.slice(0, 12);
+  };
+  const custom = () => {
+    const q = query().trim();
+    return q && !props.models.includes(q) ? q : "";
+  };
+  const chip = (value: string, label: string, testID: string) => (
+    <View
+      role="button"
+      testID={testID}
+      accessibilityState={{ selected: props.value === value }}
+      onPress={() => { props.onChange(value); query.set(""); }}
+      hoverStyle={hovered()}
+      style={{
+        height: 28, paddingHorizontal: 10, justifyContent: "center", borderRadius: 8, borderWidth: 1,
+        borderColor: props.value === value ? colors.accentFill : colors.fieldBorder, backgroundColor: props.value === value ? tints.accent : "transparent",
+      }}
+    >
+      <Text style={{ fontSize: 13, color: colors.text, ...(value ? mono : {}) }}>{label}</Text>
+    </View>
+  );
+  return (
+    <View style={{ gap: 8 }}>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+        {chip("", L("Runtime default", "Runtime 默认"), `${props.testID}-default`)}
+        <If when={props.value && !props.models.includes(props.value)}>
+          {chip(props.value, props.value, `${props.testID}-current`)}
+        </If>
+        <Each of={shown()}>{(m) => chip(m(), m(), `${props.testID}-${m()}`)}</Each>
+      </View>
+      <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+        <View style={{ flex: 1 }}>
+          <Field value={query()} onChange={(v) => query.set(v)} onSubmit={() => custom() && (props.onChange(custom()), query.set(""))}
+            placeholder={props.models.length > 12 ? L(`Search ${props.models.length} models, or type another`, `在 ${props.models.length} 个模型里搜，或填别的模型名`) : L("Another model name", "填别的模型名")} testID={`${props.testID}-input`} />
+        </View>
+        <If when={custom()}>
+          <Btn small testID={`${props.testID}-use`} label={L(`Use “${custom()}”`, `用「${custom()}」`)} onPress={() => { props.onChange(custom()); query.set(""); }} />
+        </If>
+      </View>
+    </View>
+  );
+}
+export const AUTONOMY: { value: Autonomy; label: () => string; note: () => string }[] = [
   { value: "cautious", label: () => L("Cautious", "谨慎"), note: () => L("Asks before anything that matters.", "要紧的事都先问。") },
   { value: "assist", label: () => L("Assist", "协助"), note: () => L("Decides small things, asks on real choices.", "小事自己定，真正的选择问人。") },
   { value: "auto", label: () => L("Autonomous", "自主"), note: () => L("Decides alone and says what it chose.", "自己拍板，事后说明。") },
@@ -260,17 +330,29 @@ function DevicesPanel(props: { team: Team }) {
 
 // ---------------------------------------------------------------- 通用
 
+const LOOKS: { value: Appearance; label: () => string }[] = [
+  { value: "system", label: () => L("System", "跟随系统") },
+  { value: "light", label: () => L("Light", "浅色") },
+  { value: "dark", label: () => L("Dark", "深色") },
+  { value: "black", label: () => L("Black", "黑色") },
+];
+
 function GeneralSection() {
   return (
-    <Panel title={L("Language", "语言")}>
-      <Choice
-        testID="lang"
-        options={[{ value: "zh", label: "中文" }, { value: "en", label: "English" }]}
-        value={lang() === "zh" ? "zh" : "en"}
-        onChange={(v) => { lang.set(v); void Storage.setItem(LANG_KEY, v); }}
-      />
-      <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Appearance and notifications come later.", "外观和通知设置之后再加。")}</Text>
-    </Panel>
+    <>
+      <Panel title={L("Appearance", "外观")}>
+        <Choice testID="appearance" options={LOOKS.map((l) => ({ value: l.value, label: l.label() }))} value={appearance()} onChange={pickAppearance} />
+        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Dark is graphite; black is true black, easier on OLED screens. Kept on this device.", "深色是石墨灰，黑色是纯黑，适合 OLED 屏幕和暗光环境。只对这台设备生效。")}</Text>
+      </Panel>
+      <Panel title={L("Language", "语言")}>
+        <Choice
+          testID="lang"
+          options={[{ value: "zh", label: "中文" }, { value: "en", label: "English" }]}
+          value={lang() === "zh" ? "zh" : "en"}
+          onChange={(v) => { lang.set(v); void Storage.setItem(LANG_KEY, v); }}
+        />
+      </Panel>
+    </>
   );
 }
 
@@ -358,7 +440,6 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
   }
   const runtimeNote = (name: string) => {
     const info = runtimeOn(machine(), name);
-    if (!RUNTIMES.find((r) => r.name === name)?.ready) return L("Opens in phase 2", "第二阶段开放");
     if (!machine()) return "";
     if (!info) return machine()!.runtime_info?.length || machine()!.runtimes.length ? L("Not installed on this machine", "这台机器上没装") : L("The machine hasn’t reported yet", "机器还没上报");
     return [info.version ? `v${info.version}` : "", info.logged_in === true ? L("logged in", "已登录") : info.logged_in === false ? L("not logged in", "未登录") : ""].filter(Boolean).join(" · ");
@@ -405,20 +486,20 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
                 note={runtimeNote(r().name)}
                 picked={a().runtime === r().name}
                 disabled={!r().ready}
-                onPress={() => void patch({ runtime: r().name })}
+                onPress={() => a().runtime !== r().name && void patch({ runtime: r().name, model: "" })}
               />
             )}
           </Each>
         </View>
-        <Label text={L("Model", "模型")} note={L("Follows the runtime’s default.", "跟随 Runtime 默认。")} />
+        <Label text={L("Model", "模型")} note={modelsOn(machine(), a().runtime).length ? L(`What ${machine()?.name ?? "its machine"} offers for ${runtimeLabel(a().runtime)}, or any name it accepts.`, `${machine()?.name ?? "机器"} 上 ${runtimeLabel(a().runtime)} 可用的模型，也可以填它认的其他名字。`) : L("Its machine listed none; the runtime’s default, or a name it accepts.", "机器没有列出模型：用 Runtime 默认，或填它认的模型名。")} />
+        <ModelPicker testID={`agent-model-${a().handle}`} models={modelsOn(machine(), a().runtime)} value={a().model ?? ""} onChange={(v) => void patch({ model: v })} />
         <AgentRepo team={t} agent={a()} />
         <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}</Text>
       </Panel>
 
       <Panel title={L("Who can use it", "谁能用它")}>
         <Label text={L("Who can hand it work", "谁能派活")} />
-        <Choice testID={`agent-dispatch-${a().handle}`} options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={a().dispatch} onChange={(v) => void patch({ dispatch: v })} />
-        <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === a().dispatch)?.note() ?? ""}</Text>
+        <DispatchControls testID={`agent-dispatch-${a().handle}`} dispatch={a().dispatch} confirm={a().confirm} onDispatch={(v) => void patch({ dispatch: v })} onConfirm={(v) => void patch({ confirm: v })} />
         <Label text={L("How much it decides alone", "自主程度")} />
         <Choice testID={`agent-autonomy-${a().handle}`} options={AUTONOMY.map((d) => ({ value: d.value, label: d.label() }))} value={a().autonomy} onChange={(v) => void patch({ autonomy: v })} />
         <Text style={{ fontSize: 12.5, color: colors.faint }}>{AUTONOMY.find((d) => d.value === a().autonomy)?.note() ?? ""}</Text>
@@ -492,7 +573,9 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
   const machine = signal("");
   const runtime = signal("codex");
   const repo = signal("");
-  const dispatch = signal<Dispatch>("confirm");
+  const dispatch = signal<Dispatch>("channel");
+  const confirm = signal(true);
+  const model = signal("");
   const error = signal("");
   const busy = signal(false);
   const mine = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
@@ -500,7 +583,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
   effect(() => {
     if (!props.open) return;
     const ms = untracked(mine);
-    name.set(""); handle.set(""); desc.set(""); repo.set(""); runtime.set("codex"); dispatch.set("confirm"); error.set("");
+    name.set(""); handle.set(""); desc.set(""); repo.set(""); runtime.set("codex"); dispatch.set("channel"); confirm.set(true); model.set(""); error.set("");
     machine.set(props.machine ?? (ms.find((m) => m.online) ?? ms[0])?.id ?? "");
   });
   const picked = () => mine().find((m) => m.id === machine());
@@ -511,7 +594,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     const m = picked();
     const info = runtimeOn(m, name);
     const reported = !!m && (!!m.runtime_info?.length || !!m.runtimes.length);
-    if (!r.ready) return { ok: false, note: info?.installed ? L("Opens in phase 2 · installed here", "第二阶段开放 · 这台已安装") : L("Opens in phase 2", "第二阶段开放"), warn: false };
+    if (!r.ready) return { ok: false, note: "", warn: false };
     if (!m) return { ok: true, note: "", warn: false };
     if (!reported) return { ok: true, note: L("The machine hasn’t reported yet; it’s checked when it connects.", "机器还没上报，连上后会检查。"), warn: true };
     if (!info?.installed) return { ok: false, note: L(`Not installed on ${m.name}`, `${m.name} 上没装`), warn: true };
@@ -519,14 +602,14 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     return { ok: true, note: `✓ ${L("Installed", "已安装")}${info.version ? ` v${info.version}` : ""}${info.logged_in ? L(", logged in", "，已登录") : ""}`, warn: false };
   };
   const cleanHandle = () => handle().trim().toLowerCase().replace(/^@/, "");
-  const summary = () => [name().trim() || (cleanHandle() ? `@${cleanHandle()}` : ""), runtimeLabel(runtime()), picked()?.name ?? ""].filter(Boolean).join(" · ");
+  const summary = () => [name().trim() || (cleanHandle() ? `@${cleanHandle()}` : ""), runtimeLabel(runtime()) + (model() ? ` ${model()}` : ""), picked()?.name ?? ""].filter(Boolean).join(" · ");
   async function create() {
     if (!cleanHandle() || busy()) return;
     busy.set(true);
     error.set("");
     const r = await t.createAgent({
       handle: cleanHandle(), name: name().trim() || cleanHandle(), description: desc().trim(), machine_id: machine() || null,
-      runtime: runtime(), repo: repo().trim(), dispatch: dispatch(),
+      runtime: runtime(), model: model(), repo: repo().trim(), dispatch: dispatch(), confirm: confirm(),
     });
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
@@ -593,17 +676,18 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
                     note={rt(r().name).note}
                     picked={runtime() === r().name}
                     disabled={!rt(r().name).ok}
-                    onPress={() => runtime.set(r().name)}
+                    onPress={() => { if (runtime() !== r().name) { runtime.set(r().name); model.set(""); } }}
                   />
                 )}
               </Each>
             </View>
+            <Label text={L("Model", "模型")} />
+            <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
           </If>
           <Field label={L("Repository on that machine", "代码仓库（那台机器上的路径）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
 
           {step("3", L("Who can use it", "谁能用它"))}
-          <Choice testID="new-agent-dispatch" options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={dispatch()} onChange={(v) => dispatch.set(v)} />
-          <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === dispatch())?.note() ?? ""}</Text>
+          <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
           <ErrorNote text={error()} testID="agent-create-error" />
         </Scroll>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.border }}>

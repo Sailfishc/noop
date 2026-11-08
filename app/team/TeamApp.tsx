@@ -11,7 +11,7 @@ import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
   type Agent, type Member, type Message, type Session, type Task, type TaskState, type Team,
 } from "./api";
-import { SettingsPage, type SettingsTab } from "./settings";
+import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
@@ -426,9 +426,13 @@ function candidates(t: Team, channelId: string, query: string): Candidate[] {
   const q = query.toLowerCase();
   const hit = (handle: string, name: string) => !q || handle.toLowerCase().startsWith(q) || name.toLowerCase().includes(q);
   const ownerName = (id: string) => t.users().find((u) => u.id === id)?.name ?? "?";
+  // the channel's agents, then team-wide ones from elsewhere (an @ brings them in)
+  const here = (a: Agent) => !!c && isMember(c, "agent", a.id);
   const agents = t.agents()
-    .filter((a) => c && isMember(c, "agent", a.id) && hit(a.handle, a.name))
-    .map((a): Candidate => ({ kind: "agent", id: a.id, handle: a.handle, name: a.name, agent: a, note: [L(`${ownerName(a.owner_id)}’s agent`, `${ownerName(a.owner_id)}的 Agent`), a.description].filter(Boolean).join(" · ") }));
+    .filter((a) => (here(a) || a.dispatch === "team") && hit(a.handle, a.name))
+    .sort((a, b) => Number(here(b)) - Number(here(a)))
+    .map((a): Candidate => ({ kind: "agent", id: a.id, handle: a.handle, name: a.name, agent: a,
+      note: [L(`${ownerName(a.owner_id)}’s agent`, `${ownerName(a.owner_id)}的 Agent`), here(a) ? a.description : L("joins this channel when called", "被 @ 时会加入这个频道")].filter(Boolean).join(" · ") }));
   const people = t.users()
     .filter((u) => !u.disabled && u.id !== meId && hit(u.handle, u.name))
     .sort((a, b) => Number(!!c && isMember(c, "user", b.id)) - Number(!!c && isMember(c, "user", a.id)))
@@ -497,7 +501,8 @@ function dispatchLine(t: Team, channelId: string, text: string): { text: string;
   for (const h of handles) {
     const a = t.agents().find((x) => x.handle === h);
     if (!a) continue;
-    if (!c || !isMember(c, "agent", a.id)) {
+    const joins = !!c && !isMember(c, "agent", a.id) && a.dispatch === "team";
+    if (!c || (!isMember(c, "agent", a.id) && !joins)) {
       parts.push(L(`@${h} isn’t in this channel, so it gets no task`, `@${h} 不在这个频道，不会派活`));
       warn = true;
       continue;
@@ -511,9 +516,10 @@ function dispatchLine(t: Team, channelId: string, text: string): { text: string;
       continue;
     }
     const why = blockedReason(a, m, en);
-    const head = [a.name, runtimeLabel(a.runtime), m?.name].filter(Boolean).join(" · ");
+    const head = [a.name, runtimeLabel(a.runtime) + (a.model ? ` ${a.model}` : ""), m?.name].filter(Boolean).join(" · ");
     const confirm = how === "confirm" ? L(`${owner?.name ?? "its owner"} confirms before it starts`, `开工前需要 ${owner?.name ?? "主人"} 确认`) : L("starts without confirmation", "开工无需确认");
-    parts.push(L(`To ${head}, ${confirm}`, `将派给 ${head}，${confirm}`) + (why ? L(` (can’t take work now: ${why}; the task waits)`, `（现在接不了活：${why}，任务会等着）`) : ""));
+    const join = joins ? L(", and it joins this channel", "，它会加入这个频道") : "";
+    parts.push(L(`To ${head}, ${confirm}${join}`, `将派给 ${head}，${confirm}${join}`) + (why ? L(` (can’t take work now: ${why}; the task waits)`, `（现在接不了活：${why}，任务会等着）`) : ""));
     if (why) warn = true;
   }
   return parts.length ? { text: parts.join("；"), warn } : null;
@@ -838,9 +844,14 @@ function TaskFacts(props: { team: Team; task: Task }) {
       {fact(L("Assignee", "负责人"), plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`))}
       {fact(L("Runs on", "运行在"), <>
         <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
+        <If when={agent()?.model}>{plain(agent()?.model ?? "")}</If>
         {plain(machine()?.name ?? L("no machine", "没有机器"), `task-${task().id}-machine`)}
       </>)}
       {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
+      <If when={task().mandate}>
+        {fact(L("Mandate", "授权"), <Text testID={`task-${task().id}-mandate`} style={{ flex: 1, flexShrink: 1, fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>)}
+      </If>
+      <Acceptance team={t} task={task()} />
       {fact(L("Output", "产出"), task().pr ? (
         <View role="link" onPress={() => void openUrl(task().pr!.url)} hoverStyle={hovered()}>
           <Text style={{ fontSize: 13, color: task().pr!.checks === "failure" ? colors.danger : colors.accent }}>{prLine(task().pr!)}</Text>
@@ -857,6 +868,77 @@ function TaskFacts(props: { team: Team; task: Task }) {
           <Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Created ${time(task().created)} · last change ${time(task().updated)}`, `创建 ${time(task().created)} · 最近变化 ${time(task().updated)}`)}</Text>
           <If when={task().step}><Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Now: ${task().step}`, `当前：${task().step}`)}</Text></If>
           <If when={task().summary}><Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.text }}>{task().summary}</Text></If>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+/** Who handed the task over, under which rule, who confirmed it, and how far the agent may go. */
+export function mandateLine(t: Team, task: Task): string {
+  const m = task.mandate;
+  if (!m) return "";
+  const name = (id: string | null | undefined) => (id ? t.users().find((u) => u.id === id)?.name ?? "?" : "");
+  const rule = DISPATCH.find((d) => d.value === m.rule)?.label() ?? m.rule;
+  const confirmed = m.confirm ? (task.confirmed_by ? L(`confirmed by ${name(task.confirmed_by)}`, `${name(task.confirmed_by)} 已确认`) : L("waits for its owner", "等主人确认")) : "";
+  const autonomy = AUTONOMY.find((a) => a.value === m.autonomy)?.label() ?? m.autonomy;
+  return [
+    L(`asked by ${name(m.by)}`, `${name(m.by)} 派的活`),
+    L(`rule: ${rule}`, `规则：${rule}`),
+    confirmed,
+    m.joined ? L("joined this channel for it", "为此加入了这个频道") : "",
+    L(`autonomy: ${autonomy}`, `自主程度：${autonomy}`),
+    L(`may only push ${m.branch} and open a PR`, `只能推 ${m.branch} 并开 PR`),
+  ].filter(Boolean).join(" · ");
+}
+
+/** What "done" means for the task: people write it (the creator or the agent's owner), the agent proposes it when none. */
+function Acceptance(props: { team: Team; task: Task }) {
+  const t = props.team;
+  const editing = signal(false);
+  const draft = signal("");
+  const busy = signal(false);
+  const error = signal("");
+  const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
+  const can = () => isParty(props.task, t.me(), agent()) && !["done", "closed"].includes(props.task.state);
+  const text = () => (props.task.acceptance ?? "").trim();
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.setAcceptance(props.task.id, draft().trim());
+    busy.set(false);
+    if (!r.ok) return error.set(failed(r));
+    editing.set(false);
+  }
+  return (
+    <View testID={`task-${props.task.id}-acceptance`} style={{ gap: 6, paddingTop: 2 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 22 }}>
+        <Text style={{ width: 68, fontSize: 12.5, color: colors.faint }}>{L("Acceptance", "验收标准")}</Text>
+        <Text style={{ flex: 1, fontSize: 13, color: text() ? colors.text : colors.faint }}>{text() ? "" : L("None yet: the agent proposes some when it reports.", "还没写：Agent 交付时会给出它采用的标准。")}</Text>
+        <If when={can() && !editing()}>
+          <Btn small kind="ghost" testID={`task-${props.task.id}-acceptance-edit`} label={text() ? L("Edit", "修改") : L("Write", "填写")} onPress={() => { draft.set(text()); editing.set(true); }} />
+        </If>
+      </View>
+      <If when={text() && !editing()}>
+        <Text style={{ marginLeft: 78, fontSize: 13, lineHeight: 19, color: colors.text }}>{text()}</Text>
+      </If>
+      <If when={editing()}>
+        <View style={{ gap: 6 }}>
+          <Input
+            testID={`task-${props.task.id}-acceptance-input`}
+            value={draft()}
+            multiline
+            autoFocus
+            placeholder={L("One per line, e.g. P99 under 200 ms; no table locks", "一行一条，比如：P99 低于 200ms；上线不锁表")}
+            class="placeholder:text-faint"
+            onChange={({ value }) => draft.set(value)}
+            style={{ minHeight: 64, maxHeight: 160, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, lineHeight: 20, color: colors.text }}
+          />
+          <ErrorNote text={error()} />
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+            <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => editing.set(false)} />
+            <Btn small kind="primary" testID={`task-${props.task.id}-acceptance-save`} label={L("Save", "保存")} busy={busy()} onPress={save} />
+          </View>
         </View>
       </If>
     </View>
