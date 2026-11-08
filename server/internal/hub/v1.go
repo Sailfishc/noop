@@ -33,6 +33,10 @@ func (h *Hub) v1Routes() *http.ServeMux {
 
 	r("POST /api/v1/invites", person, h.v1InviteCreate)
 	r("POST /api/v1/login-codes", person, h.v1LoginCodeCreate)
+	r("GET /api/v1/sessions", person, h.v1Sessions)
+	r("DELETE /api/v1/sessions/{id}", person, h.v1SessionDelete)
+	r("GET /api/v1/git", person, h.v1Git)
+	r("PUT /api/v1/git/platforms", person, h.v1GitPlatforms)
 	r("GET /api/v1/users", anyone, h.v1Users)
 	r("PATCH /api/v1/users/{id}", person, h.v1UserPatch)
 

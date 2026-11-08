@@ -211,12 +211,34 @@ describe("team channels", () => {
   });
 });
 
-describe("agents and machines", () => {
+describe("settings", () => {
+  const settings = async (app: any, tab: string) => {
+    await app.press("id:user-menu");
+    await app.press("id:menu-settings");
+    await app.waitFor("id:settings");
+    await app.press(`id:settings-nav-${tab}`);
+  };
+
+  test("the bottom-left menu and ⌘, open Settings, a page of its own; back returns to the channel", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } } } });
+    await app.waitFor("id:team-composer");
+    expect(app.shows("id:open-settings")).toBe(false); // no settings rows in the sidebar any more
+    expect(app.shows("id:toggle-lang")).toBe(false);
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings");
+    expect(app.shows("id:team-composer")).toBe(false);
+    expect(app.shows("id:profile-name")).toBe(true);
+    await app.press("id:settings-back");
+    await app.waitFor("id:team-composer");
+    await app.press("id:user-menu");
+    await app.press("id:menu-agents");
+    await app.waitFor("id:agent-detail-acha");
+  });
+
   test("adding a machine shows its token once, ready to paste; an agent's dispatch changes", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
-    await app.press("id:open-settings");
-    await app.waitFor("id:agent-acha");
+    await settings(app, "machines");
     await app.press("id:machine-add");
     await app.type("id:machine-name", "构建机");
     await app.press("id:machine-create");
@@ -224,22 +246,69 @@ describe("agents and machines", () => {
     expect(log.created).toEqual([{ name: "构建机" }]);
     expect(app.shows(`text:/token = "tam_abab/`)).toBe(true);
     expect(app.shows(`text:/url = "${URL}"/`)).toBe(true);
+    await app.press("id:settings-nav-agents");
     await app.press("id:agent-dispatch-acha-open");
     await app.waitUntil(() => log.patches.length === 1);
     expect(log.patches).toEqual([{ dispatch: "open" }]);
   });
 
+  test("a machine shows its runtimes, their login, and the agents on it; removing it says who loses it", async () => {
+    const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true }, { name: "claude", version: "1.0.98", installed: true, logged_in: null }] };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: { ...server(newLog()), [`GET ${URL}/api/v1/machines`]: { body: { machines: [reported] } } } });
+    await settings(app, "machines");
+    await app.waitFor("id:machine-m_1-runtime-codex");
+    expect(app.shows("text:v0.46.0")).toBe(true);
+    expect(app.shows("text:✓ logged in")).toBe(true);
+    expect(app.shows("id:machine-m_1-agent-acha")).toBe(true);
+    await app.press("id:machine-remove-m_1");
+    await app.waitFor("text:/@acha/");
+    expect(app.shows("id:machine-remove-confirm-m_1")).toBe(true);
+  });
+
+  test("a new agent: a machine first, then a runtime on it; Claude Code waits for phase 2", async () => {
+    const created: any[] = [];
+    const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true }] };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/machines`]: { body: { machines: [reported] } },
+        [`POST ${URL}/api/v1/agents`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          created.push(b);
+          return { body: { ...acha, ...b, id: "a_9" } };
+        },
+      },
+    });
+    await settings(app, "agents");
+    await app.press("id:agent-add");
+    await app.waitFor("id:new-agent");
+    expect(app.shows("text:/Installed v0.46.0, logged in/")).toBe(true);
+    expect(app.enabled("id:new-agent-runtime-claude")).toBe(false);
+    expect(app.shows("text:Opens in phase 2")).toBe(true);
+    await app.type("id:agent-name", "阿测");
+    await app.type("id:agent-handle", "ace");
+    await app.type("id:agent-desc", "补测试");
+    await app.type("id:agent-repo-new", "~/work/pay");
+    expect(app.shows("text:阿测 · Codex · 张伟的 Mac")).toBe(true);
+    await app.press("id:agent-create");
+    await app.waitUntil(() => created.length === 1);
+    expect(created[0]).toEqual({ handle: "ace", name: "阿测", description: "补测试", machine_id: "m_1", runtime: "codex", repo: "~/work/pay", dispatch: "confirm" });
+    await app.waitFor("id:agent-detail-ace");
+  });
+
   test("an admin invites someone and gets the link to send", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(newLog()) });
-    await app.press("id:open-settings");
+    await settings(app, "people");
     await app.type("id:invite-email", "new@corp.com");
     await app.press("id:invite-create");
     await app.waitFor("id:invite-url");
     expect(app.shows(`text:${URL}/invite/INVITECODE123`)).toBe(true);
   });
 
-  test("a login code for another device; an admin makes a login link for a member", async () => {
+  test("a login code for another device; signed-in devices; an admin makes a login link for a member", async () => {
     const made: any[] = [];
+    const removed: string[] = [];
     const app = await open("./App.tsx", {
       storage: SESSION, width: 1200, height: 900,
       network: {
@@ -250,27 +319,133 @@ describe("agents and machines", () => {
           const code = b.user_id ? "MEMB-ER22" : "ABCD-EFGH";
           return { body: { code, path: `/login/${code}`, expires: Date.now() + 900_000 } };
         },
+        [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [
+          { id: "aaaaaaaaaaaaaaaa", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120", created: T0, last_seen: T0, current: true },
+          { id: "bbbbbbbbbbbbbbbb", ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0) Safari/604", created: T0, last_seen: T0, current: false },
+        ] } },
+        [`DELETE ${URL}/api/v1/sessions/bbbbbbbbbbbbbbbb`]: () => { removed.push("b"); return { body: { ok: true } }; },
       },
     });
-    await app.press("id:open-settings");
+    await app.press("id:user-menu");
+    await app.press("id:menu-login-code");
     await app.press("id:login-code-create");
     await app.waitFor("id:login-code");
     expect(app.shows("text:ABCD-EFGH")).toBe(true);
     expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(true);
+    expect(app.shows("text:This device")).toBe(true);
+    expect(app.shows("id:device-remove-aaaaaaaaaaaaaaaa")).toBe(false);
+    await app.press("id:device-remove-bbbbbbbbbbbbbbbb");
+    await app.waitUntil(() => removed.length === 1);
+    await app.waitUntil(() => !app.shows("id:device-bbbbbbbbbbbbbbbb"));
+    await app.press("id:settings-nav-people");
     expect(app.shows("id:login-link-zhangwei")).toBe(false); // not for yourself
     await app.press("id:login-link-wanglei");
     await app.waitFor(`text:${URL}/login/MEMB-ER22`);
     expect(made).toEqual([{}, { user_id: "u_2" }]);
   });
 
+  test("Git platforms: an admin adds Ant Code; its webhook and each machine's credentials show, never a token", async () => {
+    const saved: any[] = [];
+    const reported = { ...mac, git: [{ provider: "github", host: "github.com", configured: true, user: "zw", via: "gh" }, { provider: "gitlab", host: "code.corp.com", configured: false, user: "", via: "" }] };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/machines`]: { body: { machines: [reported] } },
+        [`GET ${URL}/api/v1/git`]: { body: { platforms: [], webhook: { path: "/api/v1/hooks/gitlab", secret_set: true }, events: [] } },
+        [`PUT ${URL}/api/v1/git/platforms`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          saved.push(b);
+          return { body: { platforms: b.platforms.map((p: any) => ({ ...p, api: p.api || `https://${p.host}/api/v4` })) } };
+        },
+      },
+    });
+    await settings(app, "git");
+    await app.waitFor("id:git-platform-github.com");
+    expect(app.shows("text:✓ gh login · zw")).toBe(true);
+    await app.press("id:git-platform-add");
+    await app.type("id:git-host", "code.corp.com");
+    await app.press("id:git-platform-save");
+    await app.waitFor("id:git-webhook-url");
+    expect(saved).toEqual([{ platforms: [{ kind: "gitlab", name: "Ant Code", host: "code.corp.com", api: "" }] }]);
+    expect(app.shows(`text:${URL}/api/v1/hooks/gitlab`)).toBe(true);
+    expect(app.shows("text:/Secret set/")).toBe(true);
+    expect(app.shows("id:git-cred-m_1-code.corp.com")).toBe(true);
+    expect(app.shows("text:not set up")).toBe(true);
+  });
+
   test("the language switches and is kept; sign out forgets the session", async () => {
-    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
-    await app.press("id:toggle-lang");
-    await app.waitFor("text:Agent 与机器");
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } } } });
+    await settings(app, "general");
+    await app.press("id:lang-zh");
+    await app.waitFor("text:返回工作区");
     expect(app.storage()["hub.lang"]).toBe("zh");
+    await app.press("id:settings-nav-account");
     await app.press("id:sign-out");
     await app.waitFor("id:team-signin");
     expect(app.storage()["team.session"]).toBe(undefined);
+  });
+});
+
+describe("channel v2", () => {
+  test("@ opens a picker of the channel's agents (runtime, state) then people; Enter inserts", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "请 @");
+    await app.waitFor("id:mention-picker");
+    expect(app.shows("id:mention-acha")).toBe(true);
+    expect(app.shows("id:mention-wanglei")).toBe(true);
+    expect(app.shows("text:Codex")).toBe(true);
+    expect(app.shows("text:/张伟’s agent/")).toBe(true);
+    await app.type("id:team-composer", "ac");
+    expect(app.shows("id:mention-wanglei")).toBe(false);
+    await app.submit("id:team-composer");
+    expect(app.value("id:team-composer")).toBe("请 @acha ");
+    expect(app.shows("id:mention-picker")).toBe(false);
+  });
+
+  test("the line under the box says where the work goes and who confirms", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@acha 看下");
+    await app.waitFor("text:To 阿查 · Codex · 张伟的 Mac, starts without confirmation"); // the owner's own agent
+  });
+
+  test("an agent that can't take work says why: its runtime isn't logged in", async () => {
+    const out = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: false }] };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/machines`]: { body: { machines: [out] } } } });
+    await app.waitFor("id:side-agent-acha-state");
+    expect(app.shows("text:/Codex isn’t logged in on 张伟的 Mac/")).toBe(true);
+  });
+
+  test("the header counts people and agents; the members panel groups agents by owner and adds members", async () => {
+    const added: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: { ...server(newLog()), [`POST ${URL}/api/v1/channels/c_1/members`]: (r: { body?: string | null }) => { added.push(JSON.parse(r.body!)); return { body: pay }; } },
+    });
+    await app.waitFor("text:2 people · 1 agents");
+    await app.press("id:channel-members");
+    await app.waitFor("id:members");
+    expect(app.shows("text:张伟’s agents")).toBe(true);
+    expect(app.shows("id:member-acha")).toBe(true);
+    expect(app.shows("id:member-wanglei")).toBe(true);
+    await app.press("id:close-members");
+    expect(app.shows("id:members")).toBe(false);
+  });
+
+  test("a task's thread shows its facts on top, its run log, and that replies go to its session", async () => {
+    const t = task({ created_by: "u_1", state: "running", step: "运行 bun test", runs: 1, pr: { provider: "gitlab", url: "https://code.corp/pay/-/merge_requests/3", number: 3, state: "open", checks: "pending" } });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [t]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-facts");
+    expect(app.shows("text:/^T-0001 · running for/")).toBe(true);
+    expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
+    expect(app.shows("text:PR #3 · checks running")).toBe(true);
+    expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
+    await app.press("id:task-T-0001-runlog");
+    await app.waitFor("text:Now: 运行 bun test");
   });
 });
 
@@ -320,10 +495,11 @@ describe("tasks", () => {
     await app.waitFor("收到，在看");
   });
 
-  test("an agent's repository is set in Agents & machines", async () => {
+  test("an agent's repository is set in Settings › My agents", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
-    await app.press("id:open-settings");
+    await app.press("id:user-menu");
+    await app.press("id:menu-agents");
     await app.type("id:agent-repo-acha", "~/work/pay");
     await app.press("id:agent-repo-save-acha");
     await app.waitUntil(() => log.patches.length === 1);

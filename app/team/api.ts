@@ -6,7 +6,18 @@ import { signal, untracked } from "nsh";
 export type Member = { kind: "user" | "agent"; id: string };
 export type Mention = Member & { handle: string };
 export type User = { id: string; email: string; handle: string; name: string; role: "admin" | "member"; disabled: boolean };
-export type Machine = { id: string; owner_id: string; name: string; os: string; arch: string; runtimes: string[]; max_sessions: number; online: boolean; last_seen: number | null };
+/** A runtime its machine found: installed or not, its version, and whether it is logged in (null: can't tell). */
+export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null };
+/** Whether its machine can push to a Git platform, and as whom; the token itself never leaves the machine. */
+export type GitCred = { provider: "github" | "gitlab"; host: string; configured: boolean; user: string; via: string };
+export type Machine = {
+  id: string; owner_id: string; name: string; os: string; arch: string; runtimes: string[]; max_sessions: number; online: boolean; last_seen: number | null;
+  runtime_info?: RuntimeInfo[]; git?: GitCred[];
+};
+export type GitPlatform = { kind: "gitlab" | "github"; name: string; host: string; api: string };
+export type GitEvent = { at: number; kind: string; project: string; branch: string; number: number; state: string; task: string };
+export type GitSettings = { platforms: GitPlatform[]; webhook: { path: string; secret_set: boolean }; events: GitEvent[] };
+export type Device = { id: string; ua: string; created: number; last_seen: number; current: boolean };
 export type Dispatch = "owner" | "confirm" | "open";
 export type Autonomy = "cautious" | "assist" | "auto";
 export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch; autonomy: Autonomy; repo?: string; archived?: boolean };
@@ -86,6 +97,42 @@ export function mergeMessages(list: readonly Message[], incoming: readonly Messa
 
 const upsert = <T extends { id: string }>(list: readonly T[], item: T): T[] =>
   list.some((x) => x.id === item.id) ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item];
+
+/** The runtimes an agent can run on. v1 runs Codex; Claude Code opens in phase 2. */
+export const RUNTIMES = [
+  { name: "codex", label: "Codex", ready: true },
+  { name: "claude", label: "Claude Code", ready: false },
+] as const;
+export const runtimeLabel = (name: string) => RUNTIMES.find((r) => r.name === name)?.label ?? name;
+
+/** What its machine says about a runtime (an old daemon reports only names: installed, login unknown). */
+export function runtimeOn(m: Machine | undefined, name: string): RuntimeInfo | undefined {
+  if (!m) return undefined;
+  return m.runtime_info?.find((r) => r.name === name) ?? (m.runtimes.includes(name) ? { name, version: "", installed: true, logged_in: null } : undefined);
+}
+
+/** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing or logged out. */
+export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): string {
+  const rt = runtimeLabel(a.runtime);
+  if (!a.machine_id || !m) return en ? "no machine" : "没有机器";
+  if (!m.online) return en ? `${m.name} is offline` : `${m.name} 离线`;
+  const r = runtimeOn(m, a.runtime);
+  if (!r || !r.installed) return en ? `${rt} isn’t installed on ${m.name}` : `${m.name} 上没装 ${rt}`;
+  if (r.logged_in === false) return en ? `${rt} isn’t logged in on ${m.name}` : `${m.name} 上的 ${rt} 没登录`;
+  return "";
+}
+
+/** Who must say yes before a message @ing this agent becomes work: none (it starts), its owner, or it won't take it. */
+export function dispatchFor(a: Agent, me: User | null): "start" | "confirm" | "refused" {
+  if (me && me.id === a.owner_id) return "start";
+  return a.dispatch === "owner" ? "refused" : a.dispatch === "confirm" ? "confirm" : "start";
+}
+
+/** The trailing "@prefix" being typed at the end of `text` (null when the end isn't a mention). */
+export function mentionAt(text: string): { start: number; query: string } | null {
+  const m = text.match(/(^|[^\w@])@([a-z0-9_-]{0,32})$/i);
+  return m ? { start: text.length - m[2].length - 1, query: m[2].toLowerCase() } : null;
+}
 
 export const isMember = (c: Channel, kind: Member["kind"], id: string) => c.members.some((m) => m.kind === kind && m.id === id);
 
@@ -378,6 +425,11 @@ export function createTeam(s: Session) {
   /** A one-time login code: for this person's other device, or (an admin) for a member who lost theirs. */
   const loginCode = (userId?: string) => api("POST", "/api/v1/login-codes", userId ? { user_id: userId } : {});
 
+  const devices = () => api("GET", "/api/v1/sessions");
+  const removeDevice = (id: string) => api("DELETE", `/api/v1/sessions/${id}`);
+  const gitSettings = () => api("GET", "/api/v1/git");
+  const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
+
   /** confirm | decline | cancel | accept | decide ({choice}). */
   async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
@@ -411,7 +463,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember,
-    createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

@@ -30,6 +30,56 @@ export function machineReport(cfg: Cfg, which: (bin: string) => boolean = (b) =>
   };
 }
 
+export type RuntimeInfo = { name: string; version: string; installed: boolean; logged_in: boolean | null };
+export type GitCred = { provider: "github" | "gitlab"; host: string; configured: boolean; user: string; via: string };
+type Run = (cmd: string[]) => { code: number; out: string } | null;
+const run: Run = (cmd) => {
+  if (!Bun.which(cmd[0]!)) return null;
+  try {
+    const p = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe", timeout: 10_000 });
+    return { code: p.exitCode ?? 1, out: (p.stdout.toString() + p.stderr.toString()).trim() };
+  } catch { return null; }
+};
+const versionOf = (s: string) => s.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? "";
+
+/** Which runtimes are installed here, their versions, and whether they are logged in (null: can't tell). */
+export function detectRuntimes(r: Run = run): RuntimeInfo[] {
+  const out: RuntimeInfo[] = [];
+  const codex = r(["codex", "--version"]);
+  if (codex) {
+    const st = r(["codex", "login", "status"]);
+    out.push({ name: "codex", version: versionOf(codex.out), installed: codex.code === 0, logged_in: st ? st.code === 0 && !/not logged in/i.test(st.out) : null });
+  }
+  const claude = r(["claude", "--version"]);
+  if (claude) out.push({ name: "claude", version: versionOf(claude.out), installed: claude.code === 0, logged_in: null });
+  return out;
+}
+
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
+/** Which Git platforms this machine can push to and as whom. Only the status goes to the server, never a token. */
+export async function detectGit(cfg: Cfg, f: Fetch = fetch, r: Run = run): Promise<GitCred[]> {
+  const who = async (url: string, headers: Record<string, string>, key: string) => {
+    try {
+      const res = await f(url, { headers, signal: AbortSignal.timeout(8_000) });
+      return res.ok ? String(((await res.json()) as any)[key] ?? "") : "";
+    } catch { return ""; }
+  };
+  const out: GitCred[] = [];
+  let gh = cfg.git?.github?.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN, via = "token";
+  if (!gh) { const p = r(["gh", "auth", "token"]); if (p?.code === 0 && p.out) { gh = p.out.split("\n")[0]; via = "gh"; } }
+  out.push({ provider: "github", host: "github.com", configured: !!gh, via: gh ? via : "",
+    user: gh ? await who("https://api.github.com/user", { authorization: `Bearer ${gh}`, accept: "application/vnd.github+json" }, "login") : "" });
+  const list: any[] = Array.isArray(cfg.git?.gitlab) ? cfg.git.gitlab : cfg.git?.gitlab ? [cfg.git.gitlab] : [];
+  for (const g of list.slice(0, 15)) {
+    const host = String(g.host ?? "").toLowerCase();
+    if (!host) continue;
+    const api = g.api ? String(g.api).replace(/\/$/, "") : `https://${host}/api/v4`;
+    out.push({ provider: "gitlab", host, configured: !!g.token, via: g.token ? "token" : "",
+      user: g.token ? await who(`${api}/user`, { "private-token": String(g.token) }, "username") : "" });
+  }
+  return out;
+}
+
 /** The agents of this machine a message is for: @mentioned, or (a reply) in a thread one of them is in. */
 export function addressedTo(m: TeamMessage, mine: TeamAgent[], threadAgents: Set<string> = new Set()): TeamAgent[] {
   if (m.author.kind === "agent" && mine.some((a) => a.id === m.author.id)) return []; // our own words
@@ -58,8 +108,12 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     if (r.status === 401) log("服务端不认这个机器 token（机器被移除了？）：在 App 的「我的机器」里重新添加");
     return r.ok ? (r.json() as Promise<any>) : null;
   };
+  // runtimes and Git credentials change rarely and cost a few process spawns and HTTP calls: look every 10 minutes
+  let probe: { at: number; runtime_info: RuntimeInfo[]; git: GitCred[] } | null = null;
   const report = async () => {
-    const r = await api("/api/v1/machine", { method: "PUT", body: JSON.stringify(machineReport(cfg)) });
+    if (!probe || Date.now() - probe.at > 10 * 60_000) probe = { at: Date.now(), runtime_info: detectRuntimes(), git: await detectGit(cfg) };
+    const body = { ...machineReport(cfg), runtime_info: probe.runtime_info, git: probe.git };
+    const r = await api("/api/v1/machine", { method: "PUT", body: JSON.stringify(body) });
     if (r?.agents) agents = r.agents;
     return r;
   };

@@ -94,6 +94,7 @@ func initSchema(db *sql.DB) error {
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE machines ADD COLUMN info TEXT", // what the daemon detected: its runtimes and Git credentials (machineInfo)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

@@ -1,163 +1,18 @@
 // TeamAgent: several people and their agents in shared channels, against the Go server's /api/v1.
-// Screens: sign in (an invite, or email + authenticator code), the channel list, a channel, a thread, and
-// "Agents & machines" (your machines and their tokens, your agents and how they take work, inviting people).
-// Wide windows show the list, the channel and an open thread side by side; narrow ones one at a time.
-import { cleanup, Clipboard, computed, effect, Image, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
-import { Input } from "nsh/base";
-import { L, lang, LANG_KEY } from "../i18n";
+// Screens: sign in (an invite link, or a login code), the workspace (待你决定, channels, my agents; a channel with its
+// thread or members beside it), and Settings, a page of its own (settings.tsx). Wide windows show the sidebar, the
+// channel and a thread or the members side by side; narrow ones one pane at a time.
+import { cleanup, computed, effect, Image, keymap, List, openUrl, Scroll, signal, Storage, Text, untracked, View, windowSize, type InputRef, type JSX, type ViewStyle } from "nsh";
+import { Input, Menu, MenuItem, MenuSeparator } from "nsh/base";
+import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
+import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
-  call, createTeam, errorOf, type Reply, isMember, isParty, loginServer, normalizeServer, parseInvite, TEAM_KEYS, textParts,
-  type Agent, type Autonomy, type Channel, type Dispatch, type Machine, type Member, type Message, type Session, type Task, type TaskState, type Team,
+  blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
+  type Agent, type Member, type Message, type Session, type Task, type TaskState, type Team,
 } from "./api";
-
-const WIDE = 720;
-const unreachable = (url: string) => L(`Can’t reach ${url}. Check the address and your network.`, `连不上服务器 ${url}，请检查地址和网络`);
-
-// ---------------------------------------------------------------- small pieces
-
-function Btn(props: { label: string; onPress: () => void; kind?: "primary" | "plain" | "ghost" | "danger"; testID?: string; busy?: boolean; disabled?: boolean; icon?: IconName; grow?: boolean; small?: boolean }) {
-  const kind = () => props.kind ?? "plain";
-  const fg = () => (kind() === "primary" ? colors.onAccent : kind() === "danger" ? colors.danger : kind() === "ghost" ? colors.muted : colors.text);
-  return (
-    <View
-      role="button"
-      testID={props.testID}
-      accessibilityLabel={props.label}
-      accessibilityState={{ disabled: !!props.disabled }}
-      onPress={() => !props.disabled && !props.busy && props.onPress()}
-      hoverStyle={props.disabled ? undefined : kind() === "primary" ? { opacity: 0.92 } : hovered()}
-      style={{
-        minHeight: props.small ? 30 : 40,
-        flexGrow: props.grow ? 1 : 0,
-        flexShrink: 1,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 6,
-        paddingHorizontal: props.small ? 10 : 14,
-        borderRadius: radius.control,
-        borderWidth: kind() === "plain" ? 0.5 : 0,
-        borderColor: colors.fieldBorder,
-        backgroundColor: kind() === "primary" ? colors.accentFill : kind() === "danger" ? tints.danger : kind() === "plain" ? colors.surface : "transparent",
-        opacity: props.disabled ? 0.45 : 1,
-      }}
-    >
-      <If when={props.busy}>
-        <Spinner size={14} tint={fg()} />
-      </If>
-      <If when={!props.busy && props.icon}>
-        <Icon name={props.icon!} size={16} tint={fg()} />
-      </If>
-      <Text style={{ fontSize: props.small ? 13.5 : 15, fontWeight: kind() === "primary" ? "600" : "500", color: fg() }}>{props.label}</Text>
-    </View>
-  );
-}
-
-function Field(props: { label?: string; value: string; onChange: (v: string) => void; onSubmit?: () => void; placeholder?: string; testID?: string; hint?: string; autoFocus?: boolean; big?: boolean; keyboardType?: "email-address" | "number-pad" | "url" }) {
-  return (
-    <View style={{ gap: 6 }}>
-      <If when={props.label}>
-        <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{props.label}</Text>
-      </If>
-      <Input
-        testID={props.testID}
-        value={props.value}
-        autoFocus={props.autoFocus}
-        keyboardType={props.keyboardType}
-        autoCapitalize="none"
-        autoCorrect={false}
-        placeholder={props.placeholder}
-        class="placeholder:text-faint"
-        submitBehavior="submit"
-        onSubmit={() => props.onSubmit?.()}
-        onChange={({ value }) => props.onChange(value)}
-        style={{
-          height: props.big ? 52 : 40,
-          paddingHorizontal: 12,
-          borderRadius: radius.control,
-          borderWidth: 1,
-          borderColor: colors.fieldBorder,
-          backgroundColor: colors.field,
-          fontSize: props.big ? 24 : 15,
-          color: colors.text,
-          ...(props.big ? { letterSpacing: 8, textAlign: "center", fontVariant: ["tabular-nums"] } : {}),
-        }}
-      />
-      <If when={props.hint}>
-        <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>{props.hint}</Text>
-      </If>
-    </View>
-  );
-}
-
-function ErrorNote(props: { text: string; testID?: string }) {
-  return (
-    <If when={props.text}>
-      <View style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.control, backgroundColor: tints.danger }}>
-        <Text testID={props.testID} style={{ fontSize: 14, lineHeight: 20, color: colors.danger }}>{props.text}</Text>
-      </View>
-    </If>
-  );
-}
-
-/** A row of choices, one picked. */
-function Choice<T extends string>(props: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; testID?: string }) {
-  return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-      <Each of={props.options}>
-        {(o) => (
-          <View
-            role="button"
-            testID={props.testID ? `${props.testID}-${o().value}` : undefined}
-            accessibilityState={{ selected: props.value === o().value }}
-            onPress={() => props.onChange(o().value)}
-            hoverStyle={hovered()}
-            style={{
-              height: 30, paddingHorizontal: 10, justifyContent: "center", borderRadius: 8, borderWidth: 1,
-              borderColor: props.value === o().value ? colors.accentFill : colors.fieldBorder,
-              backgroundColor: props.value === o().value ? tints.accent : "transparent",
-            }}
-          >
-            <Text style={{ fontSize: 13.5, color: colors.text }}>{o().label}</Text>
-          </View>
-        )}
-      </Each>
-    </View>
-  );
-}
-
-function Avatar(props: { name: string; agent?: boolean; size?: number }) {
-  const s = () => props.size ?? 32;
-  return (
-    <View style={{ width: s(), height: s(), borderRadius: props.agent ? 8 : s() / 2, alignItems: "center", justifyContent: "center", backgroundColor: props.agent ? tints.accent : alpha(colors.text, 0.08) }}>
-      <Text style={{ fontSize: s() * 0.42, fontWeight: "600", color: props.agent ? colors.accent : colors.text }}>{(props.name.trim()[0] ?? "?").toUpperCase()}</Text>
-    </View>
-  );
-}
-
-function Dot(props: { on: boolean }) {
-  return <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: props.on ? colors.up : colors.faint }} />;
-}
-
-function Panel(props: { title: string; children: JSX.Element; right?: JSX.Element; style?: ViewStyle }) {
-  return (
-    <View style={[{ gap: 12, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }, props.style ?? null]}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, fontSize: 16, fontWeight: "600", color: colors.text }}>{props.title}</Text>
-        {props.right}
-      </View>
-      {props.children}
-    </View>
-  );
-}
-
-const time = (ms: number) => {
-  const d = new Date(ms), now = new Date();
-  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
-};
+import { SettingsPage, type SettingsTab } from "./settings";
+import { agentState, authorOf, Avatar, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
 
@@ -236,7 +91,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
               else={
                 <>
                   <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://teamagent.corp:8080" keyboardType="url" testID="team-url" />
-                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("On a signed-in device: Agents & machines → Sign in on another device.", "在已登录的设备上：Agent 与机器 → 在其他设备登录。")} />
+                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("On a signed-in device: Settings › Account › Sign in on another device.", "在已登录的设备上：设置 › 账号 › 在其他设备登录。")} />
                   <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim()} onPress={login} />
                 </>
               }
@@ -268,17 +123,23 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
   );
 }
 
+
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "settings" } | { kind: "inbox" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "home" };
+/** What the right column shows beside a channel: a thread, or the channel's members. */
+type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
+type SettingsOpen = { tab: SettingsTab | null; agent?: string };
 
 function Workspace(props: { team: Team; onSignOut: () => void }) {
   const t = props.team;
   const wide = computed(() => windowSize().width >= WIDE);
   const page = signal<Page>({ kind: "home" });
-  const thread = signal<string | null>(null); // the open thread's root id
+  const side = signal<Side>(null);
+  const settings = signal<SettingsOpen | null>(null);
   /** Narrow windows: the list shows until a page is picked. */
   const showList = signal(true);
+  const thread = () => { const s = side(); return s?.kind === "thread" ? s.id : null; };
 
   // the first channel this person is in opens by itself on a wide window
   effect(() => {
@@ -292,23 +153,26 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     if (p.kind === "channel") t.openChannel(p.id);
     else t.leaveView();
     page.set(p);
-    thread.set(threadId);
+    side.set(threadId ? { kind: "thread", id: threadId } : null);
     showList.set(false);
   }
+  const openSettings = (tab: SettingsTab | null = untracked(wide) ? "account" : null, agent?: string) => settings.set({ tab, agent });
+  keymap.bind("mod+,", () => openSettings(), { when: "always" });
 
   const sidebar = () => (
-    <Sidebar
-      team={t}
-      page={page()}
-      onOpen={open}
-      onSignOut={props.onSignOut}
-    />
+    <Sidebar team={t} page={page()} onOpen={open} onSettings={openSettings} onSignOut={props.onSignOut} />
   );
   const main = () => {
     const p = page();
-    if (p.kind === "channel") return <ChannelView team={t} id={p.id} back={!wide()} onBack={() => { t.leaveView(); showList.set(true); }} thread={thread()} onThread={(id) => thread.set(id)} />;
+    if (p.kind === "channel") {
+      return (
+        <ChannelView
+          team={t} id={p.id} back={!wide()} onBack={() => { t.leaveView(); showList.set(true); }}
+          side={side()} onThread={(id) => side.set({ kind: "thread", id })} onMembers={() => side.set(side()?.kind === "members" ? null : { kind: "members" })}
+        />
+      );
+    }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
-    if (p.kind === "settings") return <Settings team={t} back={!wide()} onBack={() => showList.set(true)} />;
     if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -318,40 +182,55 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       </View>
     );
   };
+  const sidePane = (back: boolean) => {
+    const s = side(), p = page();
+    if (!s || p.kind !== "channel") return null;
+    if (s.kind === "thread") return <ThreadView team={t} rootId={s.id} back={back} onClose={() => side.set(null)} />;
+    return <MembersPanel team={t} channelId={p.id} back={back} onClose={() => side.set(null)} onAgent={(h) => openSettings("agents", h)} />;
+  };
 
   return (
-    <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background }}>
-      <If
-        when={wide()}
-        else={
-          <If when={showList() || page().kind === "home"} else={
-            <If when={thread() && page().kind === "channel" ? thread() : null} else={main()}>
-              {(id) => <ThreadView team={t} rootId={id()} back onClose={() => thread.set(null)} />}
+    <If
+      when={settings()}
+      else={
+        <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background }}>
+          <If
+            when={wide()}
+            else={
+              <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={main()}>{(pane) => pane()}</If>}>
+                {sidebar()}
+              </If>
+            }
+          >
+            <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
+            <View style={{ flex: 1 }}>{main()}</View>
+            <If when={sidePane(false)}>
+              {(pane) => <View style={{ width: 380, borderLeftWidth: 1, borderLeftColor: colors.border }}>{pane()}</View>}
             </If>
-          }>
-            {sidebar()}
           </If>
-        }
-      >
-        <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
-        <View style={{ flex: 1 }}>{main()}</View>
-        <If when={thread() && page().kind === "channel"}>
-          <View style={{ width: 380, borderLeftWidth: 1, borderLeftColor: colors.border }}>
-            <ThreadView team={t} rootId={thread()!} onClose={() => thread.set(null)} />
-          </View>
-        </If>
-      </If>
-    </View>
+        </View>
+      }
+    >
+      {(s) => (
+        <SettingsPage
+          team={t} tab={s().tab} agent={s().agent}
+          onTab={(tab, agent) => settings.set({ tab, agent })}
+          onClose={() => settings.set(null)}
+          onSignOut={props.onSignOut}
+        />
+      )}
+    </If>
   );
 }
 
-function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onSignOut: () => void }) {
+function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
   const t = props.team;
   const mine = computed(() => {
     const me = t.me();
     return t.channels().filter((c) => !c.archived).map((c) => ({ c, member: !!me && isMember(c, "user", me.id) }));
   });
-  const Row = (p: { id: string; testID: string; icon: IconName; label: string; active: boolean; badge?: number; dim?: boolean; onPress: () => void }) => (
+  const myAgents = () => t.agents().filter((a) => a.owner_id === t.me()?.id);
+  const Row = (p: { testID: string; icon: IconName; label: string; active: boolean; badge?: number; dim?: boolean; onPress: () => void }) => (
     <View
       role="button"
       testID={p.testID}
@@ -368,29 +247,31 @@ function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onS
       </If>
     </View>
   );
+  const Section = (p: { label: string; right?: JSX.Element }) => (
+    <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingTop: 14, paddingBottom: 4 }}>
+      <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{p.label}</Text>
+      {p.right}
+    </View>
+  );
   return (
-    <View style={{ flex: 1, paddingTop: 14 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 14, paddingBottom: 12 }}>
-        <Avatar name={t.me()?.name ?? "?"} size={30} />
-        <View style={{ flex: 1 }}>
-          <Text testID="me-name" style={{ fontSize: 15, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <Dot on={t.conn() === "live"} />
-            <Text testID="conn" style={{ fontSize: 12, color: colors.muted }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
-          </View>
-        </View>
+    <View style={{ flex: 1 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 16, paddingTop: 16, paddingBottom: 10 }}>
+        <Image src={LOGO} accessibilityLabel="" style={{ width: 22, height: 22 }} />
+        <Text style={{ flex: 1, fontSize: 15.5, fontWeight: "700", color: colors.text }}>TeamAgent</Text>
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
-        <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingTop: 8, paddingBottom: 4 }}>
-          <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("CHANNELS", "频道")}</Text>
-          <View role="button" testID="new-channel" accessibilityLabel={L("New channel", "新建频道")} onPress={() => props.onOpen({ kind: "new-channel" })} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-            <Icon name="plus" size={15} tint={colors.muted} />
-          </View>
-        </View>
+        <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+        <Section
+          label={L("CHANNELS", "频道")}
+          right={
+            <View role="button" testID="new-channel" accessibilityLabel={L("New channel", "新建频道")} onPress={() => props.onOpen({ kind: "new-channel" })} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
+              <Icon name="plus" size={15} tint={colors.muted} />
+            </View>
+          }
+        />
         <Each of={mine()} key={(x) => x.c.id}>
           {(x) => (
             <Row
-              id={x().c.id}
               testID={`channel-${x().c.slug}`}
               icon="chat"
               label={x().c.name}
@@ -401,57 +282,108 @@ function Sidebar(props: { team: Team; page: Page; onOpen: (p: Page) => void; onS
             />
           )}
         </Each>
-        <View style={{ height: 14 }} />
-        <Row id="inbox" testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
-        <Row id="settings" testID="open-settings" icon="settings" label={L("Agents & machines", "Agent 与机器")} active={props.page.kind === "settings"} onPress={() => props.onOpen({ kind: "settings" })} />
-        <Row id="lang" testID="toggle-lang" icon="globe" label={lang() === "zh" ? "English" : "中文"} active={false} onPress={() => { const next = lang() === "zh" ? "en" : "zh"; lang.set(next); void Storage.setItem(LANG_KEY, next); }} />
-        <Row id="signout" testID="sign-out" icon="external" label={L("Sign out", "退出登录")} active={false} onPress={props.onSignOut} />
-      </Scroll>
-    </View>
-  );
-}
-
-function Header(props: { title: string; subtitle?: string; back?: boolean; onBack?: () => void; right?: JSX.Element; backLabel?: string }) {
-  return (
-    <View style={{ minHeight: 56, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-      <If when={props.back}>
-        <View role="button" testID="back" accessibilityLabel={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="back" size={18} tint={colors.text} />
-        </View>
-      </If>
-      <View style={{ flex: 1, paddingVertical: 8 }}>
-        <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{props.title}</Text>
-        <If when={props.subtitle}>
-          <Text style={{ fontSize: 13, color: colors.muted, numberOfLines: 1 }}>{props.subtitle}</Text>
+        <Section
+          label={L("MY AGENTS", "我的 Agent")}
+          right={
+            <View role="button" testID="side-agents" accessibilityLabel={L("Manage agents", "管理 Agent")} onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
+              <Icon name="settings" size={14} tint={colors.muted} />
+            </View>
+          }
+        />
+        <If when={myAgents().length} else={
+          <View role="button" testID="side-agent-new" onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ height: 30, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8 }}>
+            <Icon name="plus" size={14} tint={colors.faint} />
+            <Text style={{ fontSize: 13.5, color: colors.muted }}>{L("Create your first agent", "新建你的第一个 Agent")}</Text>
+          </View>
+        }>
+          <Each of={myAgents()} key={(a) => a.id}>
+            {(a) => {
+              const st = () => agentState(t, a());
+              return (
+                <View role="button" testID={`side-agent-${a().handle}`} onPress={() => props.onSettings("agents", a().handle)} hoverStyle={hovered()} style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
+                  <Avatar name={a().name} agent size={22} />
+                  <View style={{ flex: 1, gap: 1 }}>
+                    <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                      <StateDot tone={st().tone} />
+                      <Text testID={`side-agent-${a().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{`${runtimeLabel(a().runtime)} · ${st().label}`}</Text>
+                    </View>
+                  </View>
+                </View>
+              );
+            }}
+          </Each>
         </If>
+      </Scroll>
+      <View style={{ padding: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
       </View>
-      {props.right}
     </View>
   );
 }
 
-/** Who wrote it, as people read it. */
-function authorOf(t: Team, m: { kind: "user" | "agent"; id: string }) {
-  if (m.kind === "agent") {
-    const a = t.agents().find((x) => x.id === m.id);
-    return { name: a?.name || a?.handle || L("Agent", "Agent"), handle: a?.handle ?? "", agent: true };
-  }
-  const u = t.users().find((x) => x.id === m.id);
-  return { name: u?.name || u?.handle || "?", handle: u?.handle ?? "", agent: false };
+/** Bottom left: me and a gear; opens Settings (⌘,), my agents & machines, sign in on another device, sign out. */
+function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
+  const t = props.team;
+  const row = (): ViewStyle => ({ flexDirection: "row", alignItems: "center", gap: 10, height: 32, paddingHorizontal: 8, borderRadius: 7 });
+  const item = (testID: string, icon: IconName, label: string, onSelect: () => void, right?: string, danger?: boolean) => (
+    <MenuItem testID={testID} onSelect={onSelect} hoverStyle={hovered()} activeStyle={hovered()} style={row()}>
+      <Icon name={icon} size={15} tint={danger ? colors.danger : colors.muted} />
+      <Text style={{ flex: 1, fontSize: 13.5, color: danger ? colors.danger : colors.text, numberOfLines: 1 }}>{label}</Text>
+      <If when={right}><Text style={{ fontSize: 12, color: colors.faint }}>{right}</Text></If>
+    </MenuItem>
+  );
+  const sep = () => <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 8, backgroundColor: alpha(colors.text, 0.07) }} />;
+  return (
+    <Menu
+      align="start"
+      placement="top"
+      offset={6}
+      margin={8}
+      popupStyle={{ minWidth: 240, padding: 5, borderRadius: 12, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
+      backdropClass="bg-scrim"
+      trigger={
+        <View role="button" testID="user-menu" accessibilityLabel={L("Account menu", "用户菜单")} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44, paddingHorizontal: 8, borderRadius: radius.control }}>
+          <Avatar name={t.me()?.name ?? "?"} size={28} />
+          <View style={{ flex: 1 }}>
+            <Text testID="me-name" style={{ fontSize: 14, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <Dot on={t.conn() === "live"} />
+              <Text testID="conn" style={{ fontSize: 11.5, color: colors.muted }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
+            </View>
+          </View>
+          <Icon name="settings" size={16} tint={colors.muted} />
+        </View>
+      }
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 7 }}>
+        <Avatar name={t.me()?.name ?? "?"} size={30} />
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 13.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
+          <Text style={{ fontSize: 12, color: colors.muted, numberOfLines: 1 }}>{t.me()?.email ?? ""}</Text>
+        </View>
+      </View>
+      {sep()}
+      {item("menu-settings", "settings", L("Settings", "设置"), () => props.onSettings(), keymap.label("mod+,"))}
+      {item("menu-agents", "spark", L("My agents & machines", "我的 Agent 与机器"), () => props.onSettings("agents"))}
+      {item("menu-login-code", "mobile", L("Sign in on another device", "在其他设备登录"), () => props.onSettings("account"))}
+      {sep()}
+      {item("menu-sign-out", "external", L("Sign out", "退出登录"), props.onSignOut, undefined, true)}
+    </Menu>
+  );
 }
 
-function MessageRow(props: { team: Team; m: Message; onThread?: () => void }) {
+function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTask?: boolean }) {
   const a = () => authorOf(props.team, props.m.author);
+  const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
   return (
     <View testID={`msg-${props.m.id}`} style={{ flexDirection: "row", gap: 10, paddingHorizontal: 16, paddingVertical: 8 }}>
       <Avatar name={a().name} agent={a().agent} />
       <View style={{ flex: 1, gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Text style={{ fontSize: 14.5, fontWeight: "600", color: colors.text }}>{a().name}</Text>
-          <If when={a().agent}>
-            <View style={{ paddingHorizontal: 5, height: 17, borderRadius: 4, justifyContent: "center", backgroundColor: tints.accent }}>
-              <Text style={{ fontSize: 10.5, fontWeight: "600", color: colors.accent }}>AGENT</Text>
-            </View>
+          <If when={agent()}>
+            {(ag) => <RuntimeBadge runtime={ag().runtime} />}
           </If>
           <Text style={{ fontSize: 12, color: colors.faint }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
         </View>
@@ -460,9 +392,11 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void }) {
             {(p) => (p().mention ? <Text style={{ color: colors.accent, fontWeight: "500" }}>{p().text}</Text> : <Text>{p().text}</Text>)}
           </Each>
         </Text>
-        <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
-          {(task) => <TaskCard team={props.team} task={task()} />}
-        </Each>
+        <If when={!props.noTask}>
+          <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
+            {(task) => <TaskCard team={props.team} task={task()} />}
+          </Each>
+        </If>
         <If when={props.onThread}>
           <View role="button" testID={`thread-${props.m.id}`} onPress={() => props.onThread!()} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 26, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6 }}>
             <Icon name="reply" size={14} tint={props.m.reply_count ? colors.accent : colors.faint} />
@@ -476,11 +410,137 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void }) {
   );
 }
 
-function Composer(props: { testID: string; placeholder: string; onSend: (text: string) => Promise<string | null>; disabled?: boolean }) {
+/** Someone the @ picker offers. */
+type Candidate = { kind: "agent" | "user"; id: string; handle: string; name: string; note: string; agent?: Agent };
+
+/** What the people and agents of a channel the composer can @, best first: its agents, then its people, then everyone else. */
+function candidates(t: Team, channelId: string, query: string): Candidate[] {
+  const c = t.channels().find((x) => x.id === channelId);
+  const meId = t.me()?.id;
+  const q = query.toLowerCase();
+  const hit = (handle: string, name: string) => !q || handle.toLowerCase().startsWith(q) || name.toLowerCase().includes(q);
+  const ownerName = (id: string) => t.users().find((u) => u.id === id)?.name ?? "?";
+  const agents = t.agents()
+    .filter((a) => c && isMember(c, "agent", a.id) && hit(a.handle, a.name))
+    .map((a): Candidate => ({ kind: "agent", id: a.id, handle: a.handle, name: a.name, agent: a, note: [L(`${ownerName(a.owner_id)}’s agent`, `${ownerName(a.owner_id)}的 Agent`), a.description].filter(Boolean).join(" · ") }));
+  const people = t.users()
+    .filter((u) => !u.disabled && u.id !== meId && hit(u.handle, u.name))
+    .sort((a, b) => Number(!!c && isMember(c, "user", b.id)) - Number(!!c && isMember(c, "user", a.id)))
+    .map((u): Candidate => ({ kind: "user", id: u.id, handle: u.handle, name: u.name, note: c && isMember(c, "user", u.id) ? "" : L("not in this channel", "不在这个频道") }));
+  return [...agents, ...people].slice(0, 8);
+}
+
+function MentionPicker(props: { team: Team; items: Candidate[]; index: number; onMove: (d: number) => void; onPick: (c: Candidate) => void; onClose: () => void }) {
+  const t = props.team;
+  keymap.bind(
+    { up: () => props.onMove(-1), down: () => props.onMove(1), tab: () => props.items[props.index] && props.onPick(props.items[props.index]), escape: props.onClose },
+    { when: "always", repeat: true },
+  );
+  const head = (s: string) => <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.faint, paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2 }}>{s}</Text>;
+  const firstUser = () => props.items.findIndex((c) => c.kind === "user");
+  return (
+    <View testID="mention-picker" role="menu" style={{ gap: 1, padding: 4, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, boxShadow: "0 6px 24px rgba(0,0,0,0.12)" }}>
+      <If when={props.items.length} else={<Text style={{ padding: 10, fontSize: 13, color: colors.muted }}>{L("No one by that name", "没有找到")}</Text>}>
+        <Each of={props.items} key={(c) => `${c.kind}:${c.id}`}>
+          {(c, i) => {
+            const st = () => (c().agent ? agentState(t, c().agent!) : null);
+            return (
+              <>
+                <If when={i() === 0 && c().kind === "agent"}>{head(L("AGENTS · THIS CHANNEL", "Agent · 本频道"))}</If>
+                <If when={i() === firstUser()}>{head(L("PEOPLE", "人"))}</If>
+                <View
+                  role="menuitem"
+                  testID={`mention-${c().handle}`}
+                  accessibilityState={{ selected: i() === props.index }}
+                  onPress={() => props.onPick(c())}
+                  hoverStyle={hovered()}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 40, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: i() === props.index ? alpha(colors.text, 0.07) : "transparent", opacity: st()?.blocked ? 0.6 : 1 }}
+                >
+                  <Avatar name={c().name} agent={c().kind === "agent"} size={26} />
+                  <View style={{ flex: 1, gap: 1 }}>
+                    <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{c().name} <Text style={{ color: colors.muted }}>@{c().handle}</Text></Text>
+                    <If when={c().note}><Text style={{ fontSize: 12, color: colors.faint, numberOfLines: 1 }}>{c().note}</Text></If>
+                  </View>
+                  <If when={c().agent}>
+                    {(a) => (
+                      <>
+                        <RuntimeBadge runtime={a().runtime} />
+                        <StateDot tone={st()!.tone} />
+                        <Text style={{ maxWidth: 160, fontSize: 12, color: st()!.blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st()!.label}</Text>
+                      </>
+                    )}
+                  </If>
+                </View>
+              </>
+            );
+          }}
+        </Each>
+      </If>
+      <Text style={{ fontSize: 11.5, color: colors.faint, paddingHorizontal: 10, paddingVertical: 4 }}>{L("↑↓ to choose · Enter to insert · Esc to close", "↑↓ 选择 · 回车插入 · Esc 关闭")}</Text>
+    </View>
+  );
+}
+
+/** Where a message would send work: each @agent of the channel it mentions, its runtime and machine, and who must confirm. */
+function dispatchLine(t: Team, channelId: string, text: string): { text: string; warn: boolean } | null {
+  const c = t.channels().find((x) => x.id === channelId);
+  const handles = [...new Set([...text.matchAll(/(^|[^\w@])@([a-z][a-z0-9_-]{1,31})/g)].map((m) => m[2]))];
+  const parts: string[] = [];
+  let warn = false;
+  const en = lang() !== "zh";
+  for (const h of handles) {
+    const a = t.agents().find((x) => x.handle === h);
+    if (!a) continue;
+    if (!c || !isMember(c, "agent", a.id)) {
+      parts.push(L(`@${h} isn’t in this channel, so it gets no task`, `@${h} 不在这个频道，不会派活`));
+      warn = true;
+      continue;
+    }
+    const m = t.machines().find((x) => x.id === a.machine_id);
+    const owner = t.users().find((u) => u.id === a.owner_id);
+    const how = dispatchFor(a, t.me());
+    if (how === "refused") {
+      parts.push(L(`@${h} only takes work from ${owner?.name ?? "its owner"}`, `@${h} 只接 ${owner?.name ?? "主人"} 派的活`));
+      warn = true;
+      continue;
+    }
+    const why = blockedReason(a, m, en);
+    const head = [a.name, runtimeLabel(a.runtime), m?.name].filter(Boolean).join(" · ");
+    const confirm = how === "confirm" ? L(`${owner?.name ?? "its owner"} confirms before it starts`, `开工前需要 ${owner?.name ?? "主人"} 确认`) : L("starts without confirmation", "开工无需确认");
+    parts.push(L(`To ${head}, ${confirm}`, `将派给 ${head}，${confirm}`) + (why ? L(` (can’t take work now: ${why}; the task waits)`, `（现在接不了活：${why}，任务会等着）`) : ""));
+    if (why) warn = true;
+  }
+  return parts.length ? { text: parts.join("；"), warn } : null;
+}
+
+/** The message box: @ opens a picker of the channel's agents and people; the line under it says where the work goes. */
+function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; onSend: (text: string) => Promise<string | null> }) {
+  const t = props.team;
   const text = signal("");
   const error = signal("");
   const busy = signal(false);
+  const pick = signal(0);
+  const dismissed = signal<string | null>(null); // the text the picker was closed on
+  let input: InputRef | undefined;
+  const mention = () => (dismissed() === text() ? null : mentionAt(text()));
+  const items = computed(() => { const m = mention(); return m ? candidates(t, props.channelId, m.query) : []; });
+  const open = () => !!mention();
+  effect(() => { items(); pick.set(0); });
+  const preview = () => dispatchLine(t, props.channelId, text());
+  function insert(c: Candidate) {
+    const m = untracked(mention);
+    if (!m) return;
+    const v = untracked(text).slice(0, m.start) + `@${c.handle} `;
+    text.set(v);
+    input?.focus();
+    input?.setSelection(v.length, v.length);
+  }
   async function send() {
+    if (untracked(open)) {
+      const c = untracked(items)[untracked(pick)];
+      if (c) return insert(c);
+      dismissed.set(untracked(text));
+    }
     const v = untracked(text).trim();
     if (!v || untracked(busy)) return;
     busy.set(true);
@@ -489,12 +549,38 @@ function Composer(props: { testID: string; placeholder: string; onSend: (text: s
     error.set(err ?? "");
     if (!err) text.set("");
   }
+  function addAt() {
+    const v = untracked(text);
+    const next = v && !/\s$/.test(v) ? `${v} @` : `${v}@`;
+    text.set(next);
+    dismissed.set(null);
+    input?.focus();
+    input?.setSelection(next.length, next.length);
+  }
+  function addCode() {
+    const v = untracked(text);
+    const next = `${v}${v && !v.endsWith("\n") ? "\n" : ""}\`\`\`\n\n\`\`\``;
+    text.set(next);
+    input?.focus();
+    input?.setSelection(next.length - 4, next.length - 4);
+  }
+  const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string) => (
+    <View role="button" testID={testID} accessibilityLabel={label} onPress={onPress} hoverStyle={hovered()} style={{ width: 30, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
+      <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted }}>{glyph}</Text>}>
+        <Icon name={icon!} size={16} tint={colors.muted} />
+      </If>
+    </View>
+  );
   return (
-    <View style={{ padding: 12, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+    <View style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}>
       <ErrorNote text={error()} testID={`${props.testID}-error`} />
-      <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 8 }}>
+      <If when={open()}>
+        <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
+      </If>
+      <View style={{ borderRadius: 12, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field }}>
         <Input
           testID={props.testID}
+          ref={(r) => (input = r)}
           value={text()}
           multiline
           submitBehavior="submit"
@@ -502,15 +588,26 @@ function Composer(props: { testID: string; placeholder: string; onSend: (text: s
           class="placeholder:text-faint"
           onChange={({ value }) => text.set(value)}
           onSubmit={send}
-          style={{ flex: 1, minHeight: 40, maxHeight: 160, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 15, lineHeight: 21, color: colors.text }}
+          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
-        <Btn testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim()} onPress={send} />
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 6, paddingBottom: 6 }}>
+          {tool(`${props.testID}-at`, null, L("Mention someone", "@ 人或 Agent"), addAt, "@")}
+          {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), addCode)}
+          <View style={{ flex: 1 }} />
+          <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim()} onPress={send} />
+        </View>
+      </View>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}>
+        <Text testID={`${props.testID}-preview`} style={{ flex: 1, fontSize: 12, lineHeight: 17, color: preview()?.warn ? colors.warn : colors.muted }}>
+          {preview()?.text ?? props.hint ?? ""}
+        </Text>
+        <Text style={{ fontSize: 12, color: colors.faint }}>{L("⏎ send · ⇧⏎ new line", "⏎ 发送 · ⇧⏎ 换行")}</Text>
       </View>
     </View>
   );
 }
 
-function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () => void; thread: string | null; onThread: (id: string) => void }) {
+function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () => void; side: Side; onThread: (id: string) => void; onMembers: () => void }) {
   const t = props.team;
   const channel = () => t.channels().find((c) => c.id === props.id);
   const messages = () => t.top()[props.id] ?? [];
@@ -518,19 +615,39 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
     const c = channel(), me = t.me();
     return !!c && !!me && isMember(c, "user", me.id);
   };
-  const agentsIn = () => (channel()?.members ?? []).filter((m) => m.kind === "agent").map((m) => authorOf(t, m).handle).filter(Boolean);
-  const subtitle = () => {
-    const c = channel();
-    if (!c) return "";
-    const people = c.members.filter((m) => m.kind === "user").length;
-    const parts = [c.topic, L(`${people} people`, `${people} 人`)];
-    if (agentsIn().length) parts.push(agentsIn().map((h) => `@${h}`).join(" "));
-    return parts.filter(Boolean).join(" · ");
-  };
+  const people = () => (channel()?.members ?? []).filter((m) => m.kind === "user");
+  const agents = () => (channel()?.members ?? []).filter((m) => m.kind === "agent");
+  const faces = () => [...people(), ...agents()].slice(0, 4);
   const joining = signal(false);
   return (
     <View style={{ flex: 1 }}>
-      <Header title={`# ${channel()?.name ?? ""}`} subtitle={subtitle()} back={props.back} onBack={props.onBack} />
+      <Header
+        title={`# ${channel()?.name ?? ""}`}
+        subtitle={channel()?.topic || undefined}
+        back={props.back}
+        onBack={props.onBack}
+        right={
+          <View
+            role="button"
+            testID="channel-members"
+            accessibilityState={{ selected: props.side?.kind === "members" }}
+            onPress={props.onMembers}
+            hoverStyle={hovered()}
+            style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingHorizontal: 8, borderRadius: 8, backgroundColor: props.side?.kind === "members" ? alpha(colors.text, 0.08) : "transparent" }}
+          >
+            <View style={{ flexDirection: "row" }}>
+              <Each of={faces()} key={(m) => `${m.kind}:${m.id}`}>
+                {(m, i) => (
+                  <View style={{ marginLeft: i() ? -6 : 0, borderRadius: m().kind === "agent" ? 7 : 12, borderWidth: 2, borderColor: colors.background }}>
+                    <Avatar name={authorOf(t, m()).name} agent={m().kind === "agent"} size={22} />
+                  </View>
+                )}
+              </Each>
+            </View>
+            <Text testID="channel-counts" style={{ fontSize: 13, color: colors.muted }}>{L(`${people().length} people · ${agents().length} agents`, `${people().length} 人 · ${agents().length} Agent`)}</Text>
+          </View>
+        }
+      />
       <List
         testID="messages"
         each={messages()}
@@ -554,7 +671,188 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           </View>
         }
       >
-        <Composer testID="team-composer" placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)} onSend={(text) => t.send(props.id, text)} />
+        <Composer
+          team={t}
+          channelId={props.id}
+          testID="team-composer"
+          placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
+          hint={L("Type @ to pick an agent or a person.", "输入 @ 选择 Agent 或同事。")}
+          onSend={(text) => t.send(props.id, text)}
+        />
+      </If>
+    </View>
+  );
+}
+
+/** The channel's people, and its agents by owner (with runtime and state); add or remove members. */
+function MembersPanel(props: { team: Team; channelId: string; back?: boolean; onClose: () => void; onAgent: (handle: string) => void }) {
+  const t = props.team;
+  const channel = () => t.channels().find((c) => c.id === props.channelId);
+  const adding = signal(false);
+  const error = signal("");
+  const people = () => (channel()?.members ?? []).filter((m) => m.kind === "user").map((m) => t.users().find((u) => u.id === m.id)).filter((u): u is NonNullable<typeof u> => !!u);
+  const agents = () => (channel()?.members ?? []).filter((m) => m.kind === "agent").map((m) => t.agents().find((a) => a.id === m.id)).filter((a): a is Agent => !!a);
+  const owners = () => [...new Set(agents().map((a) => a.owner_id))];
+  const outside = () => {
+    const c = channel();
+    if (!c) return [];
+    return [
+      ...t.users().filter((u) => !u.disabled && !isMember(c, "user", u.id)).map((u) => ({ m: { kind: "user", id: u.id } as Member, name: u.name, handle: u.handle, agent: undefined as Agent | undefined })),
+      ...t.agents().filter((a) => !isMember(c, "agent", a.id)).map((a) => ({ m: { kind: "agent", id: a.id } as Member, name: a.name, handle: a.handle, agent: a })),
+    ];
+  };
+  async function add(m: Member) {
+    error.set("");
+    const r = await t.addMember(props.channelId, m);
+    if (!r.ok) error.set(failed(r));
+  }
+  async function remove(m: Member) {
+    error.set("");
+    const r = await t.removeMember(props.channelId, m);
+    if (!r.ok) error.set(failed(r));
+  }
+  const head = (s: string) => <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, paddingTop: 10, paddingBottom: 2 }}>{s}</Text>;
+  const removeBtn = (m: Member, handle: string) => (
+    <View role="button" testID={`members-remove-${handle}`} accessibilityLabel={L(`Remove @${handle} from the channel`, `把 @${handle} 移出频道`)} onPress={() => void remove(m)} hoverStyle={hovered()} style={{ width: 26, height: 26, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
+      <Icon name="close" size={12} tint={colors.faint} />
+    </View>
+  );
+  return (
+    <View testID="members" style={{ flex: 1, backgroundColor: colors.background }}>
+      <Header
+        title={L("Members", "成员")}
+        subtitle={`# ${channel()?.name ?? ""}`}
+        back={props.back}
+        onBack={props.onClose}
+        right={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Btn small testID="members-add" icon="plus" label={L("Add", "添加")} onPress={() => adding.update((v) => !v)} />
+            <If when={!props.back}>
+              <View role="button" testID="close-members" accessibilityLabel={L("Close", "关闭")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
+                <Icon name="close" size={16} tint={colors.muted} />
+              </View>
+            </If>
+          </View>
+        }
+      />
+      <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 16, paddingBottom: 16, gap: 4 }}>
+        <ErrorNote text={error()} testID="members-error" />
+        <If when={adding()}>
+          <View style={{ gap: 2, marginTop: 10, padding: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
+            <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.muted }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>
+              <Each of={outside()} key={(o) => `${o.m.kind}:${o.m.id}`}>
+                {(o) => (
+                  <View role="button" testID={`members-add-${o().handle}`} onPress={() => void add(o().m)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingHorizontal: 8, borderRadius: 8 }}>
+                    <Avatar name={o().name} agent={!!o().agent} size={22} />
+                    <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>
+                    <If when={o().agent}>{(a) => <RuntimeBadge runtime={a().runtime} />}</If>
+                    <Icon name="plus" size={14} tint={colors.accent} />
+                  </View>
+                )}
+              </Each>
+            </If>
+          </View>
+        </If>
+        {head(L(`PEOPLE · ${people().length}`, `人 · ${people().length}`))}
+        <Each of={people()} key={(u) => u.id}>
+          {(u) => (
+            <View testID={`member-${u().handle}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 38 }}>
+              <Avatar name={u().name} size={28} />
+              <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{u().name} <Text style={{ color: colors.muted }}>@{u().handle}</Text></Text>
+              <If when={u().id === t.me()?.id}><Tag label={L("you", "你")} /></If>
+              <If when={u().role === "admin"}><Tag label={L("admin", "管理员")} tone="accent" /></If>
+              <If when={u().id !== t.me()?.id}>{removeBtn({ kind: "user", id: u().id }, u().handle)}</If>
+            </View>
+          )}
+        </Each>
+        {head(L(`AGENTS · ${agents().length}`, `Agent · ${agents().length}`))}
+        <If when={agents().length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("No agents here yet. Add one to hand it work in this channel.", "这里还没有 Agent。加一个进来，才能在这个频道给它派活。")}</Text>}>
+          <Each of={owners()}>
+            {(owner) => (
+              <View style={{ gap: 2 }}>
+                <Text style={{ fontSize: 12, color: colors.muted, paddingTop: 4 }}>{L(`${t.users().find((u) => u.id === owner())?.name ?? "?"}’s agents`, `${t.users().find((u) => u.id === owner())?.name ?? "?"}的 Agent`)}</Text>
+                <Each of={agents().filter((a) => a.owner_id === owner())} key={(a) => a.id}>
+                  {(a) => {
+                    const st = () => agentState(t, a());
+                    const mine = () => a().owner_id === t.me()?.id;
+                    return (
+                      <View testID={`member-${a().handle}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44 }}>
+                        <Avatar name={a().name} agent size={28} />
+                        <View role={mine() ? "button" : undefined} onPress={mine() ? () => props.onAgent(a().handle) : undefined} style={{ flex: 1, gap: 2 }}>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                            <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
+                            <RuntimeBadge runtime={a().runtime} />
+                          </View>
+                          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                            <StateDot tone={st().tone} />
+                            <Text testID={`member-${a().handle}-state`} style={{ flex: 1, fontSize: 12, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
+                              {st().blocked ? st().label : [t.machines().find((m) => m.id === a().machine_id)?.name, st().label].filter(Boolean).join(" · ")}
+                            </Text>
+                          </View>
+                        </View>
+                        {removeBtn({ kind: "agent", id: a().id }, a().handle)}
+                      </View>
+                    );
+                  }}
+                </Each>
+              </View>
+            )}
+          </Each>
+        </If>
+      </Scroll>
+    </View>
+  );
+}
+
+const minutes = (ms: number) => {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m < 60 ? L(`${m} min`, `${m} 分钟`) : L(`${Math.floor(m / 60)} h ${m % 60} min`, `${Math.floor(m / 60)} 小时 ${m % 60} 分钟`);
+};
+
+/** The facts of a thread's task at its top: who does it on what, where its code goes, what came out; and its run log. */
+function TaskFacts(props: { team: Team; task: Task }) {
+  const t = props.team;
+  const task = () => props.task;
+  const agent = () => t.agents().find((a) => a.id === task().agent_id);
+  const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
+  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const log = signal(false);
+  const live = () => ["running", "queued", "pending", "needs_decision"].includes(task().state);
+  const fact = (label: string, value: JSX.Element) => (
+    <View style={{ flexDirection: "row", gap: 10, alignItems: "center", minHeight: 22 }}>
+      <Text style={{ width: 68, fontSize: 12.5, color: colors.faint }}>{label}</Text>
+      <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{value}</View>
+    </View>
+  );
+  const plain = (s: string, testID?: string) => <Text testID={testID} style={{ fontSize: 13, color: colors.text }}>{s}</Text>;
+  return (
+    <View testID={`task-${task().id}-facts`} style={{ gap: 6, paddingTop: 4 }}>
+      <Text style={{ fontSize: 12, color: colors.faint }}>
+        {`${task().id} · ${live() ? L(`running for ${minutes(Date.now() - task().created)}`, `已运行 ${minutes(Date.now() - task().created)}`) : L(`updated ${time(task().updated)}`, `更新于 ${time(task().updated)}`)}`}
+      </Text>
+      {fact(L("Assignee", "负责人"), plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`))}
+      {fact(L("Runs on", "运行在"), <>
+        <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
+        {plain(machine()?.name ?? L("no machine", "没有机器"), `task-${task().id}-machine`)}
+      </>)}
+      {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
+      {fact(L("Output", "产出"), task().pr ? (
+        <View role="link" onPress={() => void openUrl(task().pr!.url)} hoverStyle={hovered()}>
+          <Text style={{ fontSize: 13, color: task().pr!.checks === "failure" ? colors.danger : colors.accent }}>{prLine(task().pr!)}</Text>
+        </View>
+      ) : plain(task().state === "done" ? L("done without a PR", "完成，没有 PR") : L("no PR yet", "还没有 PR")))}
+      <View role="button" testID={`task-${task().id}-runlog`} onPress={() => log.update((v) => !v)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingHorizontal: 8, marginTop: 2, borderRadius: 7, backgroundColor: alpha(colors.text, 0.04) }}>
+        <Icon name={log() ? "chevron-down" : "chevron"} size={12} tint={colors.muted} />
+        <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>
+          {[L("Run log", "运行记录"), L(`${task().runs} run${task().runs === 1 ? "" : "s"}`, `${task().runs} 次运行`), task().step].filter(Boolean).join(" · ")}
+        </Text>
+      </View>
+      <If when={log()}>
+        <View style={{ gap: 4, paddingHorizontal: 8 }}>
+          <Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Created ${time(task().created)} · last change ${time(task().updated)}`, `创建 ${time(task().created)} · 最近变化 ${time(task().updated)}`)}</Text>
+          <If when={task().step}><Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Now: ${task().step}`, `当前：${task().step}`)}</Text></If>
+          <If when={task().summary}><Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.text }}>{task().summary}</Text></If>
+        </View>
       </If>
     </View>
   );
@@ -574,15 +872,25 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
     return r ? (t.top()[r.channel_id] ?? []).find((m) => m.id === r.id) ?? r : null;
   };
   const replies = () => t.threads()[props.rootId] ?? [];
+  const channel = () => { const r = root(); return r ? t.channels().find((x) => x.id === r.channel_id) : undefined; };
   const member = () => {
-    const r = root(), me = t.me();
-    const c = r && t.channels().find((x) => x.id === r.channel_id);
+    const c = channel(), me = t.me();
     return !!c && !!me && isMember(c, "user", me.id);
+  };
+  const tasks = () => t.taskOfThread(props.rootId);
+  const task = () => tasks()[tasks().length - 1];
+  const agentOf = (x: Task) => t.agents().find((a) => a.id === x.agent_id);
+  const hint = () => {
+    const x = task();
+    if (!x || ["done", "closed"].includes(x.state)) return L("Replies go to the thread. @ an agent to hand it work here.", "回复发到线程里。@Agent 可以在这里给它派活。");
+    const name = agentOf(x)?.name ?? "Agent";
+    return L(`Goes straight to ${name}’s session for this task; no need to @ it.`, `会直接送到${name}这个任务的 Session，不用再 @。`);
   };
   return (
     <View testID="thread" style={{ flex: 1, backgroundColor: colors.background }}>
       <Header
         title={L("Thread", "线程")}
+        subtitle={channel() ? `# ${channel()!.name}` : undefined}
         back={props.back}
         onBack={props.onClose}
         right={props.back ? undefined : (
@@ -595,14 +903,21 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
         {(r) => (
           <>
             <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 10 }}>
-              <MessageRow team={t} m={r()} />
+              <Each of={tasks()} key={(x) => x.id}>
+                {(x) => (
+                  <View style={{ paddingHorizontal: 12, paddingBottom: 4 }}>
+                    <TaskCard team={t} task={x()} detail />
+                  </View>
+                )}
+              </Each>
+              <MessageRow team={t} m={r()} noTask />
               <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.border }} />
               <Each of={replies()} key={(m) => m.id}>
                 {(m) => <MessageRow team={t} m={m()} />}
               </Each>
             </Scroll>
             <If when={member()}>
-              <Composer testID="thread-composer" placeholder={L("Reply…", "回复…")} onSend={(text) => t.send(r().channel_id, text, r().id)} />
+              <Composer team={t} channelId={r().channel_id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text) => t.send(r().channel_id, text, r().id)} />
             </If>
           </>
         )}
@@ -691,7 +1006,7 @@ function prLine(pr: NonNullable<Task["pr"]>) {
 }
 
 /** A task on its request message (and in the inbox): its state, what it does now, and what this person can do. */
-function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void }) {
+function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; detail?: boolean }) {
   const t = props.team;
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
@@ -729,10 +1044,16 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
           <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(st().tone) }}>{st().label()}</Text>
         </View>
       </View>
-      <Text style={{ fontSize: 12.5, color: colors.muted }}>
-        {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
-      </Text>
-      <If when={task().pr}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
+        <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
+          {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
+        </Text>
+      </View>
+      <If when={props.detail}>
+        <TaskFacts team={t} task={task()} />
+      </If>
+      <If when={props.detail ? null : task().pr}>
         {(pr) => (
           <View role="link" testID={`task-${task().id}-pr`} onPress={() => void openUrl(pr().url)} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, borderRadius: 6 }}>
             <Icon name="merge" size={14} tint={pr().checks === "failure" ? colors.danger : colors.accent} />
@@ -801,293 +1122,6 @@ function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (
   );
 }
 
-// ---------------------------------------------------------------- agents & machines
-
-const DISPATCH: { value: Dispatch; label: () => string; note: () => string }[] = [
-  { value: "owner", label: () => L("Only me", "只有我"), note: () => L("Only you can hand it work.", "只有你能给它派活。") },
-  { value: "confirm", label: () => L("Anyone, I confirm", "任何人，我确认"), note: () => L("Anyone can @ it; you confirm before it starts.", "谁都能 @它，开工前由你确认。") },
-  { value: "open", label: () => L("Anyone", "任何人"), note: () => L("Anyone in its channels can hand it work.", "它所在频道的人都能直接派活。") },
-];
-const AUTONOMY: { value: Autonomy; label: () => string }[] = [
-  { value: "cautious", label: () => L("Cautious", "谨慎") },
-  { value: "assist", label: () => L("Assist", "协助") },
-  { value: "auto", label: () => L("Autonomous", "自主") },
-];
-
-function Settings(props: { team: Team; back: boolean; onBack: () => void }) {
-  const t = props.team;
-  const me = () => t.me();
-  const myMachines = () => t.machines().filter((m) => m.owner_id === me()?.id);
-  const myAgents = () => t.agents().filter((a) => a.owner_id === me()?.id);
-  return (
-    <View style={{ flex: 1 }}>
-      <Header title={L("Agents & machines", "Agent 与机器")} back={props.back} onBack={props.onBack} />
-      <Scroll style={{ flex: 1 }} contentStyle={{ padding: 20, gap: 18, maxWidth: 720 }}>
-        <MachinesPanel team={t} machines={myMachines()} />
-        <AgentsPanel team={t} agents={myAgents()} machines={myMachines()} />
-        <DevicePanel team={t} />
-        <PeoplePanel team={t} />
-      </Scroll>
-    </View>
-  );
-}
-
-function MachinesPanel(props: { team: Team; machines: Machine[] }) {
-  const t = props.team;
-  const adding = signal(false);
-  const name = signal("");
-  const error = signal("");
-  const busy = signal(false);
-  const issued = signal<{ name: string; token: string } | null>(null);
-  async function add() {
-    if (!name().trim() || busy()) return;
-    busy.set(true);
-    error.set("");
-    const r = await t.createMachine(name().trim());
-    busy.set(false);
-    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
-    issued.set({ name: r.data.machine.name, token: r.data.token });
-    adding.set(false);
-    name.set("");
-  }
-  const snippet = (token: string) => `[cloud]\nurl = "${t.url}"\n\n[server]\ntoken = "${token}"`;
-  return (
-    <Panel title={L("My machines", "我的机器")} right={<Btn small testID="machine-add" icon="plus" label={L("Add machine", "添加机器")} onPress={() => { adding.set(true); issued.set(null); }} />}>
-      <If when={!props.machines.length && !adding() && !issued()}>
-        <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("A machine runs your agents (Codex) on your computer. Add one, then put its token in that computer’s config.", "机器在你的电脑上运行你的 Agent（Codex）。添加一台，再把令牌写进那台电脑的配置。")}</Text>
-      </If>
-      <Each of={props.machines} key={(m) => m.id}>
-        {(m) => (
-          <View testID={`machine-${m().id}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4 }}>
-            <Dot on={m().online} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }}>{m().name}</Text>
-              <Text style={{ fontSize: 12.5, color: colors.muted }}>
-                {[m().online ? L("online", "在线") : L("offline", "离线"), m().runtimes.join(", ") || L("no runtime reported", "还没上报运行时"), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`)].join(" · ")}
-              </Text>
-            </View>
-            <Btn small kind="ghost" testID={`machine-remove-${m().id}`} label={L("Remove", "移除")} onPress={() => t.deleteMachine(m().id)} />
-          </View>
-        )}
-      </Each>
-      <If when={adding()}>
-        <Field label={L("Machine name", "机器名称")} value={name()} onChange={(v) => name.set(v)} onSubmit={add} placeholder={L("Wang Lei’s Mac", "王磊的 Mac")} testID="machine-name" autoFocus />
-        <ErrorNote text={error()} />
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Btn testID="machine-create" kind="primary" label={L("Create token", "生成令牌")} busy={busy()} disabled={!name().trim()} onPress={add} />
-          <Btn kind="ghost" label={L("Cancel", "取消")} onPress={() => adding.set(false)} />
-        </View>
-      </If>
-      <If when={issued()}>
-        {(i) => (
-          <View style={{ gap: 8, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-            <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
-              {L(`Token for ${i().name}. It’s shown only once: put this in ~/.noop/data/config.local.toml on that computer, then restart its daemon (bun run daemon).`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 ~/.noop/data/config.local.toml，然后重启那里的守护进程（bun run daemon）。`)}
-            </Text>
-            <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, fontFamily: "monospace", color: colors.text }}>{snippet(i().token)}</Text>
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(snippet(i().token))} />
-              <Btn small kind="ghost" label={L("Done", "完成")} onPress={() => issued.set(null)} />
-            </View>
-          </View>
-        )}
-      </If>
-    </Panel>
-  );
-}
-
-function AgentsPanel(props: { team: Team; agents: Agent[]; machines: Machine[] }) {
-  const t = props.team;
-  const adding = signal(false);
-  const handle = signal("");
-  const name = signal("");
-  const machine = signal("");
-  const error = signal("");
-  const busy = signal(false);
-  async function add() {
-    if (!handle().trim() || busy()) return;
-    busy.set(true);
-    error.set("");
-    const mid = machine() || props.machines[0]?.id || null;
-    const r = await t.createAgent({ handle: handle().trim().toLowerCase(), name: name().trim() || handle().trim(), machine_id: mid, runtime: "codex" });
-    busy.set(false);
-    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
-    adding.set(false);
-    handle.set("");
-    name.set("");
-  }
-  return (
-    <Panel title={L("My agents", "我的 Agent")} right={<Btn small testID="agent-add" icon="plus" label={L("New agent", "新建 Agent")} onPress={() => adding.set(true)} />}>
-      <If when={!props.agents.length && !adding()}>
-        <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("An agent has an @handle people use to hand it work, and runs on one of your machines.", "Agent 有一个 @名，大家用它派活；它运行在你的某台机器上。")}</Text>
-      </If>
-      <Each of={props.agents} key={(a) => a.id}>
-        {(a) => (
-          <View testID={`agent-${a().handle}`} style={{ gap: 10, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.border }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-              <Avatar name={a().name} agent />
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 15, fontWeight: "600", color: colors.text }}>{a().name} <Text style={{ fontWeight: "400", color: colors.muted }}>@{a().handle}</Text></Text>
-                <Text style={{ fontSize: 12.5, color: colors.muted }}>
-                  {`${a().runtime} · ${props.machines.find((m) => m.id === a().machine_id)?.name ?? L("no machine", "没有机器")}`}
-                </Text>
-              </View>
-              <Btn small kind="ghost" testID={`agent-remove-${a().handle}`} label={L("Remove", "移除")} onPress={() => t.deleteAgent(a().id)} />
-            </View>
-            <If when={props.machines.length > 1}>
-              <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Runs on", "运行在")}</Text>
-              <Choice testID={`agent-machine-${a().handle}`} options={props.machines.map((m) => ({ value: m.id, label: m.name }))} value={a().machine_id ?? ""} onChange={(v) => t.patchAgent(a().id, { machine_id: v })} />
-            </If>
-            <AgentRepo team={t} agent={a()} />
-            <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Who can hand it work", "谁能派活")}</Text>
-            <Choice testID={`agent-dispatch-${a().handle}`} options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={a().dispatch} onChange={(v) => t.patchAgent(a().id, { dispatch: v })} />
-            <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === a().dispatch)?.note() ?? ""}</Text>
-            <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("How much it decides alone", "自主程度")}</Text>
-            <Choice testID={`agent-autonomy-${a().handle}`} options={AUTONOMY.map((d) => ({ value: d.value, label: d.label() }))} value={a().autonomy} onChange={(v) => t.patchAgent(a().id, { autonomy: v })} />
-          </View>
-        )}
-      </Each>
-      <If when={adding()}>
-        <Field label={L("@handle", "@名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="acha" testID="agent-handle" autoFocus />
-        <Field label={L("Display name", "显示名")} value={name()} onChange={(v) => name.set(v)} onSubmit={add} placeholder={L("Acha", "阿查")} testID="agent-name" />
-        <If when={props.machines.length > 1}>
-          <Choice options={props.machines.map((m) => ({ value: m.id, label: m.name }))} value={machine() || props.machines[0].id} onChange={(v) => machine.set(v)} />
-        </If>
-        <If when={!props.machines.length}>
-          <Text style={{ fontSize: 13, color: colors.warn }}>{L("Add a machine first, or the agent can’t run anything yet.", "先添加一台机器，不然 Agent 还跑不了任务。")}</Text>
-        </If>
-        <ErrorNote text={error()} testID="agent-error" />
-        <View style={{ flexDirection: "row", gap: 8 }}>
-          <Btn testID="agent-create" kind="primary" label={L("Create agent", "创建 Agent")} busy={busy()} disabled={!handle().trim()} onPress={add} />
-          <Btn kind="ghost" label={L("Cancel", "取消")} onPress={() => adding.set(false)} />
-        </View>
-      </If>
-    </Panel>
-  );
-}
-
-/** The repository its tasks run in: a checkout on its machine; each task gets a worktree of it on agent/T-xxxx. */
-function AgentRepo(props: { team: Team; agent: Agent }) {
-  const value = signal(props.agent.repo ?? "");
-  const busy = signal(false);
-  const saved = signal(false);
-  const changed = () => value().trim() !== (props.agent.repo ?? "");
-  async function save() {
-    busy.set(true);
-    const r = await props.team.patchAgent(props.agent.id, { repo: value().trim() });
-    busy.set(false);
-    saved.set(r.ok);
-  }
-  return (
-    <View style={{ gap: 6 }}>
-      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{L("Repository on its machine", "它在机器上用的代码仓库")}</Text>
-      <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-        <View style={{ flex: 1 }}>
-          <Field value={value()} onChange={(v) => { value.set(v); saved.set(false); }} onSubmit={save} placeholder="~/work/orders" testID={`agent-repo-${props.agent.handle}`} />
-        </View>
-        <Btn small testID={`agent-repo-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
-      </View>
-      <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("A git checkout path. Each task works in its own worktree on branch agent/T-xxxx; the machine pushes it and opens the PR. Empty: tasks get an empty folder.", "填本机上 git 仓库的路径。每个任务在自己的 worktree 里干活（分支 agent/T-xxxx），由机器推送并开 PR；留空则每个任务一个空目录。")}</Text>
-    </View>
-  );
-}
-
-/** Sign in on another device: a one-time code to type (or the link to open) there, valid 15 minutes. */
-function DevicePanel(props: { team: Team }) {
-  const t = props.team;
-  const code = signal<{ code: string; link: string } | null>(null);
-  const error = signal("");
-  const busy = signal(false);
-  async function make() {
-    if (busy()) return;
-    busy.set(true);
-    error.set("");
-    const r = await t.loginCode();
-    busy.set(false);
-    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
-    code.set({ code: r.data.code, link: `${t.url}${r.data.path}` });
-  }
-  return (
-    <Panel title={L("Sign in on another device", "在其他设备登录")}>
-      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-        {L("On the other device choose Sign in, then enter this code with the server address, or paste the link.", "在另一台设备上选「登录」，填服务器地址和这个登录码，或者直接粘贴链接。")}
-      </Text>
-      <If when={code()}>
-        {(c) => (
-          <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-            <Text testID="login-code" style={{ fontSize: 24, fontFamily: "monospace", letterSpacing: 3, color: colors.text }}>{c().code}</Text>
-            <Text testID="login-code-url" style={{ fontSize: 12.5, fontFamily: "monospace", color: colors.muted }}>{c().link}</Text>
-            <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次。")}</Text>
-            <Btn small icon="copy" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
-          </View>
-        )}
-      </If>
-      <ErrorNote text={error()} testID="login-code-error" />
-      <Btn testID="login-code-create" label={code() ? L("New code", "重新生成") : L("Get a login code", "生成登录码")} busy={busy()} onPress={make} />
-    </Panel>
-  );
-}
-
-function PeoplePanel(props: { team: Team }) {
-  const t = props.team;
-  const admin = () => t.me()?.role === "admin";
-  const email = signal("");
-  const role = signal<"member" | "admin">("member");
-  const error = signal("");
-  const busy = signal(false);
-  const link = signal("");
-  const note = signal("");
-  async function invite() {
-    if (!email().trim() || busy()) return;
-    busy.set(true);
-    error.set("");
-    const r = await t.invite(email().trim(), role());
-    busy.set(false);
-    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
-    note.set(L("Send this link to them (valid for 7 days, works once):", "把这个链接发给对方（7 天内有效，只能用一次）："));
-    link.set(`${t.url}${r.data.path}`);
-    email.set("");
-  }
-  /** For a member who lost their device or signed out everywhere. */
-  async function loginLink(id: string, who: string) {
-    error.set("");
-    const r = await t.loginCode(id);
-    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
-    note.set(L(`Login link for ${who} (valid for a day, works once):`, `${who} 的登录链接（一天内有效，只能用一次）：`));
-    link.set(`${t.url}${r.data.path}`);
-  }
-  return (
-    <Panel title={L("People", "成员")}>
-      <Each of={t.users().filter((u) => !u.disabled)} key={(u) => u.id}>
-        {(u) => (
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-            <Avatar name={u().name} size={26} />
-            <Text style={{ flex: 1, fontSize: 14.5, color: colors.text }}>{u().name} <Text style={{ color: colors.muted }}>@{u().handle}</Text></Text>
-            <Text style={{ fontSize: 12.5, color: colors.faint }}>{u().role === "admin" ? L("admin", "管理员") : u().email}</Text>
-            <If when={admin() && u().id !== t.me()?.id}>
-              <Btn small testID={`login-link-${u().handle}`} label={L("Login link", "登录链接")} onPress={() => void loginLink(u().id, u().name)} />
-            </If>
-          </View>
-        )}
-      </Each>
-      <If when={admin()}>
-        <View style={{ gap: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
-          <Field label={L("Invite by email", "用邮箱邀请")} value={email()} onChange={(v) => email.set(v)} onSubmit={invite} placeholder="colleague@corp.com" keyboardType="email-address" testID="invite-email" />
-          <Choice testID="invite-role" options={[{ value: "member", label: L("Member", "成员") }, { value: "admin", label: L("Admin", "管理员") }]} value={role()} onChange={(v) => role.set(v)} />
-          <ErrorNote text={error()} testID="invite-error" />
-          <Btn testID="invite-create" kind="primary" label={L("Create invite link", "生成邀请链接")} busy={busy()} disabled={!email().trim()} onPress={invite} />
-          <If when={link()}>
-            <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-              <Text style={{ fontSize: 13.5, color: colors.text }}>{note()}</Text>
-              <Text testID="invite-url" style={{ fontSize: 13, fontFamily: "monospace", color: colors.text }}>{link()}</Text>
-              <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(link())} />
-            </View>
-          </If>
-        </View>
-      </If>
-    </Panel>
-  );
-}
 
 // ---------------------------------------------------------------- root
 
