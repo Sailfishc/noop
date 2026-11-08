@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -556,6 +557,11 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		cols["runs"] = t.Runs + 1
 	}
 	h.setTask(t.ID, cols)
+	for _, m := range fresh { // the agent took them up: 👀 on each, the way a person would show they read it
+		if m.Author.Kind == "user" {
+			h.react(m.ID, member{"agent", a.ID}, "👀")
+		}
+	}
 	recent := scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.channel_id = ? AND m.thread_id IS NULL
 		ORDER BY m.seq DESC LIMIT ?`, t.ChannelID, contextMessages))
 	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
@@ -608,6 +614,11 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Wait *waitRequest `json:"wait"`
 		// Result: confirmed | unconfirmed, whether the agent saw the outcome it worked for
 		Result string `json:"result"`
+		// Answer: with state review, the run changed nothing (no commits, PR, files or outside results): its summary is
+		// the whole result, so the task is done without anyone's acceptance (a reply in the thread still goes on)
+		Answer bool `json:"answer"`
+		// Reaction: the emoji the agent chose for the request as it read it; it takes the place of the 👀 put there at claim
+		Reaction string `json:"reaction"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -622,6 +633,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if len(b.Outputs) > 0 {
 		h.applyOutputs(t.ID, b.Outputs)
+	}
+	if e := strings.TrimSpace(b.Reaction); isEmoji(e) {
+		h.agentReacts(t, a.ID, e)
 	}
 	cols := map[string]any{}
 	if b.Acceptance != nil && t.Acceptance == "" {
@@ -686,6 +700,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if text != "" {
 			h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, text)
+		}
+		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil {
+			state = taskDone
 		}
 		if len(h.unseen(t)) > 0 {
 			state = taskQueued // people said more while it ran: the next run answers them
@@ -814,4 +831,50 @@ func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, cols)
 	h.taskChanged(t.ID)
 	writeJSON(w, 200, obj{"ok": true, "task": t.ID})
+}
+
+// agentReacts puts the agent's chosen emoji on the messages it took up in this task (those with its 👀), in place of the
+// 👀; with none, on the thread's latest message from a person.
+func (h *Hub) agentReacts(t taskView, agentID, emoji string) {
+	var ids []string
+	rows, err := h.db.Query(`SELECT message_id FROM reactions WHERE author_kind = 'agent' AND author_id = ? AND emoji = '👀'
+		AND message_id IN (SELECT id FROM messages WHERE id = ? OR thread_id = ?)`, agentID, t.ThreadID, t.ThreadID)
+	if err != nil {
+		panic(err)
+	}
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		var id string
+		if h.db.QueryRow(`SELECT id FROM messages WHERE (id = ? OR thread_id = ?) AND author_kind = 'user' ORDER BY seq DESC LIMIT 1`,
+			t.ThreadID, t.ThreadID).Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		if emoji != "👀" {
+			h.must(h.db.Exec("DELETE FROM reactions WHERE message_id = ? AND author_kind = 'agent' AND author_id = ? AND emoji = '👀'", id, agentID))
+		}
+		h.react(id, member{"agent", agentID}, emoji)
+		if m, ok := h.message(id); ok { // the 👀 went even when the emoji was already there
+			h.broadcastChannel(m.ChannelID, obj{"type": "message_edited", "message": m})
+		}
+	}
+}
+
+// isEmoji: one emoji (with its modifiers and joiners), no letters, digits or spaces.
+func isEmoji(s string) bool {
+	if s == "" || utf8.RuneCountInString(s) > 8 {
+		return false
+	}
+	for i, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r) || (i == 0 && r < 0x2000) {
+			return false
+		}
+	}
+	return true
 }

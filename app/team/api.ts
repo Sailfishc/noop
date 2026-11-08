@@ -82,6 +82,8 @@ export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
   mentions: Mention[] | null; attachments: string[] | null; client_id?: string | null; created: number; edited: number | null;
   reply_count: number; last_reply_at: number | null;
+  /** Who put which emoji on it, oldest first (an agent's 👀: it took the message up). */
+  reactions?: { emoji: string; author: Member }[];
 };
 export type Session = { url: string; session: string };
 export type Conn = "connecting" | "live" | "offline" | "unauthorized";

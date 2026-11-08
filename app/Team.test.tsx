@@ -694,6 +694,21 @@ describe("tasks", () => {
     expect(log.acts).toEqual(["T-0001 accept"]);
   });
 
+  test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "done", summary: "7 个开放 PR，其中 6 个草稿。\n\n详情：#145 和 #144 检查失败" });
+    const m = msg({ ...m1, reactions: [{ emoji: "👀", author: { kind: "agent", id: "a_1" } }] });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {
+      [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [m], more: false } },
+    }, [t]) });
+    await app.waitFor("id:task-T-0001-summary");
+    expect(app.shows("text:7 个开放 PR，其中 6 个草稿。")).toBe(true);
+    expect(app.shows("text:/#145/")).toBe(false); // only the first paragraph
+    expect(app.shows("id:task-T-0001-accept")).toBe(false);
+    expect(app.shows("id:msg-msg_1-reaction")).toBe(true);
+    expect(app.shows("text:阿查")).toBe(true);
+  });
+
   test("waiting for you: the sidebar counts it, the list opens its thread", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({}), task({ id: "T-0002", state: "running", step: "运行 bun test" })]) });
