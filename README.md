@@ -69,37 +69,30 @@ Web 版可以直接让服务端托管：启动时加 `-static ../app/dist/web/no
 
 ### 3. 机器（每台跑 Agent 的电脑）
 
-需要 [Bun](https://bun.sh)、git 和已登录的 [Codex CLI](https://github.com/openai/codex)。
+需要 git，以及装好并登录的 Codex、Claude Code 或 Pi 之一；推分支、开 PR 还要 `gh auth login`。
+
+在客户端的「设置 → 我的机器 → 添加机器」里起个名字，点「生成接入命令」，把给出的一行命令复制到那台电脑的终端里运行：
 
 ```sh
-git clone https://github.com/Sailfishc/noop ~/teamagent && cd ~/teamagent
-bun install
+curl -fsSL http://teamagent.内网域名:8080/api/v1/install.sh | bash -s -- http://teamagent.内网域名:8080 tj_…
 ```
 
-在客户端的「我的机器」里添加这台电脑，把显示的几行写进 `~/.noop/data/config.local.toml`（目录不存在就建一个；token 只显示一次）：
+它会：没有 Bun 就装上；把守护进程装到 `~/.noop/app`；用一次性接入码（一小时内有效）换到这台机器的令牌，写进 `~/.noop/data/config.local.toml`；检查 Runtime 和 gh；最后装成后台服务（macOS 用 launchd，Linux 用 systemd --user），开机自启、关掉终端也不停。一分钟内客户端里这台机器会显示在线。日志在 `~/.noop/data/logs/daemon.log`（macOS）或 `journalctl --user -u noop -f`（Linux）。
+
+注意客户端登录用的服务端地址要是那台电脑能访问到的地址：`127.0.0.1` 只在服务端自己那台电脑上有效。接入码过期了、或者机器离线需要重新接入时，在机器卡片上点「接入命令」重新生成一条（会换一个新令牌）。
+
+推分支、开 PR 用的凭证按需写进同一个 `config.local.toml`：
 
 ```toml
-[cloud]
-url = "http://teamagent.内网域名:8080"
-
-[server]
-token = "tam_…"
-
-# 推分支、开 PR 用的凭证，按需填写
 [git.github]
 token = "…"                 # 不填就用 gh auth token
 
-[[git.gitlab]]              # Ant Code 等基于 GitLab 的平台
+[[git.gitlab]]              # 基于 GitLab 的平台
 host = "code.公司.com"
 token = "…"                 # 主人自己的 token，对仓库至少要有 Developer 权限
 ```
 
-然后在仓库目录里启动守护进程（长期使用建议交给 launchd 或 systemd）：
-
-```sh
-bun run daemon
-# 输出「已接入 …：<机器名>，Agent @xxx」就说明连上了
-```
+也可以手动配置：在接入命令下面点「手动配置」，把显示的 `[cloud]`、`[server]` 几行写进 `config.local.toml`，然后在仓库目录里 `bun install && bun run daemon`。
 
 有了 TeamAgent 的机器 token，守护进程只跑 TeamAgent：不需要 noop 的 `init`，也不会启动 noop 单人模式的那些东西。
 
@@ -133,7 +126,7 @@ cd ~/teamagent/app && nsh run
 ```
 
 3. 在 App 里选「我有邀请」，粘贴上面打印的邀请链接，填名字和 @名。
-4. 在「Agent 与机器」里添加机器，把显示的几行写进 `~/.noop/data/config.local.toml`，然后启动守护进程：`cd ~/teamagent && bun run daemon`。
+4. 在「设置 → 我的机器」里添加机器，在终端运行给出的接入命令（同一台电脑上用 `127.0.0.1` 没问题）。
 5. 新建 Agent，机器选刚才那台，然后建一个频道把它拉进来，在频道的「成员」面板里把默认仓库设成一个有远端的仓库地址（比如 `https://github.com/你/demo`）。
 6. 在频道里发「@它 帮我加一个 hello.txt」。主人给自己的 Agent 派活不需要确认，会直接开工。任务卡会依次显示「等机器认领 → 进行中 → 待验收」，Agent 的总结出现在线程里，改动在仓库的 `agent/T-0001` 分支上。
 7. 在线程里回复一句，Agent 会接着同一个会话继续做。
