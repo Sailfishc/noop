@@ -33,3 +33,8 @@ jobs:
           /tmp/teamagent-server -addr 127.0.0.1:18081 -data /tmp/ta-team &
           sleep 1
           bun test/e2e-team.ts http://127.0.0.1:18081 "$CODE"
+          CODE=$(/tmp/teamagent-server invite -data /tmp/ta-dispatch -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
+          /tmp/teamagent-server -addr 127.0.0.1:18082 -data /tmp/ta-dispatch &
+          sleep 1
+          git config --global user.name ci && git config --global user.email ci@ci
+          bun test/e2e-dispatch.ts http://127.0.0.1:18082 "$CODE"

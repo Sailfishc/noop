@@ -100,9 +100,11 @@ type agentView struct {
 	Runtime     string  `json:"runtime"`
 	Dispatch    string  `json:"dispatch"`
 	Autonomy    string  `json:"autonomy"`
+	// Repo: where its tasks run on its machine, a local git checkout (each task gets a worktree of it); "" for none.
+	Repo string `json:"repo"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, autonomy"
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, autonomy, repo"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -112,7 +114,7 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Autonomy); err != nil {
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Autonomy, &a.Repo); err != nil {
 			panic(err)
 		}
 		out = append(out, a)
@@ -448,6 +450,7 @@ type agentBody struct {
 	Runtime     *string `json:"runtime"`
 	Dispatch    *string `json:"dispatch"`
 	Autonomy    *string `json:"autonomy"`
+	Repo        *string `json:"repo"`
 }
 
 // apply validates the fields present and writes them to agent id.
@@ -483,6 +486,9 @@ func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
 			return &httpError{400, "dispatch 只能是 owner、confirm 或 open"}
 		}
 		set("dispatch", *b.Dispatch)
+	}
+	if b.Repo != nil {
+		set("repo", trimmed(*b.Repo, 300))
 	}
 	if b.Autonomy != nil {
 		if !autonomies[*b.Autonomy] {

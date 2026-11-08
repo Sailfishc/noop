@@ -534,6 +534,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, c.ID, thread, author.Kind, author.ID, text, string(mentions), string(att), clientID, h.nowMs()))
 	m, _ := h.message(id)
 	h.broadcastChannel(c.ID, obj{"type": "message", "message": m})
+	h.onPosted(m)
 	writeJSON(w, 200, m)
 }
 

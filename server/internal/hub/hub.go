@@ -32,8 +32,11 @@ type Config struct {
 	OwnerEmails []string    // owner allow-list for email-code sign-in (lower case)
 	SMTP        *SMTPConfig // nil: sign-in codes are shown on the owner's machine (`noop login`)
 	StaticDir   string      // the web client (app/dist/web/noop); empty: API only
-	Now         func() time.Time
-	Logf        func(format string, args ...any)
+	// GitWebhookSecret: the secret a GitLab-based platform (Ant Code) sends with its webhooks (X-Gitlab-Token);
+	// empty: /api/v1/hooks/gitlab is off.
+	GitWebhookSecret string
+	Now              func() time.Time
+	Logf             func(format string, args ...any)
 }
 
 type Hub struct {
