@@ -49,6 +49,7 @@ type Hub struct {
 	acked        int64
 	appends      int
 	sendMail     func(to, subject, text string) error // nil: no mail configured; tests replace it
+	v1           *http.ServeMux
 }
 
 func New(cfg Config, db *sql.DB) *Hub {
@@ -63,6 +64,7 @@ func New(cfg Config, db *sql.DB) *Hub {
 	}
 	h := &Hub{cfg: cfg, db: db, inboxWaiters: map[chan struct{}]struct{}{}}
 	h.socks.byTag = map[string]map[*sock]struct{}{}
+	h.v1 = h.v1Routes()
 	if cfg.SMTP != nil && cfg.SMTP.Host != "" {
 		smtp := *cfg.SMTP
 		h.sendMail = func(to, subject, text string) error { return smtp.Send(to, subject, text) }
@@ -181,6 +183,10 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	if !strings.HasPrefix(p, "/api/") && !strings.HasPrefix(p, "/media/") {
 		h.static(w, r)
+		return
+	}
+	if strings.HasPrefix(p, "/api/v1/") {
+		h.v1.ServeHTTP(w, r)
 		return
 	}
 	if isMcpPath(p) {

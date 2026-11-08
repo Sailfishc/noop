@@ -29,3 +29,7 @@ jobs:
           TEAMAGENT_TOKEN=ci-token-0123456789 /tmp/teamagent-server -addr 127.0.0.1:18080 -data /tmp/ta &
           sleep 1
           TEAMAGENT_TOKEN=ci-token-0123456789 bun test/e2e-claim.ts http://127.0.0.1:18080
+          CODE=$(/tmp/teamagent-server invite -data /tmp/ta-team -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
+          /tmp/teamagent-server -addr 127.0.0.1:18081 -data /tmp/ta-team &
+          sleep 1
+          bun test/e2e-team.ts http://127.0.0.1:18081 "$CODE"
