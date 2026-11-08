@@ -9,7 +9,15 @@ export type User = { id: string; email: string; handle: string; name: string; ro
 export type Machine = { id: string; owner_id: string; name: string; os: string; arch: string; runtimes: string[]; max_sessions: number; online: boolean; last_seen: number | null };
 export type Dispatch = "owner" | "confirm" | "open";
 export type Autonomy = "cautious" | "assist" | "auto";
-export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch; autonomy: Autonomy; archived?: boolean };
+export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch; autonomy: Autonomy; repo?: string; archived?: boolean };
+export type TaskState = "pending" | "queued" | "running" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
+export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
+export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
+export type Task = {
+  id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string; state: TaskState;
+  step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; claimed_by: string | null; confirmed_by: string | null;
+  runs: number; created: number; updated: number;
+};
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number };
 export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
@@ -109,6 +117,10 @@ export function createTeam(s: Session) {
   const more = signal<Record<string, boolean>>({});
   /** Replies of the threads opened so far, by root id. */
   const threads = signal<Record<string, Message[]>>({});
+  /** Tasks by id (the ones of the channels opened so far, and the inbox's). */
+  const tasks = signal<Record<string, Task>>({});
+  /** What waits for this person (tasks to confirm, decisions, results to accept). */
+  const inbox = signal<string[]>([]);
   /** New top-level messages from others since a channel was last looked at. */
   const unread = signal<Record<string, number>>({});
   let viewing: string | null = null;
@@ -172,7 +184,29 @@ export function createTeam(s: Session) {
       case "machine":
         if (f.machine) machines.update((ms) => upsert(ms, f.machine as Machine));
         break;
+      case "task":
+        if (f.task) {
+          putTasks([f.task as Task]);
+          refreshInbox();
+        }
+        break;
     }
+  }
+
+  function putTasks(ts: Task[]) {
+    if (ts.length) tasks.update((x) => ({ ...x, ...Object.fromEntries(ts.map((t) => [t.id, t])) }));
+  }
+  let inboxTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Soon (task frames come in bursts). */
+  function refreshInbox() {
+    clearTimeout(inboxTimer);
+    inboxTimer = setTimeout(loadInbox, 300);
+  }
+  async function loadInbox() {
+    const r = await api("GET", "/api/v1/inbox");
+    if (!r.ok) return;
+    putTasks(r.data.tasks as Task[]);
+    inbox.set((r.data.tasks as Task[]).map((t) => t.id));
   }
 
   async function load() {
@@ -189,6 +223,7 @@ export function createTeam(s: Session) {
       for (const ch of cs) if (ch.last_seq > after) after = ch.last_seq;
     }
     loaded.set(true);
+    if (m.ok) void loadInbox();
     return m.ok;
   }
 
@@ -250,6 +285,7 @@ export function createTeam(s: Session) {
     viewing = id;
     unread.update((u) => ({ ...u, [id]: 0 }));
     if (untracked(top)[id]) return;
+    void api("GET", `/api/v1/tasks?channel=${id}&limit=200`).then((t) => t.ok && putTasks(t.data.tasks as Task[]));
     const r = await api("GET", `/api/v1/channels/${id}/messages?limit=50`);
     if (!r.ok) return;
     for (const m of r.data.messages as Message[]) seen(m);
@@ -334,6 +370,17 @@ export function createTeam(s: Session) {
   }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
 
+  /** confirm | decline | cancel | accept | decide ({choice}). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
+    const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
+    if (r.ok) {
+      putTasks([r.data as Task]);
+      refreshInbox();
+    }
+    return r;
+  }
+  const taskOfThread = (rootId: string) => Object.values(tasks()).filter((t) => t.thread_id === rootId).sort((a, b) => a.created - b.created);
+
   async function logout() {
     await call(s.url, "POST", "/api/v1/logout", s.session);
   }
@@ -342,6 +389,7 @@ export function createTeam(s: Session) {
     disposed = true;
     clearInterval(poll);
     clearTimeout(retry);
+    clearTimeout(inboxTimer);
     socket?.close();
   }
 
@@ -353,10 +401,13 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, act, taskOfThread, loadInbox,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember,
     createAgent, patchAgent, deleteAgent, createMachine, deleteMachine, invite, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }
 export type Team = ReturnType<typeof createTeam>;
+
+/** May this person act on the task as its creator or its agent's owner (admins may too)? */
+export const isParty = (t: Task, me: User | null, agent: Agent | undefined) => !!me && (me.id === t.created_by || me.id === agent?.owner_id || me.role === "admin");

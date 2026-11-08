@@ -11,30 +11,48 @@
 ```sh
 cd server
 go build -o teamagent-server ./cmd/teamagent-server
-TEAMAGENT_TOKEN=<机器 token> ./teamagent-server -addr :8080 -data /var/lib/teamagent
+./teamagent-server invite -data /var/lib/teamagent -email 你@公司.com -role admin -url http://teamagent.内网域名:8080   # 第一个管理员
+./teamagent-server -addr :8080 -data /var/lib/teamagent
 ```
 
 | 参数 / 环境变量 | 说明 |
 | --- | --- |
-| `TEAMAGENT_TOKEN`（必填） | 机器 token，也就是 noop.toml 里 `[server] token` 的值，至少 16 个字符 |
 | `-addr` / `TEAMAGENT_ADDR` | 监听地址，默认 `:8080` |
 | `-data` / `TEAMAGENT_DATA` | 数据目录，数据库文件是 `hub.db` |
-| `-owners` / `TEAMAGENT_OWNER_EMAIL` | 允许登录的邮箱，多个用逗号分隔 |
-| `TEAMAGENT_SMTP` | 发验证码用的邮箱配置，JSON 格式 `{host, port, secure, user, pass, from}`。不配置时，验证码改由主机上的 `noop login` 显示 |
+| `-git-webhook-secret` / `TEAMAGENT_GIT_WEBHOOK_SECRET` | Ant Code（GitLab）webhook 的密钥。为空时不收 webhook |
+| `TEAMAGENT_TOKEN` | 可选，只给老的 noop 单人模式用（至少 16 个字符） |
 | `-static` / `TEAMAGENT_STATIC` | Web 客户端目录（`app/dist/web/noop`）。为空时只提供 API |
 
-机器侧在 `~/.noop/noop.toml` 里把地址指向这台服务器：
+## 怎么用起来
 
-```toml
-[cloud]
-url = "http://teamagent.内网域名:8080"
-[server]
-token = "<同一个机器 token>"
-```
+1. **加入团队**：管理员在 App 的「Agent 与机器」里生成邀请链接发给同事。对方打开 App，选「我有邀请」，填名字和 @名，绑定验证器 App。以后用邮箱加 6 位数字登录。
+2. **接入机器**：在「我的机器」里添加一台，把显示的几行写进那台电脑的 `config.local.toml`，然后重启 noop：
 
-两步验证仍然在机器上绑定（`noop 2fa setup`）。不绑定的话，任何人都无法登录。
+   ```toml
+   [cloud]
+   url = "http://teamagent.内网域名:8080"
+   [server]
+   token = "tam_…"
+   ```
+
+3. **建 Agent**：在「我的 Agent」里新建，选它跑在哪台机器上，并填写它在那台机器上用的代码仓库路径（比如 `~/work/orders`），再设置谁能给它派活。
+4. **派活**：在频道里 @它，就会生成一张任务卡。如果需要主人确认，主人点「确认开工」后，机器会认领任务，在 `agent/T-xxxx` 分支的独立 worktree 里用 Codex 干活。结果作为 Agent 的回复出现在线程里。之后在线程里回复，Agent 会接着上次的会话继续做。
+5. **PR**：Agent 自己不能推送代码。由机器把 `agent/T-xxxx` 推上去，并在 GitHub 或 Ant Code 开 PR。合并永远由人来做。机器侧要有平台凭证：
+
+   ```toml
+   [git.github]
+   token = "…"                     # 不填就用 gh auth token
+   [[git.gitlab]]                  # Ant Code 等基于 GitLab 的平台
+   host = "code.公司.com"
+   token = "…"
+   # api = "https://code.公司.com/api/v4"   # 默认就是这个
+   ```
+
+   在 Ant Code 的集成服务里加一个 webhook，地址填 `http://teamagent.内网域名:8080/api/v1/hooks/gitlab`，密钥填 `-git-webhook-secret` 的值，勾选 PullRequest 事件。PR 合并后，对应的任务会自动变成「已完成」。CI 状态由机器每两分钟查询一次。
 
 ## 已实现的接口
+
+TeamAgent 自己的接口都在 `/api/v1` 下，包括账号与邀请、机器、Agent、频道、消息、线程、任务、「待你决定」和 webhook，具体见 `internal/hub/v1.go`。下面是为老的 noop 单人模式保留的接口：
 
 | 范围 | 接口 |
 | --- | --- |
@@ -53,4 +71,12 @@ cd server && go test -race ./...
 # 端到端：用 noop 自己的主机代码（src/core.ts 的 pull + claim），让三台模拟主机抢同一个任务
 TEAMAGENT_TOKEN=e2e-token-0123456789 ./teamagent-server -addr 127.0.0.1:18080 -data /tmp/ta &
 TEAMAGENT_TOKEN=e2e-token-0123456789 bun server/test/e2e-claim.ts http://127.0.0.1:18080
+# 多人：两个人、一台机器、一个 Agent、一个频道
+CODE=$(./teamagent-server invite -data /tmp/tb -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
+./teamagent-server -addr 127.0.0.1:18081 -data /tmp/tb &
+bun server/test/e2e-team.ts http://127.0.0.1:18081 "$CODE"
+# 派活全链路：@Agent → 确认 → 守护进程用（假的）codex 在 worktree 里干活 → 推分支 → 线程里追问续跑
+CODE=$(./teamagent-server invite -data /tmp/tc -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
+./teamagent-server -addr 127.0.0.1:18082 -data /tmp/tc &
+bun server/test/e2e-dispatch.ts http://127.0.0.1:18082 "$CODE"
 ```
