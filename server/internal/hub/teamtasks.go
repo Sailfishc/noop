@@ -84,6 +84,7 @@ type taskView struct {
 	Summary     string        `json:"summary"`
 	Decision    *decisionView `json:"decision"`
 	PR          *prView       `json:"pr"`
+	Outputs     []outputView  `json:"outputs"` // what came out: the PR, files, external results (teamoutputs.go)
 	Branch      string        `json:"branch"`
 	Session     string        `json:"session"`
 	ClaimedBy   *string       `json:"claimed_by"`
@@ -133,7 +134,7 @@ func (h *Hub) task(id string) (taskView, bool) {
 	if len(ts) == 0 {
 		return taskView{}, false
 	}
-	return ts[0], true
+	return h.withOutputs(ts)[0], true
 }
 
 var taskIDRE = regexp.MustCompile(`^T-(\d+)$`)
@@ -304,7 +305,7 @@ func (h *Hub) v1Tasks(w http.ResponseWriter, q *request) {
 			out = append(out, t)
 		}
 	}
-	writeJSON(w, 200, obj{"tasks": out})
+	writeJSON(w, 200, obj{"tasks": h.withOutputs(out)})
 }
 
 func (h *Hub) v1Task(w http.ResponseWriter, q *request) {
@@ -325,7 +326,7 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state = 'review' AND t.created_by = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me))
-	writeJSON(w, 200, obj{"tasks": ts})
+	writeJSON(w, 200, obj{"tasks": h.withOutputs(ts)})
 }
 
 // taskFor: the task in the path, if this person may act on it as `who` ("owner": the agent's owner; "party": its
@@ -575,6 +576,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Acceptance *string `json:"acceptance"`
 		// Memory: the agent's memory.md as it wants it now (it learned something lasting)
 		Memory *string `json:"memory"`
+		// Outputs: results kept elsewhere (an external service), new or changed
+		Outputs []outputReport `json:"outputs"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -586,6 +589,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			a, _ = h.agent(a.ID)
 			h.broadcastPeople(obj{"type": "agent", "agent": a})
 		}
+	}
+	if len(b.Outputs) > 0 {
+		h.applyOutputs(t.ID, b.Outputs)
 	}
 	cols := map[string]any{}
 	if b.Acceptance != nil && t.Acceptance == "" {
@@ -647,6 +653,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if len(cols) > 0 {
 		h.setTask(t.ID, cols)
+	}
+	if len(cols) > 0 || len(b.Outputs) > 0 {
 		h.taskChanged(t.ID)
 	}
 	t, _ = h.task(t.ID)
