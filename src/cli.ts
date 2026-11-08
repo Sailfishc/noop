@@ -27,6 +27,7 @@ import { answerFromChat, appendEvent, cancelTask, drainInbound, feed, handleOwne
 import { followUpTarget, reopenTask, type BrainOut, ClaudeModel, SYSTEM, dataActs, localStore, logBrain, think } from "./brain";
 import { runTool } from "../cloud/src/tools";
 import { cloudDeploy, startCloudBridge } from "./cloud";
+import { startTeamAgent } from "./teamagent";
 import { adoptCloudUrl, readHubToml } from "./sync";
 import { judgeAccuracy, level, needsApproval, proposeBatch, resolveProposals, routineQueued, supersedeProposed } from "./autonomy";
 import { CODE, UPDATE_REQUEST, type UpdateState, setUpdateState, updateState, allowedClis, capOk, idTagFor, isPrimary, runningRev, setApprovalGate, setIdTag } from "./core";
@@ -704,6 +705,7 @@ async function daemon(cfg: Cfg) {
     await _commitPush(`[${host}] settings: ${summary.slice(0, 60)}`);
   }));
   if (isPrimary(cfg, host)) startCloudBridge(cfg);
+  startTeamAgent(cfg); // a per-machine token on a TeamAgent server: this machine joins its owner's team
   const appendFollowUp = (tid: string, text: string) => locked(async () => {
     await _pull();
     for (const dir of ["inbox", "active", "waiting", "blocked", "done", "failed"]) {

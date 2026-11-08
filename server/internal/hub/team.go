@@ -1,0 +1,565 @@
+package hub
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// People, invites and sign-in, machines and agents.
+//
+// Sign-in is email + the 6-digit code of the person's own authenticator app. There is no password and no mail:
+// an admin invites a person (or `teamagent-server invite` does, for the first admin), the invite link binds the
+// authenticator, and every sign-in after that needs it.
+
+const (
+	inviteTTL         = 7 * 24 * time.Hour
+	loginFailsPerDay  = 10
+	machineOnlineSpan = 3 * time.Minute
+)
+
+var (
+	handleRE   = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,31}$`)
+	dispatches = map[string]bool{"owner": true, "confirm": true, "open": true}   // 只有我 · 频道成员，需我确认 · 频道成员直接派
+	autonomies = map[string]bool{"cautious": true, "assist": true, "auto": true} // 谨慎 · 协助 · 自主
+	runtimes   = map[string]bool{"codex": true, "claude": true}
+)
+
+func newID(prefix string) string { return prefix + randHex(8) }
+
+// ---------------------------------------------------------------- shapes
+
+type userView struct {
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Handle   string `json:"handle"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Disabled bool   `json:"disabled"`
+}
+
+const userCols = "id, email, handle, name, role, disabled"
+
+func scanUser(s interface{ Scan(...any) error }) (userView, error) {
+	var u userView
+	err := s.Scan(&u.ID, &u.Email, &u.Handle, &u.Name, &u.Role, &u.Disabled)
+	return u, err
+}
+
+func (h *Hub) user(id string) (userView, bool) {
+	u, err := scanUser(h.db.QueryRow("SELECT "+userCols+" FROM users WHERE id = ?", id))
+	return u, err == nil
+}
+
+type machineView struct {
+	ID          string   `json:"id"`
+	OwnerID     string   `json:"owner_id"`
+	Name        string   `json:"name"`
+	OS          string   `json:"os"`
+	Arch        string   `json:"arch"`
+	Runtimes    []string `json:"runtimes"`
+	MaxSessions int      `json:"max_sessions"`
+	Online      bool     `json:"online"`
+	LastSeen    *int64   `json:"last_seen"`
+}
+
+const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen"
+
+func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []machineView{}
+	for rows.Next() {
+		var m machineView
+		var rt string
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen); err != nil {
+			panic(err)
+		}
+		_ = json.Unmarshal([]byte(rt), &m.Runtimes)
+		if m.Runtimes == nil {
+			m.Runtimes = []string{}
+		}
+		m.Online = h.socks.count("m:"+m.ID) > 0 || (m.LastSeen != nil && h.nowMs()-*m.LastSeen < machineOnlineSpan.Milliseconds())
+		out = append(out, m)
+	}
+	return out
+}
+
+type agentView struct {
+	ID          string  `json:"id"`
+	OwnerID     string  `json:"owner_id"`
+	MachineID   *string `json:"machine_id"`
+	Handle      string  `json:"handle"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Runtime     string  `json:"runtime"`
+	Dispatch    string  `json:"dispatch"`
+	Autonomy    string  `json:"autonomy"`
+}
+
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, autonomy"
+
+func scanAgents(rows *sql.Rows, err error) []agentView {
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []agentView{}
+	for rows.Next() {
+		var a agentView
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Autonomy); err != nil {
+			panic(err)
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+func (h *Hub) agent(id string) (agentView, bool) {
+	a := scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE id = ?", id))
+	if len(a) == 0 {
+		return agentView{}, false
+	}
+	return a[0], true
+}
+
+// handleTaken: people and agents share one @namespace.
+func (h *Hub) handleTaken(handle string) bool {
+	return h.count("SELECT (SELECT COUNT(*) FROM users WHERE handle = ?) + (SELECT COUNT(*) FROM agents WHERE handle = ?)", handle, handle) > 0
+}
+
+func (h *Hub) isAdmin(userID string) bool {
+	return h.count("SELECT COUNT(*) FROM users WHERE id = ? AND role = 'admin' AND disabled = 0", userID) == 1
+}
+
+// ---------------------------------------------------------------- invites and sign-in
+
+// CreateInvite makes a one-time invite and returns its code (only its hash is stored).
+func (h *Hub) CreateInvite(email, role, by string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.createInvite(email, role, by)
+}
+
+type httpError struct {
+	status int
+	msg    string
+}
+
+func (e httpError) Error() string { return e.msg }
+
+func (h *Hub) createInvite(email, role, by string) (string, error) {
+	email = normEmail(email)
+	if !validEmail(email) {
+		return "", httpError{400, "邮箱格式不对"}
+	}
+	if role != "admin" && role != "member" {
+		return "", httpError{400, "role 只能是 admin 或 member"}
+	}
+	if h.count("SELECT COUNT(*) FROM users WHERE email = ?", email) > 0 {
+		return "", httpError{409, "这个邮箱已经是成员了"}
+	}
+	code := randHex(16)
+	now := h.nowMs()
+	var creator any
+	if by != "" {
+		creator = by
+	}
+	h.must(h.db.Exec("INSERT INTO invites (hash, email, role, created_by, created, expires) VALUES (?, ?, ?, ?, ?, ?)",
+		sha256hex([]byte(code)), email, role, creator, now, now+inviteTTL.Milliseconds()))
+	return code, nil
+}
+
+func (h *Hub) v1InviteCreate(w http.ResponseWriter, q *request) {
+	if !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "只有管理员能邀请成员")
+		return
+	}
+	var b struct{ Email, Role string }
+	_ = q.json(&b)
+	if b.Role == "" {
+		b.Role = "member"
+	}
+	code, err := h.createInvite(b.Email, b.Role, q.who.userID)
+	if err != nil {
+		e := err.(httpError)
+		errJSON(w, e.status, e.msg)
+		return
+	}
+	writeJSON(w, 200, obj{"code": code, "path": "/invite/" + code, "expires": h.nowMs() + inviteTTL.Milliseconds()})
+}
+
+type invite struct {
+	email, role string
+	pending     *string
+}
+
+func (h *Hub) liveInvite(code string) (invite, bool) {
+	var iv invite
+	err := h.db.QueryRow("SELECT email, role, pending_secret FROM invites WHERE hash = ? AND used_by IS NULL AND expires > ?",
+		sha256hex([]byte(code)), h.nowMs()).Scan(&iv.email, &iv.role, &iv.pending)
+	return iv, err == nil
+}
+
+func (h *Hub) v1InviteInfo(w http.ResponseWriter, q *request) {
+	iv, ok := h.liveInvite(q.r.PathValue("code"))
+	if !ok {
+		errJSON(w, 404, "邀请链接无效或已过期")
+		return
+	}
+	writeJSON(w, 200, obj{"email": iv.email, "role": iv.role})
+}
+
+// v1InviteAccept, in two steps: {name, handle} → {secret, uri} to add to the authenticator app;
+// then {name, handle, totp} → the account exists and {session, user} signs it in.
+func (h *Hub) v1InviteAccept(w http.ResponseWriter, q *request) {
+	code := q.r.PathValue("code")
+	iv, ok := h.liveInvite(code)
+	if !ok {
+		errJSON(w, 404, "邀请链接无效或已过期")
+		return
+	}
+	var b struct{ Name, Handle, TOTP string }
+	_ = q.json(&b)
+	name, handle := trimmed(b.Name, 60), strings.ToLower(strings.TrimSpace(b.Handle))
+	if name == "" || !handleRE.MatchString(handle) {
+		errJSON(w, 400, "请填写名字，以及 2 到 32 位的 @名（小写字母开头，可含数字、- 和 _）")
+		return
+	}
+	if h.handleTaken(handle) {
+		errJSON(w, 409, "@"+handle+" 已经被占用了")
+		return
+	}
+	hash := sha256hex([]byte(code))
+	if b.TOTP == "" || iv.pending == nil {
+		secret := newTOTPSecret()
+		h.must(h.db.Exec("UPDATE invites SET pending_secret = ? WHERE hash = ?", secret, hash))
+		writeJSON(w, 200, obj{"secret": secret, "uri": otpauthURI(secret, iv.email)})
+		return
+	}
+	step := totpMatch(*iv.pending, b.TOTP, -1, h.now())
+	if step < 0 {
+		errJSON(w, 400, "验证码不对：确认手机时间准确，输入验证器 App 上的最新数字")
+		return
+	}
+	id := newID("u_")
+	h.must(h.db.Exec("INSERT INTO users (id, email, handle, name, role, totp_secret, totp_last, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		id, iv.email, handle, name, iv.role, *iv.pending, step, h.nowMs()))
+	h.must(h.db.Exec("UPDATE invites SET used_by = ?, used_at = ?, pending_secret = NULL WHERE hash = ?", id, h.nowMs(), hash))
+	u, _ := h.user(id)
+	h.broadcastPeople(obj{"type": "user", "user": u})
+	writeJSON(w, 200, obj{"session": h.userSession(u, q.r.UserAgent()), "user": u})
+}
+
+func (h *Hub) userSession(u userView, ua string) string {
+	session := randHex(32)
+	now := h.nowMs()
+	h.must(h.db.Exec("INSERT INTO sessions (id, email, created, last_seen, ua, scope, user_id) VALUES (?, ?, ?, ?, ?, 'owner', ?)",
+		sha256hex([]byte(session)), u.Email, now, now, truncRunes(ua, 300), u.ID))
+	return session
+}
+
+func (h *Hub) v1Login(w http.ResponseWriter, q *request) {
+	var b struct{ Email, TOTP string }
+	_ = q.json(&b)
+	email := normEmail(b.Email)
+	now := h.nowMs()
+	h.must(h.db.Exec("DELETE FROM login_fails WHERE ts < ?", now-24*time.Hour.Milliseconds()))
+	if h.count("SELECT COUNT(*) FROM login_fails WHERE email = ?", email) >= loginFailsPerDay {
+		errJSON(w, 429, "这个邮箱今天验证失败次数太多，24 小时内无法登录")
+		return
+	}
+	var id, secret string
+	var last int64
+	var disabled bool
+	err := h.db.QueryRow("SELECT id, totp_secret, totp_last, disabled FROM users WHERE email = ?", email).Scan(&id, &secret, &last, &disabled)
+	step := int64(-1)
+	if err == nil && !disabled {
+		step = totpMatch(secret, b.TOTP, last, h.now())
+	}
+	if step < 0 {
+		h.must(h.db.Exec("INSERT INTO login_fails (email, ts) VALUES (?, ?)", email, now))
+		errJSON(w, 401, "邮箱或验证码不对（每个验证码只能用一次）")
+		return
+	}
+	h.must(h.db.Exec("UPDATE users SET totp_last = ? WHERE id = ?", step, id))
+	u, _ := h.user(id)
+	writeJSON(w, 200, obj{"session": h.userSession(u, q.r.UserAgent()), "user": u})
+}
+
+func (h *Hub) v1Logout(w http.ResponseWriter, q *request) {
+	h.must(h.db.Exec("DELETE FROM sessions WHERE id = ?", q.who.session))
+	writeJSON(w, 200, obj{"ok": true})
+}
+
+func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
+	u, _ := h.user(q.who.userID)
+	out := obj{"user": u,
+		"machines": h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE owner_id = ? ORDER BY created", u.ID)),
+		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
+	if q.who.machineID != "" {
+		ms := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))
+		out["machine"] = ms[0]
+		out["agents"] = scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))
+	}
+	writeJSON(w, 200, out)
+}
+
+// ---------------------------------------------------------------- people
+
+func (h *Hub) v1Users(w http.ResponseWriter, q *request) {
+	rows, err := h.db.Query("SELECT " + userCols + " FROM users ORDER BY created")
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []userView{}
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, u)
+	}
+	writeJSON(w, 200, obj{"users": out})
+}
+
+// v1UserPatch: anyone renames themselves; an admin changes roles and disables people (never themselves).
+func (h *Hub) v1UserPatch(w http.ResponseWriter, q *request) {
+	id := q.r.PathValue("id")
+	if _, ok := h.user(id); !ok {
+		errJSON(w, 404, "not found")
+		return
+	}
+	var b struct {
+		Name     *string `json:"name"`
+		Role     *string `json:"role"`
+		Disabled *bool   `json:"disabled"`
+	}
+	_ = q.json(&b)
+	self, admin := id == q.who.userID, h.isAdmin(q.who.userID)
+	if (b.Name != nil && !self && !admin) || ((b.Role != nil || b.Disabled != nil) && (!admin || self)) {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	if b.Name != nil {
+		if n := trimmed(*b.Name, 60); n != "" {
+			h.must(h.db.Exec("UPDATE users SET name = ? WHERE id = ?", n, id))
+		}
+	}
+	if b.Role != nil {
+		if *b.Role != "admin" && *b.Role != "member" {
+			errJSON(w, 400, "role 只能是 admin 或 member")
+			return
+		}
+		h.must(h.db.Exec("UPDATE users SET role = ? WHERE id = ?", *b.Role, id))
+	}
+	if b.Disabled != nil {
+		h.must(h.db.Exec("UPDATE users SET disabled = ? WHERE id = ?", *b.Disabled, id))
+		if *b.Disabled { // signed out everywhere; their machines' tokens stop working with them
+			h.must(h.db.Exec("DELETE FROM sessions WHERE user_id = ?", id))
+		}
+	}
+	u, _ := h.user(id)
+	h.broadcastPeople(obj{"type": "user", "user": u})
+	writeJSON(w, 200, u)
+}
+
+// ---------------------------------------------------------------- machines
+
+func (h *Hub) v1Machines(w http.ResponseWriter, q *request) {
+	writeJSON(w, 200, obj{"machines": h.scanMachines(h.db.Query("SELECT " + machineCols + " FROM machines ORDER BY created"))})
+}
+
+// v1MachineCreate: a person adds a machine and gets its token once ([server] token in that machine's noop.toml).
+func (h *Hub) v1MachineCreate(w http.ResponseWriter, q *request) {
+	var b struct{ Name string }
+	_ = q.json(&b)
+	name := trimmed(b.Name, 60)
+	if name == "" {
+		errJSON(w, 400, "name required")
+		return
+	}
+	id, token := newID("m_"), machineTokenPrefix+randHex(32)
+	h.must(h.db.Exec("INSERT INTO machines (id, owner_id, name, token_hash, created) VALUES (?, ?, ?, ?, ?)",
+		id, q.who.userID, name, sha256hex([]byte(token)), h.nowMs()))
+	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", id))[0]
+	writeJSON(w, 200, obj{"machine": m, "token": token})
+}
+
+func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
+	id := q.r.PathValue("id")
+	var owner string
+	if h.db.QueryRow("SELECT owner_id FROM machines WHERE id = ?", id).Scan(&owner) != nil {
+		errJSON(w, 404, "not found")
+		return
+	}
+	if owner != q.who.userID && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	h.must(h.db.Exec("DELETE FROM machines WHERE id = ?", id))
+	h.must(h.db.Exec("UPDATE agents SET machine_id = NULL WHERE machine_id = ?", id))
+	writeJSON(w, 200, obj{"ok": true})
+}
+
+// v1MachineReport: the daemon says what it is and what it can run; it gets back the agents it hosts.
+func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
+	var b struct {
+		OS          string   `json:"os"`
+		Arch        string   `json:"arch"`
+		Runtimes    []string `json:"runtimes"`
+		MaxSessions int      `json:"max_sessions"`
+	}
+	_ = q.json(&b)
+	var rts []string
+	for _, r := range b.Runtimes {
+		if runtimes[r] {
+			rts = append(rts, r)
+		}
+	}
+	rt, _ := json.Marshal(rts)
+	maxS := min(max(b.MaxSessions, 1), 16)
+	if b.MaxSessions == 0 {
+		maxS = 3
+	}
+	h.must(h.db.Exec("UPDATE machines SET os = ?, arch = ?, runtimes = ?, max_sessions = ?, last_seen = ? WHERE id = ?",
+		trimmed(b.OS, 40), trimmed(b.Arch, 40), string(rt), maxS, h.nowMs(), q.who.machineID))
+	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
+	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))})
+}
+
+// ---------------------------------------------------------------- agents
+
+func (h *Hub) v1Agents(w http.ResponseWriter, q *request) {
+	writeJSON(w, 200, obj{"agents": scanAgents(h.db.Query("SELECT " + agentCols + " FROM agents ORDER BY created"))})
+}
+
+type agentBody struct {
+	Handle      *string `json:"handle"`
+	Name        *string `json:"name"`
+	Description *string `json:"description"`
+	MachineID   *string `json:"machine_id"`
+	Runtime     *string `json:"runtime"`
+	Dispatch    *string `json:"dispatch"`
+	Autonomy    *string `json:"autonomy"`
+}
+
+// apply validates the fields present and writes them to agent id.
+func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
+	set := func(col string, v any) { h.must(h.db.Exec("UPDATE agents SET "+col+" = ? WHERE id = ?", v, id)) }
+	if b.Name != nil {
+		n := trimmed(*b.Name, 40)
+		if n == "" {
+			return &httpError{400, "name required"}
+		}
+		set("name", n)
+	}
+	if b.Description != nil {
+		set("description", trimmed(*b.Description, 300))
+	}
+	if b.MachineID != nil {
+		if *b.MachineID == "" {
+			set("machine_id", nil)
+		} else if h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND owner_id = ?", *b.MachineID, owner) == 0 {
+			return &httpError{400, "只能用你自己的机器"}
+		} else {
+			set("machine_id", *b.MachineID)
+		}
+	}
+	if b.Runtime != nil {
+		if !runtimes[*b.Runtime] {
+			return &httpError{400, "runtime 只能是 codex 或 claude"}
+		}
+		set("runtime", *b.Runtime)
+	}
+	if b.Dispatch != nil {
+		if !dispatches[*b.Dispatch] {
+			return &httpError{400, "dispatch 只能是 owner、confirm 或 open"}
+		}
+		set("dispatch", *b.Dispatch)
+	}
+	if b.Autonomy != nil {
+		if !autonomies[*b.Autonomy] {
+			return &httpError{400, "autonomy 只能是 cautious、assist 或 auto"}
+		}
+		set("autonomy", *b.Autonomy)
+	}
+	return nil
+}
+
+func (h *Hub) v1AgentCreate(w http.ResponseWriter, q *request) {
+	var b agentBody
+	_ = q.json(&b)
+	handle := ""
+	if b.Handle != nil {
+		handle = strings.ToLower(strings.TrimSpace(*b.Handle))
+	}
+	if !handleRE.MatchString(handle) {
+		errJSON(w, 400, "@名要 2 到 32 位，小写字母开头，可含数字、- 和 _")
+		return
+	}
+	if h.handleTaken(handle) {
+		errJSON(w, 409, "@"+handle+" 已经被占用了")
+		return
+	}
+	if b.Name == nil {
+		b.Name = &handle
+	}
+	id := newID("a_")
+	h.must(h.db.Exec("INSERT INTO agents (id, owner_id, handle, name, created) VALUES (?, ?, ?, ?, ?)", id, q.who.userID, handle, handle, h.nowMs()))
+	if e := h.applyAgent(id, q.who.userID, b); e != nil { // all fields or none (the lock hides the half-made row)
+		h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", id))
+		errJSON(w, e.status, e.msg)
+		return
+	}
+	a, _ := h.agent(id)
+	h.broadcastPeople(obj{"type": "agent", "agent": a})
+	writeJSON(w, 200, a)
+}
+
+func (h *Hub) v1AgentPatch(w http.ResponseWriter, q *request) {
+	a, ok := h.agent(q.r.PathValue("id"))
+	if !ok {
+		errJSON(w, 404, "not found")
+		return
+	}
+	if a.OwnerID != q.who.userID {
+		errJSON(w, 403, "只有 Agent 的主人能改它的设置")
+		return
+	}
+	var b agentBody
+	_ = q.json(&b)
+	if b.Handle != nil && *b.Handle != a.Handle {
+		errJSON(w, 400, "@名创建后不能改")
+		return
+	}
+	if e := h.applyAgent(a.ID, a.OwnerID, b); e != nil {
+		errJSON(w, e.status, e.msg)
+		return
+	}
+	a, _ = h.agent(a.ID)
+	h.broadcastPeople(obj{"type": "agent", "agent": a})
+	writeJSON(w, 200, a)
+}
+
+func (h *Hub) v1AgentDelete(w http.ResponseWriter, q *request) {
+	a, ok := h.agent(q.r.PathValue("id"))
+	if !ok {
+		errJSON(w, 404, "not found")
+		return
+	}
+	if a.OwnerID != q.who.userID && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "forbidden")
+		return
+	}
+	h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", a.ID))
+	h.must(h.db.Exec("DELETE FROM channel_members WHERE kind = 'agent' AND member_id = ?", a.ID))
+	h.broadcastPeople(obj{"type": "agent_removed", "id": a.ID})
+	writeJSON(w, 200, obj{"ok": true})
+}

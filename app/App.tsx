@@ -43,6 +43,8 @@ import { checkForPackage, checkForUpdate, downloadPackage, downloadUpdate, insta
 // shellInfo through the namespace: runtimes older than it lack the export, and a missing named import would fail to link
 import * as nshUpdater from "nsh/updater";
 import { CLIENT_VERSION } from "./version";
+import { TeamApp } from "./team/TeamApp";
+import { TEAM_KEYS } from "./team/api";
 import { createSettingsToast, SettingsToast } from "./settings-toast";
 import { agentDisplayName, avatarOf } from "./avatars";
 import { CheckMark } from "./ui/icons";
@@ -5225,6 +5227,30 @@ function Connected(props: { config: Config; openRef: string | null; onExpired: (
   );
 }
 
+/** TeamAgent is the client now; the single-person noop chat stays only for a device that already holds its session. */
+function Root() {
+  const mode = signal<"team" | "legacy" | null>(null);
+  Promise.all([Storage.getItem(KEYS.token), Storage.getItem(TEAM_KEYS.session), Storage.getItem(LANG_KEY)]).then(([legacy, team, saved]) => {
+    if (saved === "en" || saved === "zh") lang.set(saved);
+    mode.set(legacy && !team ? "legacy" : "team");
+  });
+  return (
+    <If when={mode()}>
+      {(m) => (m() === "legacy" ? <App /> : <TeamRoot />)}
+    </If>
+  );
+}
+
+function TeamRoot() {
+  if (hasWindow) currentWindow().set({ title: "TeamAgent", titleBar: { style: "hidden", height: size.bar } });
+  Scrollbar.setTheme(scrollbarTheme);
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: touch ? safeArea().top : 0 }}>
+      <TeamApp />
+    </View>
+  );
+}
+
 function App() {
   if (hasWindow) {
     currentWindow().set({ title: "Noop", titleBar: { style: "hidden", height: size.bar } });
@@ -5280,4 +5306,4 @@ function App() {
   );
 }
 
-mount(App);
+mount(Root);

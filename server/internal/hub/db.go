@@ -3,6 +3,7 @@ package hub
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite" // pure Go: no cgo, one static binary
 )
@@ -49,7 +50,42 @@ CREATE INDEX IF NOT EXISTS history_path ON history (path, version);
 CREATE TABLE IF NOT EXISTS files_meta (k TEXT PRIMARY KEY, v INTEGER);
 `
 
+// TeamAgent's own model: people, their machines and agents, channels, threads and messages (one workspace per server).
+const teamSchema = `
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, handle TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member', totp_secret TEXT NOT NULL, totp_last INTEGER NOT NULL DEFAULT -1,
+  disabled INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS invites (hash TEXT PRIMARY KEY, email TEXT NOT NULL, role TEXT NOT NULL, created_by TEXT,
+  created INTEGER NOT NULL, expires INTEGER NOT NULL, pending_secret TEXT, used_by TEXT, used_at INTEGER);
+CREATE TABLE IF NOT EXISTS login_fails (email TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE,
+  os TEXT, arch TEXT, runtimes TEXT, max_sessions INTEGER NOT NULL DEFAULT 3, created INTEGER NOT NULL, last_seen INTEGER);
+CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, machine_id TEXT, handle TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', runtime TEXT NOT NULL DEFAULT 'codex',
+  dispatch TEXT NOT NULL DEFAULT 'confirm', autonomy TEXT NOT NULL DEFAULT 'assist', created INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, topic TEXT NOT NULL DEFAULT '',
+  created_by TEXT, created INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS channel_members (channel_id TEXT NOT NULL, kind TEXT NOT NULL, member_id TEXT NOT NULL, joined INTEGER NOT NULL,
+  PRIMARY KEY (channel_id, kind, member_id));
+CREATE INDEX IF NOT EXISTS channel_members_member ON channel_members (kind, member_id);
+CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, channel_id TEXT NOT NULL,
+  thread_id TEXT, author_kind TEXT NOT NULL, author_id TEXT NOT NULL, text TEXT NOT NULL, mentions TEXT, attachments TEXT,
+  client_id TEXT, created INTEGER NOT NULL, edited INTEGER);
+CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel_id, thread_id, seq);
+CREATE INDEX IF NOT EXISTS messages_thread ON messages (thread_id, seq);
+CREATE UNIQUE INDEX IF NOT EXISTS messages_client ON messages (author_kind, author_id, client_id) WHERE client_id IS NOT NULL;
+`
+
 func initSchema(db *sql.DB) error {
-	_, err := db.Exec(schema)
-	return err
+	if _, err := db.Exec(schema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(teamSchema); err != nil {
+		return err
+	}
+	// sessions now belong to a person (NULL: a legacy noop owner session)
+	if _, err := db.Exec("ALTER TABLE sessions ADD COLUMN user_id TEXT"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	return nil
 }
