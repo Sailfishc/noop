@@ -746,12 +746,26 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
 function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) => void; onAgent: (handle: string) => void }) {
   const t = props.team;
   const mine = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
-  const adding = signal(false);
+  /** The command that adds my computers: they report in by themselves. */
+  const code = signal("");
+  const adding = () => !!code() || manual();
+  const manual = signal(false);
   const name = signal("");
   const error = signal("");
   const busy = signal(false);
-  const issued = signal<{ name: string; token: string; join: string } | null>(null);
-  const manual = signal(false);
+  const issued = signal<{ name: string; token: string } | null>(null);
+  async function enroll() {
+    busy.set(true);
+    error.set("");
+    issued.set(null);
+    const r = await t.enrollMachine();
+    busy.set(false);
+    if (!r.ok) {
+      manual.set(r.status === 404 || r.status === 405); // an older server: name it and paste its token
+      return r.status === 404 || r.status === 405 ? undefined : error.set(failed(r));
+    }
+    code.set(r.data.join);
+  }
   async function add() {
     if (!name().trim() || busy()) return;
     busy.set(true);
@@ -759,11 +773,12 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
     const r = await t.createMachine(name().trim());
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
-    issued.set({ name: r.data.machine.name, token: r.data.token, join: r.data.join ?? "" });
-    manual.set(!r.data.join); // an older server has no join codes
-    adding.set(false);
+    issued.set({ name: r.data.machine.name, token: r.data.token });
+    manual.set(false);
+    code.set("");
     name.set("");
   }
+  const close = () => { code.set(""); manual.set(false); error.set(""); };
   const snippet = (token: string) => `[cloud]\nurl = "${t.url}"\n\n[server]\ntoken = "${token}"`;
   return (
     <>
@@ -771,37 +786,40 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
         <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
           {L("A machine is a computer of yours running the TeamAgent daemon. It reports which runtimes it has; one machine can host many agents.", "机器是你一台跑着 TeamAgent 守护进程的电脑。它会上报装了哪些 Runtime；一台机器上可以有多个 Agent。")}
         </Text>
-        <Btn small kind="primary" testID="machine-add" icon="plus" label={L("Add machine", "添加机器")} onPress={() => { adding.set(true); issued.set(null); }} />
+        <Btn small kind="primary" testID="machine-add" icon="plus" label={L("Add machine", "添加机器")} busy={busy() && !manual()} onPress={() => void enroll()} />
       </View>
-      <If when={adding()}>
-        <Panel title={L("Add machine", "添加机器")}>
+      <ErrorNote text={code() || manual() ? "" : error()} />
+      <If when={code()}>
+        <View style={{ gap: 10, padding: 14, borderRadius: 12, backgroundColor: tints.accent }}>
+          <InstallCommand team={t} name={L("that computer", "那台电脑")} code={code()} />
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>
+            {L("The computer shows up below by itself once it connects, named after its hostname (rename it there). The same command works on more of your computers within the hour; running it again on one reconnects it.", "电脑连上后会自动出现在下面，名字用它的主机名（可以改）。一小时内这条命令可以在你的多台电脑上用；同一台电脑再运行一次，就是重新接入。")}
+          </Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Btn small kind="ghost" testID="machine-manual" label={L("Set it up by hand", "手动配置")} onPress={() => { code.set(""); manual.set(true); }} />
+            <Btn small kind="ghost" label={L("Done", "完成")} onPress={close} />
+          </View>
+        </View>
+      </If>
+      <If when={manual()}>
+        <Panel title={L("Set up a machine by hand", "手动配置机器")}>
           <Field label={L("Machine name", "机器名称")} value={name()} onChange={(v) => name.set(v)} onSubmit={add} placeholder={L("Wang Lei’s Mac", "王磊的 Mac")} testID="machine-name" autoFocus />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", gap: 8 }}>
-            <Btn testID="machine-create" kind="primary" label={L("Get the install command", "生成接入命令")} busy={busy()} disabled={!name().trim()} onPress={add} />
-            <Btn kind="ghost" label={L("Cancel", "取消")} onPress={() => adding.set(false)} />
+            <Btn testID="machine-create" kind="primary" label={L("Create token", "生成令牌")} busy={busy()} disabled={!name().trim()} onPress={add} />
+            <Btn kind="ghost" label={L("Cancel", "取消")} onPress={close} />
           </View>
         </Panel>
       </If>
       <If when={issued()}>
         {(i) => (
           <View style={{ gap: 8, padding: 14, borderRadius: 12, backgroundColor: tints.accent }}>
-            <If when={!manual()}>
-              <InstallCommand team={t} name={i().name} code={i().join} />
-            </If>
-            <If when={manual()}>
-              <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
-                {L(`Token for ${i().name}. It’s shown only once: put this in ~/.noop/data/config.local.toml on that computer, then start its daemon (bun run daemon).`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 ~/.noop/data/config.local.toml，然后启动那里的守护进程（bun run daemon）。`)}
-              </Text>
-              <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, color: colors.text, ...mono }}>{snippet(i().token)}</Text>
-            </If>
+            <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
+              {L(`Token for ${i().name}. It’s shown only once: put this in ~/.noop/data/config.local.toml on that computer, then start its daemon (bun run daemon).`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 ~/.noop/data/config.local.toml，然后启动那里的守护进程（bun run daemon）。`)}
+            </Text>
+            <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, color: colors.text, ...mono }}>{snippet(i().token)}</Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
-              <If when={manual()}>
-                <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(snippet(i().token))} />
-              </If>
-              <If when={i().join}>
-                <Btn small kind="ghost" testID="machine-manual" label={manual() ? L("Use the install command", "用接入命令") : L("Set it up by hand", "手动配置")} onPress={() => manual.update((v) => !v)} />
-              </If>
+              <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(snippet(i().token))} />
               <Btn small kind="ghost" label={L("Done", "完成")} onPress={() => issued.set(null)} />
             </View>
           </View>
@@ -809,7 +827,7 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
       </If>
       <If when={!mine().length && !adding() && !issued()}>
         <Panel title={L("No machines yet", "还没有机器")}>
-          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("Add one and run the command it gives in a terminal on that computer.", "添加一台，在那台电脑的终端里运行给出的命令。")}</Text>
+          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("Press Add machine and run the command it gives in a terminal on that computer.", "点「添加机器」，在那台电脑的终端里运行给出的命令。")}</Text>
         </Panel>
       </If>
       <Each of={mine()} key={(m) => m.id}>
@@ -847,6 +865,14 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
   const confirming = signal(false);
   const join = signal("");
   const joinError = signal("");
+  const renaming = signal(false);
+  const newName = signal("");
+  async function rename() {
+    if (!newName().trim()) return;
+    const r = await t.renameMachine(m().id, newName().trim());
+    if (!r.ok) return joinError.set(failed(r));
+    renaming.set(false);
+  }
   async function newCode() {
     joinError.set("");
     const r = await t.machineJoinCode(m().id);
@@ -860,7 +886,20 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Icon name="terminal" size={22} tint={colors.muted} />
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>{m().name}</Text>
+          <If when={renaming()} else={
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <Text testID={`machine-name-${m().id}`} style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>{m().name}</Text>
+              <Btn small kind="ghost" testID={`machine-rename-${m().id}`} label={L("Rename", "改名")} onPress={() => { newName.set(m().name); renaming.set(true); }} />
+            </View>
+          }>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <View style={{ flex: 1 }}>
+                <Field label="" value={newName()} onChange={(v) => newName.set(v)} onSubmit={rename} testID={`machine-rename-input-${m().id}`} autoFocus />
+              </View>
+              <Btn small kind="primary" testID={`machine-rename-save-${m().id}`} label={L("Save", "保存")} disabled={!newName().trim()} onPress={() => void rename()} />
+              <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => renaming.set(false)} />
+            </View>
+          </If>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <Dot on={m().online} />
             <Text style={{ fontSize: 12.5, color: colors.muted }}>

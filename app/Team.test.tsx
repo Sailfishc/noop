@@ -65,6 +65,11 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
       return { body: { machine: { ...mac, id: "m_2", name: JSON.parse(r.body!).name, online: false, runtimes: [] }, token: "tam_" + "ab".repeat(32), join: "tj_first" } };
     },
     [`POST ${URL}/api/v1/machines/m_2/join`]: { body: { join: "tj_again" } },
+    [`POST ${URL}/api/v1/machines/enroll`]: { body: { join: "te_first" } },
+    [`PATCH ${URL}/api/v1/machines/m_1`]: (r: { body?: string | null }) => {
+      log.patches.push({ machine: JSON.parse(r.body!) });
+      return { body: { machine: { ...mac, ...JSON.parse(r.body!) } } };
+    },
     [`PATCH ${URL}/api/v1/agents/a_1`]: (r: { body?: string | null }) => {
       const p = JSON.parse(r.body!);
       log.patches.push(p);
@@ -250,24 +255,33 @@ describe("settings", () => {
     await app.waitFor("id:agent-detail-acha");
   });
 
-  test("adding a machine gives one command to run there, or its token by hand; an agent's dispatch scope and confirmation change", async () => {
+  test("adding a machine gives one command; the computer names itself and can be renamed; or a token by hand; an agent's dispatch scope and confirmation change", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900, network: server(log) });
     await settings(app, "machines");
     await app.press("id:machine-add");
+    await app.waitFor("id:machine-command");
+    expect(app.shows(`text:curl -fsSL ${URL}/api/v1/install.sh | bash -s -- ${URL} te_first`)).toBe(true);
+    expect(app.shows("id:machine-name")).toBe(false); // nothing to name: the computer reports in by itself
+    expect(app.shows("id:machine-loopback")).toBe(false);
+    await app.press("id:machine-rename-m_1");
+    await app.clear("id:machine-rename-input-m_1");
+    await app.type("id:machine-rename-input-m_1", "张伟的 MacBook");
+    await app.press("id:machine-rename-save-m_1");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ machine: { name: "张伟的 MacBook" } });
+    await app.waitFor("text:张伟的 MacBook");
+    log.patches.length = 0;
+    await app.press("id:machine-manual");
     await app.type("id:machine-name", "构建机");
     await app.press("id:machine-create");
-    await app.waitFor("id:machine-command");
-    expect(log.created).toEqual([{ name: "构建机" }]);
-    expect(app.shows(`text:curl -fsSL ${URL}/api/v1/install.sh | bash -s -- ${URL} tj_first`)).toBe(true);
-    expect(app.shows("id:machine-loopback")).toBe(false);
-    await app.press("id:machine-join-m_2"); // later, or when the code expired: a new one
-    await app.waitFor(`text:/tj_again$/`);
-    expect(app.shows("text:/new token/")).toBe(true);
-    await app.press("id:machine-manual");
     await app.waitFor("id:machine-token");
+    expect(log.created).toEqual([{ name: "构建机" }]);
     expect(app.shows(`text:/token = "tam_abab/`)).toBe(true);
     expect(app.shows(`text:/url = "${URL}"/`)).toBe(true);
+    await app.press("id:machine-join-m_2"); // offline: a command that reconnects it
+    await app.waitFor(`text:/tj_again$/`);
+    expect(app.shows("text:/new token/")).toBe(true);
     await app.press("id:settings-nav-agents");
     expect(app.shows("text:Members of its channels")).toBe(true);
     expect(app.shows("text:Needs my confirmation")).toBe(true);
