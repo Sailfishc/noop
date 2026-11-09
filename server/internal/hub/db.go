@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS task_outputs (id TEXT PRIMARY KEY, task_id TEXT NOT N
 CREATE INDEX IF NOT EXISTS task_outputs_task ON task_outputs (task_id, created);
 CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, author_kind TEXT NOT NULL, author_id TEXT NOT NULL, emoji TEXT NOT NULL,
   created INTEGER NOT NULL, PRIMARY KEY (message_id, author_kind, author_id, emoji));
+CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT NOT NULL, created INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_client ON messages (author_kind, author_id, client_id) WHERE client_id IS NOT NULL;
 `
 
