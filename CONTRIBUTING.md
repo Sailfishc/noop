@@ -41,4 +41,4 @@ Keys, tokens, IP addresses and intranet names are refused at commit time and in 
 
 ## Releasing the client apps
 
-Push a tag `vX.Y.Z`: `.github/workflows/release.yml` packages macOS (Apple silicon) and Linux, signs an OTA package and the update manifest, and publishes the latest GitHub release that installed apps update from. One-time key setup (`scripts/release-keys.sh`) and how updates work: [docs/app-updates.md](docs/app-updates.md). To build the client locally, use `nsh` at the commit in `app/nsh-version`; a local build does not update itself.
+Releases are made on the maintainer's Mac, not in CI: `scripts/release-mac.sh` packages macOS (Apple silicon), signs it with a Developer ID, notarizes it, signs an OTA package and the update manifest, and publishes the latest GitHub release that installed apps update from. Keys and certificates stay on that Mac. One-time setup and how updates work: [docs/app-updates.md](docs/app-updates.md). To build the client locally, use `nsh` at the commit in `app/nsh-version`; a local build does not update itself.

@@ -24,7 +24,7 @@ export function watchUpdates() {
   cleanup(() => { clearTimeout(first); clearInterval(timer); });
 }
 
-/** A development build has no update source (scripts/release-config.sh adds it to release builds only). */
+/** A development build has no update source (scripts/release-mac.sh adds it to release builds only). */
 export const canCheckUpdates = CLIENT_VERSION !== "dev";
 
 /** What a check someone asked for found, shown in the update row's place while there is nothing to press. */
