@@ -77,6 +77,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/tasks/{id}/cancel", person, h.v1TaskCancel)
 	r("POST /api/v1/tasks/{id}/accept", person, h.v1TaskAccept)
 	r("POST /api/v1/tasks/{id}/reopen", person, h.v1TaskReopen)
+	r("POST /api/v1/tasks/{id}/track", person, h.v1TaskTrack)
 	r("POST /api/v1/tasks/{id}/decide", person, h.v1TaskDecide)
 	r("GET /api/v1/machine/tasks", machine, h.v1MachineTasks)
 	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)

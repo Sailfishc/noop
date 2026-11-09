@@ -50,6 +50,9 @@ export type Task = {
   outputs?: Output[] | null;
   /** What it waits for while "waiting" (and why it woke, until its next run). */
   wait?: Wait | null;
+  /** A task people track (on the board); false: a request the agent only answered, or has not claimed yet. Older
+   * servers send none: every run was a task then. */
+  tracked?: boolean;
   /** Whether the agent saw the outcome itself, or only handed the work over. */
   result?: "confirmed" | "unconfirmed" | "";
 };
@@ -426,9 +429,10 @@ export function createTeam(s: Session) {
   }
 
   let counter = 0;
-  async function send(channelId: string, text: string, threadId: string | null = null): Promise<string | null> {
+  /** asTask: the composer's "as task" (a top-level message that @s an agent): tracked as a task from the start. */
+  async function send(channelId: string, text: string, threadId: string | null = null, asTask = false): Promise<string | null> {
     const client_id = `c${Date.now().toString(36)}${(counter++).toString(36)}`;
-    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}) });
+    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}), ...(asTask ? { as_task: true } : {}) });
     if (!r.ok) return errorOf(r, `发送失败（${r.status || "连不上服务器"}）`);
     applyMessage(r.data as Message, false);
     return null;
@@ -516,8 +520,8 @@ export function createTeam(s: Session) {
   const gitSettings = () => api("GET", "/api/v1/git");
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);

@@ -43,6 +43,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
+    [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
@@ -190,6 +191,21 @@ describe("team channels", () => {
     expect(log.posts[0].text).toBe("@acha 顺便看下索引");
     expect(typeof log.posts[0].client_id).toBe("string");
     expect(app.value("id:team-composer")).toBe("");
+  });
+
+  test("\"as task\" shows once the message @s an agent, and sends it as a task", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "整理一下");
+    expect(app.shows("id:team-composer-as-task")).toBe(false);
+    await app.type("id:team-composer", " @acha 慢查询清单");
+    await app.waitFor("id:team-composer-as-task");
+    await app.press("id:team-composer-as-task");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(log.posts[0]).toMatchObject({ text: "整理一下 @acha 慢查询清单", as_task: true });
+    expect(app.shows("id:team-composer-as-task")).toBe(false);
   });
 
   test("a thread opens beside the channel; a reply goes into it and counts on the root", async () => {
@@ -710,6 +726,23 @@ describe("tasks", () => {
     await app.press("id:task-T-0001-reopen");
     await app.waitFor("text:In progress");
     expect(log.acts).toEqual(["T-0001 accept", "T-0001 reopen"]);
+  });
+
+  test("a question the agent only answered is no task card; its asker may convert it", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "done", tracked: false, summary: "有两个索引" });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("id:track-T-0001");
+    expect(app.shows("id:task-T-0001")).toBe(false);
+    await app.press("id:track-T-0001");
+    await app.waitFor("id:task-T-0001");
+    expect(log.acts).toEqual(["T-0001 track"]);
+  });
+
+  test("an untracked request that needs a person still shows its card", async () => {
+    const t = task({ created_by: "u_1", state: "pending", tracked: false });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [t]) });
+    await app.waitFor("id:task-T-0001-needs");
   });
 
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {
