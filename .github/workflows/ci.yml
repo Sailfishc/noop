@@ -1,5 +1,9 @@
 name: ci
-on: [push, pull_request]
+# A PR's commits run once (as the PR), not twice (push and PR); main runs on push.
+on:
+  push:
+    branches: [main]
+  pull_request:
 # Borrowed from T3 Code's CI: read-only token, and a newer push to a PR cancels the older run.
 permissions:
   contents: read
@@ -107,11 +111,24 @@ jobs:
         with:
           path: nsh-dist
           key: nsh-dist-linux-x86_64-${{ steps.pin.outputs.pin }}-v1
+      # The Actions cache is per branch (a branch sees its own and main's), so a new branch
+      # misses it until main has built. The release `nsh-<commit>` (published below) is the
+      # same build: take it rather than spend an hour building it again.
       - if: steps.cache.outputs.cache-hit != 'true'
+        id: release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: nsh-${{ steps.pin.outputs.short }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -D nsh-dist \
+            -p nsh-linux-x86_64.tar.gz -p nsh-linux-x86_64.tar.gz.sha256
+          cd nsh-dist && sha256sum --check nsh-linux-x86_64.tar.gz.sha256
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         uses: actions/checkout@v4
         with: { repository: longbridge/nsh, ref: "${{ steps.pin.outputs.pin }}", path: nsh-src }
       # What NSH's release.yml installs for its linux-x86_64 distribution.
-      - if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         name: Install clang, GTK 4 and GPUI's libraries
         run: |
           sudo apt-get update
@@ -119,20 +136,20 @@ jobs:
             libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
             libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
-      - if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: "17" }
-      - if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         name: Install the Android platform
         run: |
           if [[ ! -f "$ANDROID_HOME/platforms/android-35/android.jar" ]]; then
             sdkmanager=$(ls "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager* | head -1)
             yes | "$sdkmanager" "platforms;android-35" > /dev/null || true
           fi
-      - if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
-      - if: steps.cache.outputs.cache-hit != 'true'
+      - if: steps.cache.outputs.cache-hit != 'true' && steps.release.outcome != 'success'
         name: Build the distribution
         working-directory: nsh-src
         env:
