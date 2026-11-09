@@ -880,6 +880,15 @@ describe("tasks", () => {
     await app.waitUntil(() => app.shows("id:taskrow-T-0001") && !app.shows("id:taskrow-T-0002"));
   });
 
+  test("a task whose request named me to take it waits for me, not for its creator", async () => {
+    const ts = [task({ id: "T-0003", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9", handler: "u_1" })];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:open-tasks");
+    await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0003"); // it concerns me: it waits for me
+    expect(app.shows("text:Waits for your acceptance")).toBe(true);
+  });
+
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {
     const log = newLog();
     const t = task({ created_by: "u_1", state: "done", summary: "7 个开放 PR，其中 6 个草稿。\n\n详情：#145 和 #144 检查失败" });
