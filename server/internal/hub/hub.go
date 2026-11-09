@@ -67,7 +67,6 @@ func (h *Hub) locked(f func()) {
 func (h *Hub) now() time.Time { return h.cfg.Now() }
 func (h *Hub) nowMs() int64   { return h.now().UnixMilli() }
 
-
 // ---------------------------------------------------------------- small helpers
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
