@@ -279,6 +279,8 @@ export function createTeam(s: Session) {
   let socket: WebSocket | null = null;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let failures = 0;
+  /** Who hears each new message as it comes (system notifications: an @mention). */
+  const liveListeners = new Set<(m: Message) => void>();
 
   async function api(method: string, path: string, body?: unknown): Promise<Reply> {
     const r = await call(s.url, method, path, s.session, body);
@@ -293,6 +295,7 @@ export function createTeam(s: Session) {
   /** A message from the socket, a catch-up page, or our own post. */
   function applyMessage(m: Message, live: boolean) {
     seen(m);
+    if (live) for (const fn of liveListeners) fn(m);
     if (m.thread_id) {
       const root = m.thread_id;
       const known = (untracked(threads)[root] ?? []).some((x) => x.id === m.id);
@@ -486,6 +489,13 @@ export function createTeam(s: Session) {
   function leaveView() {
     viewing = null;
   }
+  /** The channel on screen, if any. */
+  const viewingNow = () => viewing;
+  /** Hears each message that comes in live (the socket or a catch-up), until the function returned is called. */
+  function onLiveMessage(fn: (m: Message) => void) {
+    liveListeners.add(fn);
+    return () => { liveListeners.delete(fn); };
+  }
   async function loadOlder(id: string) {
     const list = untracked(top)[id];
     if (!list?.length || !untracked(more)[id]) return;
@@ -660,6 +670,7 @@ export function createTeam(s: Session) {
 
   function dispose() {
     disposed = true;
+    liveListeners.clear();
     clearInterval(poll);
     clearTimeout(retry);
     clearTimeout(inboxTimer);
@@ -675,7 +686,7 @@ export function createTeam(s: Session) {
 
   return {
     url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
-    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
+    openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };

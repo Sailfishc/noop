@@ -15,6 +15,7 @@ import { UpdateRow } from "./updates";
 import { agentState, Avatar, chrome, Dot, StateDot, WIDE } from "./ui";
 import { ChannelView, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
+import { watchNotifications } from "./notify";
 import { SignIn } from "./signin";
 
 // ---------------------------------------------------------------- workspace
@@ -75,6 +76,8 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     showList.set(false);
   }
   const openSettings = (tab: SettingsTab | null = untracked(wide) ? "account" : null, agent?: string) => settings.set({ tab, agent });
+  // system notifications: a press opens what it is about
+  watchNotifications(t, (channelId, threadId) => { settings.set(null); open({ kind: "channel", id: channelId }, threadId); });
   keymap.bind("mod+,", () => openSettings(), { when: "always" });
   keymap.bind("mod+k", () => open({ kind: "search" }), { when: "always" });
 

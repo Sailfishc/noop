@@ -1,103 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-
-const URL = "http://hub.test:8080";
-const SESSION = { "team.url": URL, "team.session": "sess", "team.email": "zw@corp.com" };
-const T0 = Date.now() - 3600_000;
-
-const zw = { id: "u_1", email: "zw@corp.com", handle: "zhangwei", name: "张伟", role: "admin", disabled: false };
-const wl = { id: "u_2", email: "wl@corp.com", handle: "wanglei", name: "王磊", role: "member", disabled: false };
-const mac = { id: "m_1", owner_id: "u_1", name: "张伟的 Mac", os: "darwin", arch: "arm64", runtimes: ["codex"], max_sessions: 3, online: true, last_seen: T0 };
-const acha = { id: "a_1", owner_id: "u_1", machine_id: "m_1", handle: "acha", name: "阿查", description: "", runtime: "codex", dispatch: "channel", confirm: true, autonomy: "assist", model: "" };
-const pay = { id: "c_1", slug: "pay", name: "支付后端", topic: "慢查询", archived: false, created: T0, members: [{ kind: "user", id: "u_1" }, { kind: "user", id: "u_2" }, { kind: "agent", id: "a_1" }], last_seq: 2 };
-const ops = { id: "c_2", slug: "ops", name: "运维", topic: "", archived: false, created: T0, members: [{ kind: "user", id: "u_2" }], last_seq: 0 };
-const msg = (over: Record<string, unknown>) => ({
-  id: "msg_1", seq: 1, channel_id: "c_1", thread_id: null, author: { kind: "user", id: "u_2" }, text: "", mentions: [], attachments: [],
-  client_id: null, created: T0, edited: null, reply_count: 0, last_reply_at: null, ...over,
-});
-const m1 = msg({ id: "msg_1", seq: 1, text: "@acha 看下慢查询", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }], reply_count: 1 });
-const r1 = msg({ id: "msg_2", seq: 2, thread_id: "msg_1", author: { kind: "agent", id: "a_1" }, text: "收到，在看" });
-
-type Log = { posts: any[]; patches: any[]; created: any[]; acts: string[] };
-const task = (over: Record<string, unknown>) => ({
-  id: "T-0001", channel_id: "c_1", thread_id: "msg_1", agent_id: "a_1", created_by: "u_2", title: "看下慢查询", body: "@acha 看下慢查询",
-  state: "pending", step: "", summary: "", decision: null, pr: null, branch: "agent/T-0001", claimed_by: null, confirmed_by: null, runs: 0,
-  created: T0, updated: T0, ...over,
-});
-function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = []) {
-  let seq = 10;
-  const live = new Map(tasks.map((t) => [t.id, t]));
-  const act = (name: string, change: (t: any, body: any) => void) => (r: { url: string; body?: string | null }) => {
-    const id = r.url.match(/tasks\/([^/]+)\//)![1];
-    const body = r.body ? JSON.parse(r.body) : {};
-    log.acts.push(`${id} ${name}${body.choice ? ` ${body.choice}` : ""}`);
-    const t = { ...live.get(id) };
-    change(t, body);
-    live.set(id, t);
-    return { body: t };
-  };
-  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
-  return {
-    [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
-    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
-    [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
-    [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
-    [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
-    [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
-    [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
-    [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
-    [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
-    [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
-    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
-    [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
-    [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
-    [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac] } },
-    [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops] } },
-    [`GET ${URL}/api/v1/updates?*`]: { body: { messages: [], more: false } },
-    [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [m1], more: false } },
-    [`GET ${URL}/api/v1/channels/c_2/messages?*`]: { body: { messages: [], more: false } },
-    [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
-    [`POST ${URL}/api/v1/channels/*/messages`]: (r: { url: string; body?: string | null }) => {
-      const b = JSON.parse(r.body!);
-      log.posts.push(b);
-      const channel_id = r.url.match(/channels\/([^/]+)\/messages/)![1];
-      return { body: msg({ id: `msg_${++seq}`, seq, channel_id, thread_id: b.thread_id ?? null, author: { kind: "user", id: "u_1" }, text: b.text, client_id: b.client_id }) };
-    },
-    [`POST ${URL}/api/v1/channels/c_2/members`]: { body: { ...ops, members: [...ops.members, { kind: "user", id: "u_1" }] } },
-    [`POST ${URL}/api/v1/machines`]: (r: { body?: string | null }) => {
-      log.created.push(JSON.parse(r.body!));
-      return { body: { machine: { ...mac, id: "m_2", name: JSON.parse(r.body!).name, online: false, runtimes: [] }, token: "tam_" + "ab".repeat(32), join: "tj_first" } };
-    },
-    [`POST ${URL}/api/v1/machines/m_2/join`]: { body: { join: "tj_again" } },
-    [`POST ${URL}/api/v1/machines/enroll`]: { body: { join: "te_first" } },
-    [`PATCH ${URL}/api/v1/machines/m_1`]: (r: { body?: string | null }) => {
-      log.patches.push({ machine: JSON.parse(r.body!) });
-      return { body: { machine: { ...mac, ...JSON.parse(r.body!) } } };
-    },
-    [`PATCH ${URL}/api/v1/agents/a_1`]: (r: { body?: string | null }) => {
-      const p = JSON.parse(r.body!);
-      log.patches.push(p);
-      return { body: { ...acha, ...p } };
-    },
-    [`PATCH ${URL}/api/v1/tasks/*`]: (r: { url: string; body?: string | null }) => {
-      const id = r.url.match(/tasks\/([^/?]+)/)![1];
-      const b = JSON.parse(r.body!);
-      const t = { ...live.get(id), ...b, ...(b.repo !== undefined ? { repo: b.repo.replace(/^https?:\/\//, "") } : {}) };
-      log.acts.push(`${id} ${Object.keys(b).join(",")}${b.repo !== undefined ? ` ${b.repo}` : ""}`);
-      live.set(id, t);
-      return { body: t };
-    },
-    [`GET ${URL}/api/v1/repos`]: { body: { repos: [{ remote: "github.com/acme/pay", name: "pay", machines: ["m_1"] }, { remote: "code.corp.com/fin/ledger", name: "ledger", machines: [] }] } },
-    [`PATCH ${URL}/api/v1/channels/c_1`]: (r: { body?: string | null }) => {
-      const b = JSON.parse(r.body!);
-      log.patches.push({ channel: b });
-      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, "") } };
-    },
-    [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
-    [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...over,
-  };
-}
-const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });
+import { URL, SESSION, T0, zw, wl, mac, acha, pay, ops, msg, m1, r1, type Log, task, server, newLog } from "./fixtures";
 
 describe("team sign in", () => {
   test("an invite link: name and @handle, then the workspace", async () => {
@@ -194,6 +96,14 @@ describe("team channels", () => {
     expect(app.value("id:team-composer")).toBe("");
   });
 
+  test("a message's copy button puts its text on the clipboard", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.press("id:copy-msg_1");
+    expect(app.clipboard()).toBe(m1.text);
+    await app.waitFor("label:/Copied|已复制/");
+  });
+
   test("search finds messages and tasks in every channel, and a result opens its thread", async () => {
     const asked: string[] = [];
     const app = await open("./App.tsx", {
@@ -201,7 +111,7 @@ describe("team channels", () => {
       network: {
         ...server(newLog()),
         [`GET ${URL}/api/v1/search?*`]: (r: { url: string }) => {
-          asked.push(new globalThis.URL(r.url).searchParams.get("q") ?? "");
+          asked.push(decodeURIComponent((r.url.match(/[?&]q=([^&]*)/)?.[1] ?? "").replace(/\+/g, " ")));
           return { body: { messages: [m1], tasks: [task({ state: "review", title: "看下慢查询" })] } };
         },
       },
@@ -230,7 +140,9 @@ describe("team channels", () => {
         [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => {
           const b = JSON.parse(r.body!);
           made.push(b);
-          return { body: rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" }) };
+          const made1 = rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" });
+          list = [...list, made1]; // the server lists what it made
+          return { body: made1 };
         },
         [`POST ${URL}/api/v1/reminders/*/seen`]: (r: { url: string }) => {
           seen.push(r.url.match(/reminders\/([^/]+)\//)![1]);
@@ -726,7 +638,7 @@ describe("channel v2", () => {
     await app.press("id:thread-msg_1");
     await app.waitFor("id:task-T-0001-facts");
     expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001" above its title
-    expect(app.shows("text:/^\\d+ min$/")).toBe(true); // how long it has run
+    expect(app.shows("text:/^(\\d+ h )?\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
     expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
@@ -796,6 +708,8 @@ describe("channel v2", () => {
     expect(app.shows("text:orders: 加索引")).toBe(true);
     expect(app.shows("text:checks passed")).toBe(true);
     expect(app.shows("text:v2 · 2.0 KB")).toBe(true);
+    expect(app.shows("text:/3D 云/")).toBe(false); // two show; the rest behind "All 3 outputs"
+    await app.press("id:task-T-0001-outputs-all");
     expect(app.shows("text:3D 云 · in progress · 排队中")).toBe(true);
     expect(app.shows("id:output-o_2-preview")).toBe(false); // no preview picture yet
     await app.press("id:output-o_1-preview");
