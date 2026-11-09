@@ -316,6 +316,11 @@ export function createTeam(s: Session) {
     clearTimeout(inboxTimer);
     inboxTimer = setTimeout(loadInbox, 300);
   }
+  /** The tracked tasks (of one channel, or of every channel this person can see): the task views. */
+  async function loadTasks(channelId?: string) {
+    const r = await api("GET", `/api/v1/tasks?tracked=1&limit=500${channelId ? `&channel=${channelId}` : ""}`);
+    if (r.ok) putTasks(r.data.tasks as Task[]);
+  }
   async function loadInbox() {
     const r = await api("GET", "/api/v1/inbox");
     if (!r.ok) return;
@@ -569,7 +574,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,

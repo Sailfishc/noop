@@ -745,6 +745,46 @@ describe("tasks", () => {
     await app.waitFor("id:task-T-0001-needs");
   });
 
+  test("a channel's Tasks tab: a board by status, or a list; a press opens the task's thread", async () => {
+    const ts = [
+      task({ id: "T-0001", state: "running", tracked: true }),
+      task({ id: "T-0002", thread_id: "msg_1", state: "blocked", tracked: true, title: "加索引" }),
+      task({ id: "T-0003", state: "review", tracked: true, title: "写周报" }),
+      task({ id: "T-0004", state: "done", tracked: false, title: "问个问题" }),
+    ];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:channel-tab-tasks");
+    await app.press("id:channel-tab-tasks");
+    await app.waitFor("id:tasks-board");
+    const count = (label: string) => { const xs = app.texts(); return xs[xs.lastIndexOf(label) + 1]; };
+    expect(count("In progress")).toBe("2");
+    expect(count("In review")).toBe("1");
+    expect(count("Done")).toBe("0"); // an answer is no task
+    expect(app.shows("id:taskrow-T-0004")).toBe(false);
+    await app.press("id:tasks-layout-list");
+    await app.waitFor("id:tasks-list");
+    expect(app.shows("text:Blocked")).toBe(true);
+    await app.press("id:taskrow-T-0002");
+    await app.waitFor("id:close-thread");
+  });
+
+  test("the Tasks page lists every tracked task; filters narrow it to mine or my agents'", async () => {
+    const ts = [
+      task({ id: "T-0001", state: "running", tracked: true, created_by: "u_1" }),
+      task({ id: "T-0002", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9" }),
+    ];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:open-tasks");
+    await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0002");
+    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    await app.press("id:tasks-filter-mine");
+    await app.waitUntil(() => !app.shows("id:taskrow-T-0002"));
+    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    await app.press("id:tasks-filter-agents");
+    await app.waitUntil(() => app.shows("id:taskrow-T-0001") && !app.shows("id:taskrow-T-0002"));
+  });
+
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {
     const log = newLog();
     const t = task({ created_by: "u_1", state: "done", summary: "7 个开放 PR，其中 6 个草稿。\n\n详情：#145 和 #144 检查失败" });
