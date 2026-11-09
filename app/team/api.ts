@@ -39,7 +39,9 @@ export type PR = { provider: "github" | "gitlab"; url: string; number: number; t
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string };
 export type Task = {
-  id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string; state: TaskState;
+  id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
+  /** The run's state (the machines go by it); people see statusOf(state): five statuses and a "needs you" mark. */
+  state: TaskState;
   step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; claimed_by: string | null; confirmed_by: string | null;
   runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
   /** Where it runs: host/owner/name; "" = a general task (or the agent's own repo path). */
@@ -514,8 +516,8 @@ export function createTeam(s: Session) {
   const gitSettings = () => api("GET", "/api/v1/git");
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
 
-  /** confirm | decline | cancel | accept | decide ({choice}). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);

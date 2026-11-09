@@ -17,9 +17,11 @@ import (
 // claims it (one claim wins), runs it, and reports back. Everything a person says in the thread later reaches the
 // task: while it runs it waits for the next turn, after it stopped it reopens it.
 //
-// States: pending (waits for the owner) → queued (waits for the machine) → running → review | needs_decision |
-// blocked | failed | waiting (an outside result: teamwaits.go), and done (accepted) or closed (cancelled, declined,
-// not allowed).
+// What people see is a task's status, one of five (as in Raft): todo, in_progress, in_review, done, closed; plus a
+// "needs you" mark when a person has to act (confirm, decide, unblock, retry). Underneath, `state` is the run's own
+// machine, which the machines and the server drive: pending (waits for the owner) → queued (waits for the machine) →
+// running → review | needs_decision | blocked | failed | waiting (an outside result: teamwaits.go), and done
+// (accepted) or closed (cancelled, declined, not allowed). statusOf maps one onto the other.
 
 const (
 	taskPending       = "pending"
@@ -32,6 +34,48 @@ const (
 	taskDone          = "done"
 	taskClosed        = "closed"
 )
+
+// Statuses: what people see (statusOf).
+const (
+	statusTodo       = "todo"
+	statusInProgress = "in_progress"
+	statusInReview   = "in_review"
+	statusDone       = "done"
+	statusClosed     = "closed"
+)
+
+// statusOf: a run state as people see it, the status and what a person must do ("" when nothing): confirm (the
+// agent's owner says yes or no), decide (a decision card), unblock (it lacks something), retry (the run failed).
+func statusOf(state string) (string, string) {
+	switch state {
+	case taskPending:
+		return statusTodo, "confirm"
+	case taskNeedsDecision:
+		return statusInProgress, "decide"
+	case taskBlocked:
+		return statusInProgress, "unblock"
+	case taskFailed:
+		return statusInProgress, "retry"
+	case taskReview:
+		return statusInReview, ""
+	case taskDone:
+		return statusDone, ""
+	case taskClosed:
+		return statusClosed, ""
+	}
+	return statusInProgress, "" // queued, running, waiting
+}
+
+// statesOf: the run states a status covers.
+func statesOf(status string) []string {
+	out := []string{}
+	for _, s := range []string{taskPending, taskQueued, taskRunning, taskWaiting, taskNeedsDecision, taskBlocked, taskFailed, taskReview, taskDone, taskClosed} {
+		if st, _ := statusOf(s); st == status {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 // stopped: a run ended there; a person's reply in the thread starts the next run.
 var stoppedStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true, taskDone: true}
@@ -81,7 +125,9 @@ type taskView struct {
 	Acceptance  string        `json:"acceptance"` // what "done" means; people write it, the agent may propose it
 	Repo        string        `json:"repo"`       // where it runs: host/owner/name ("" = a general task); see teamrepos.go
 	Mandate     *mandateView  `json:"mandate"`
-	State       string        `json:"state"`
+	State       string        `json:"state"`  // the run's state (machines go by it)
+	Status      string        `json:"status"` // todo | in_progress | in_review | done | closed (people go by it)
+	Needs       string        `json:"needs"`  // what a person must do: confirm | decide | unblock | retry | ""
 	Step        string        `json:"step"`
 	Summary     string        `json:"summary"`
 	Decision    *decisionView `json:"decision"`
@@ -116,6 +162,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result); err != nil {
 			panic(err)
 		}
+		t.Status, t.Needs = statusOf(t.State)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
@@ -310,6 +357,17 @@ func (h *Hub) v1Tasks(w http.ResponseWriter, q *request) {
 	if s := q.query("state"); s != "" {
 		where, args = append(where, "state = ?"), append(args, s)
 	}
+	if s := q.query("status"); s != "" {
+		states := statesOf(s)
+		if len(states) == 0 {
+			errJSON(w, 400, "status 只能是 todo、in_progress、in_review、done 或 closed")
+			return
+		}
+		where = append(where, "state IN (?"+strings.Repeat(", ?", len(states)-1)+")")
+		for _, st := range states {
+			args = append(args, st)
+		}
+	}
 	if t := q.query("thread"); t != "" {
 		where, args = append(where, "thread_id = ?"), append(args, t)
 	}
@@ -444,12 +502,33 @@ func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
+// v1TaskAccept: done. From review, or (as people may judge it themselves) from a run that stopped for them.
 func (h *Hub) v1TaskAccept(w http.ResponseWriter, q *request) {
-	t, _, ok := h.taskFor(w, q, "party", taskReview)
+	t, _, ok := h.taskFor(w, q, "party", taskReview, taskNeedsDecision, taskBlocked, taskFailed)
 	if !ok {
 		return
 	}
 	h.setTask(t.ID, map[string]any{"state": taskDone})
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// v1TaskReopen: a done or closed task goes back to work (in progress): its agent picks it up again with what the
+// person said (or a plain "reopened") as the news in its thread.
+func (h *Hub) v1TaskReopen(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskDone, taskClosed)
+	if !ok {
+		return
+	}
+	var b struct{ Note string }
+	_ = q.json(&b)
+	text := "重新打开了这个任务"
+	if n := trimmed(b.Note, 2000); n != "" {
+		text += "：" + n
+	}
+	h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", q.who.userID}, text)
+	h.setTask(t.ID, map[string]any{"state": taskQueued, "step": ""})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)

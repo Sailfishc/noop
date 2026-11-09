@@ -11,6 +11,7 @@ import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS, textParts,
   EXTERNAL_TRIES, repoLabel, type Agent, type Member, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
+import { NEEDS, STATUS, statusOf, type Needs } from "./status";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
@@ -1248,18 +1249,6 @@ function NewChannel(props: { team: Team; back: boolean; onBack: () => void; onCr
 
 // ---------------------------------------------------------------- tasks
 
-const STATE: Record<TaskState, { label: () => string; tone: "accent" | "warn" | "danger" | "up" | "muted" }> = {
-  pending: { label: () => L("Waiting for its owner", "等主人确认"), tone: "warn" },
-  queued: { label: () => L("Waiting for its machine", "等机器认领"), tone: "muted" },
-  running: { label: () => L("Working", "进行中"), tone: "accent" },
-  waiting: { label: () => L("Waiting for an outside result", "等待外部结果"), tone: "muted" },
-  needs_decision: { label: () => L("Needs a decision", "等人决定"), tone: "warn" },
-  review: { label: () => L("Ready for review", "待验收"), tone: "accent" },
-  blocked: { label: () => L("Blocked", "受阻"), tone: "danger" },
-  failed: { label: () => L("Failed", "失败"), tone: "danger" },
-  done: { label: () => L("Done", "已完成"), tone: "up" },
-  closed: { label: () => L("Closed", "已关闭"), tone: "muted" },
-};
 const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
 
 const HOW: Record<string, () => string> = {
@@ -1396,8 +1385,10 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
   const party = () => isParty(task(), me(), agent());
   const busy = signal("");
   const error = signal("");
-  const st = () => STATE[task().state] ?? STATE.queued;
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide", body: unknown = {}) {
+  const st = () => statusOf(task().state);
+  const label = () => STATUS[st().status];
+  const needs = () => (st().needs ? NEEDS[st().needs as Exclude<Needs, "">] : null);
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -1421,9 +1412,17 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
           <If when={task().state === "running"}>
             <Spinner size={11} tint={colors.accent} />
           </If>
-          <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(st().tone) }}>{st().label()}</Text>
+          <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
         </View>
       </View>
+      <If when={needs()}>
+        {(n) => (
+          <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
+            <StateDot tone={n().tone} />
+            <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label()}</Text>
+          </View>
+        )}
+      </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
         <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
@@ -1477,6 +1476,14 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
         </If>
         <If when={party() && !["done", "closed"].includes(task().state) && !(task().state === "pending" && isOwner())}>
           <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
+        </If>
+        <If when={party() && ["review", "needs_decision", "blocked", "failed"].includes(task().state)}>
+          <If when={task().state !== "review"}>
+            <Btn small kind="ghost" testID={`task-${task().id}-done`} label={L("Mark done", "标为完成")} busy={busy() === "accept"} onPress={() => act("accept")} />
+          </If>
+        </If>
+        <If when={party() && ["done", "closed"].includes(task().state)}>
+          <Btn small kind="ghost" testID={`task-${task().id}-reopen`} label={L("Reopen", "重新打开")} busy={busy() === "reopen"} onPress={() => act("reopen")} />
         </If>
         <If when={props.onOpen}>
           <Btn small kind="ghost" testID={`task-${task().id}-open`} label={L("Open thread", "打开线程")} onPress={() => props.onOpen!()} />
