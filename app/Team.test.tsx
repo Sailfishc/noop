@@ -272,6 +272,20 @@ describe("team channels", () => {
     expect(app.shows("id:thread")).toBe(false);
   });
 
+  test("the thread column widens when its edge is dragged, and keeps its width", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1400, height: 800, network: server(log) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:side-resize");
+    await app.drag("id:side-resize", { x: -200 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === "580");
+    await app.drag("id:side-resize", { x: -2000 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === String(1400 - 248 - 360));
+    await app.drag("id:side-resize", { x: 2000 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === "320");
+  });
+
   test("a channel you're not in can be read and joined", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
     await app.press("id:channel-ops");
