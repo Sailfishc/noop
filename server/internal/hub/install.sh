@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TeamAgent: connect this computer to a TeamAgent server as a machine, in one line.
+# Remi: connect this computer to a Remi server as a machine, in one line.
 # The app (设置 → 我的机器 → 添加机器) gives the exact command:
 #   curl -fsSL <server>/api/v1/install.sh | bash -s -- <server> <join code>
 # It installs Bun if missing, the daemon (into ~/.noop/app), trades the one-time join code for this machine's
@@ -12,7 +12,7 @@ if [ -z "$SERVER" ] || [ -z "$CODE" ]; then
 fi
 HOME_DIR="${NOOP_HOME:-$HOME/.noop}"
 APP="$HOME_DIR/app"
-REPO="${TEAMAGENT_REPO:-https://github.com/Sailfishc/noop.git}"
+REPO="${REMI_REPO:-${TEAMAGENT_REPO:-https://github.com/Sailfishc/noop.git}}"
 LOG="$HOME_DIR/install.log"
 mkdir -p "$HOME_DIR" && : > "$LOG"
 
@@ -24,7 +24,7 @@ fail() { printf "%s✗%s %s\n" "$R" "$N" "$1"; exit 1; }
 run()  { "$@" >>"$LOG" 2>&1; }
 trap 'printf "\n%s✗%s 安装没有完成，详细输出在 %s\n" "$R" "$N" "$LOG"' ERR
 
-printf "\n%sTeamAgent%s 接入 %s\n\n" "$B" "$N" "$SERVER"
+printf "\n%sRemi%s 接入 %s\n\n" "$B" "$N" "$SERVER"
 
 step "服务端"
 curl -fsS -o /dev/null -m 10 "$SERVER/api/v1/install.sh" >>"$LOG" 2>&1 || fail "连不上 $SERVER，这台电脑要能访问到它（127.0.0.1 只在服务端那台电脑上有效）"
@@ -43,7 +43,7 @@ if [ -d "$APP/.git" ]; then
   origin="$(git -C "$APP" remote get-url origin 2>/dev/null || true)"
   case "$origin" in
     *Sailfishc/noop*|"$REPO") run git -C "$APP" pull -q --ff-only || true ;;
-    *) fail "$APP 已经装了别的 noop（$origin）。换个目录再装：NOOP_HOME=~/.teamagent 加在命令最前面" ;;
+    *) fail "$APP 已经装了别的 noop（$origin）。换个目录再装：NOOP_HOME=~/.remi 加在命令最前面" ;;
   esac
 else
   run git clone -q "$REPO" "$APP"

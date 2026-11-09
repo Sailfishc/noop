@@ -289,7 +289,7 @@ function LoginCodePanel(props: { team: Team }) {
 /** "Chrome on macOS" from a user agent, roughly; enough to tell devices apart. */
 function deviceName(ua: string) {
   const os = /iPhone|iPad/.test(ua) ? "iOS" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "macOS" : /Windows/.test(ua) ? "Windows" : /Linux/.test(ua) ? "Linux" : "";
-  const app = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : ua ? "TeamAgent" : L("Unknown device", "未知设备");
+  const app = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : ua ? "Remi" : L("Unknown device", "未知设备");
   return os ? `${app} · ${os}` : app;
 }
 
@@ -789,7 +789,7 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-          {L("A machine is a computer of yours running the TeamAgent daemon. It reports which runtimes it has; one machine can host many agents.", "机器是你一台跑着 TeamAgent 守护进程的电脑。它会上报装了哪些 Runtime；一台机器上可以有多个 Agent。")}
+          {L("A machine is a computer of yours running the Remi daemon. It reports which runtimes it has; one machine can host many agents.", "机器是你一台跑着 Remi 守护进程的电脑。它会上报装了哪些 Runtime；一台机器上可以有多个 Agent。")}
         </Text>
         <Btn small kind="primary" testID="machine-add" icon="plus" label={L("Add machine", "添加机器")} busy={busy() && !manual()} onPress={() => void enroll()} />
       </View>

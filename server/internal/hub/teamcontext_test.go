@@ -34,7 +34,7 @@ func TestAgentLooksThingsUp(t *testing.T) {
 	r = e.do("GET", "/api/v1/agent/tasks", tok, nil)
 	check(t, "its channels' tasks", strings.Contains(string(r.raw), id+" [in_progress]"), r)
 	r = e.do("GET", "/api/v1/agent/tasks/"+id, tok, nil)
-	check(t, "one task", strings.Contains(string(r.raw), "Thread: teamagent read --thread "+m["id"].(string)), r)
+	check(t, "one task", strings.Contains(string(r.raw), "Thread: remi read --thread "+m["id"].(string)), r)
 
 	check(t, "no token, no reading", e.do("GET", "/api/v1/agent/read", "", nil).status == 401)
 	check(t, "a person's session is not a read token", e.do("GET", "/api/v1/agent/read", e.zw.session, nil).status == 401)

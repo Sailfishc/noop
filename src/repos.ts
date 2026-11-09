@@ -1,7 +1,7 @@
 // The repositories this machine has. A task names its repository by remote ("github.com/acme/pay", the same on every
 // machine); the machine finds its own checkout of it, or clones one. Only the remotes go to the server, never paths.
 //
-//   [teamagent]
+//   [remi]                         # or [teamagent], as it was first called
 //   roots = ["~/code", "~/work"]   # where to look for checkouts (default: the usual places, up to three levels deep)
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";

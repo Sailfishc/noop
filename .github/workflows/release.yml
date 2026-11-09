@@ -38,12 +38,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { target: linux, os: ubuntu-24.04, asset: noop-linux-x86_64.tar.gz, installer: install-client.sh }
-          - { target: windows, os: windows-latest, asset: noop-windows-x86_64.zip, installer: install-client.ps1 }
-          - { target: macos, os: macos-15, asset: noop-macos-arm64.zip, installer: install-client.sh }
-          - { target: ios, os: xcode-27, asset: noop-ios-unsigned.ipa }
-          - { target: android, os: ubuntu-24.04, asset: noop-android.apk }
-          - { target: web, os: ubuntu-24.04, asset: noop-web.tar.gz }
+          - { target: linux, os: ubuntu-24.04, asset: remi-linux-x86_64.tar.gz, installer: install-client.sh }
+          - { target: windows, os: windows-latest, asset: remi-windows-x86_64.zip, installer: install-client.ps1 }
+          - { target: macos, os: macos-15, asset: remi-macos-arm64.zip, installer: install-client.sh }
+          - { target: ios, os: xcode-27, asset: remi-ios-unsigned.ipa }
+          - { target: android, os: ubuntu-24.04, asset: remi-android.apk }
+          - { target: web, os: ubuntu-24.04, asset: remi-web.tar.gz }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -85,16 +85,16 @@ jobs:
           fi
           (cd app && nsh package --target "$TARGET" -o "$out" "${args[@]}")
           case "$TARGET" in
-            linux) mv "$out/Noop.tar.gz" "assets/$ASSET"; mv "$out"/Noop-*.tar.gz assets/ ;;
-            windows) mv "$out/Noop.zip" "assets/$ASSET"; mv "$out"/Noop-*.zip assets/ ;;
-            macos) ditto -c -k --keepParent "$out/Noop.app" "assets/$ASSET"; mv "$out"/Noop-*.tar.gz assets/ ;;
+            linux) mv "$out/Remi.tar.gz" "assets/$ASSET"; mv "$out"/Remi-*.tar.gz assets/ ;;
+            windows) mv "$out/Remi.zip" "assets/$ASSET"; mv "$out"/Remi-*.zip assets/ ;;
+            macos) ditto -c -k --keepParent "$out/Remi.app" "assets/$ASSET"; mv "$out"/Remi-*.tar.gz assets/ ;;
             ios)
-              executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$out/Noop.app/Info.plist")
-              bash scripts/check-ios-sdk.sh "$out/Noop.app/$executable"
+              executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$out/Remi.app/Info.plist")
+              bash scripts/check-ios-sdk.sh "$out/Remi.app/$executable"
               # Unsigned: sign it with your own Apple ID to install it (Sideloadly, AltStore).
-              mkdir "$out/Payload" && mv "$out/Noop.app" "$out/Payload/"
+              mkdir "$out/Payload" && mv "$out/Remi.app" "$out/Payload/"
               (cd "$out" && zip -qry - Payload) > "assets/$ASSET" ;;
-            android) mv "$out/Noop.apk" "assets/$ASSET" ;;
+            android) mv "$out/Remi.apk" "assets/$ASSET" ;;
           esac
           ls -l assets
 
@@ -103,7 +103,7 @@ jobs:
         env:
           ASSET: ${{ matrix.asset }}
         run: |
-          app="$RUNNER_TEMP/verify/Noop.app"
+          app="$RUNNER_TEMP/verify/Remi.app"
           ditto -x -k "assets/$ASSET" "$RUNNER_TEMP/verify"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
           lipo "$app/Contents/MacOS/$executable" -verify_arch arm64
@@ -125,15 +125,15 @@ jobs:
           case "$RUNNER_OS" in
             Windows)
               powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTALLER"
-              test -f "$LOCALAPPDATA/Programs/Noop/Noop.exe" ;;
+              test -f "$LOCALAPPDATA/Programs/Remi/Remi.exe" ;;
             macOS)
               bash "$INSTALLER"
-              codesign --verify --deep --strict /Applications/Noop.app ;;
+              codesign --verify --deep --strict /Applications/Remi.app ;;
             Linux)
               bash "$INSTALLER"
-              test -x "$HOME/.local/share/noop-client/Noop"
-              test -x "$HOME/.local/bin/noop-client"
-              grep -q "^Exec=$HOME/.local/share/noop-client/Noop" "$HOME/.local/share/applications/dev.noop.app.desktop" ;;
+              test -x "$HOME/.local/share/remi-client/Remi"
+              test -x "$HOME/.local/bin/remi-client"
+              grep -q "^Exec=$HOME/.local/share/remi-client/Remi" "$HOME/.local/share/applications/dev.noop.app.desktop" ;;
           esac
           rm assets/sha256sums
 
@@ -156,10 +156,10 @@ jobs:
           mkdir -p assets-intel
           # The Intel CLI runs through Rosetta and also names OTA archives macos-x86_64.
           (cd app && nsh package --target macos -o "$out" "${args[@]}")
-          ditto -c -k --keepParent "$out/Noop.app" assets-intel/noop-macos-x86_64.zip
-          mv "$out"/Noop-*-macos-x86_64.tar.gz assets-intel/
-          app="$RUNNER_TEMP/verify-x86_64/Noop.app"
-          ditto -x -k assets-intel/noop-macos-x86_64.zip "$RUNNER_TEMP/verify-x86_64"
+          ditto -c -k --keepParent "$out/Remi.app" assets-intel/remi-macos-x86_64.zip
+          mv "$out"/Remi-*-macos-x86_64.tar.gz assets-intel/
+          app="$RUNNER_TEMP/verify-x86_64/Remi.app"
+          ditto -x -k assets-intel/remi-macos-x86_64.zip "$RUNNER_TEMP/verify-x86_64"
           executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
           lipo "$app/Contents/MacOS/$executable" -verify_arch x86_64
           codesign --verify --deep --strict "$app"
@@ -168,7 +168,7 @@ jobs:
         if: matrix.target == 'macos'
         uses: actions/upload-artifact@v4
         with:
-          name: noop-macos-x86_64.zip
+          name: remi-macos-x86_64.zip
           path: assets-intel/
           if-no-files-found: error
 
@@ -194,7 +194,7 @@ jobs:
         with:
           path: assets
           merge-multiple: true
-      # Release file names are lowercase on every project (nsh names its OTA archives after the app, Noop-<version>-...).
+      # Release file names are lowercase on every project (nsh names its OTA archives after the app, Remi-<version>-...).
       - name: Lowercase asset names
         run: |
           cd assets
@@ -215,7 +215,7 @@ jobs:
           (umask 077 && mkdir -p "$keys" && printf '%s\n' "$NSH_PACKAGE_KEY" > "$keys/release.secret")
           printf '%s\n' "$NSH_PACKAGE_CERT" > "$keys/release.cert"
           (cd app && nsh publish App.tsx --key "$keys/release.secret" --cert "$keys/release.cert" \
-            --build "$GITHUB_RUN_NUMBER" --app-version "$version" -o "$GITHUB_WORKSPACE/assets/noop-$version.nshpkg")
+            --build "$GITHUB_RUN_NUMBER" --app-version "$version" -o "$GITHUB_WORKSPACE/assets/remi-$version.nshpkg")
           rm -rf "$keys"
       # The apps fetch `releases/latest/download/latest.json`, the versioned archives and the package next to it
       # (nsh/updater). The installers keep using the unversioned assets. An APK cannot replace itself: Android gets a
@@ -225,9 +225,9 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           jq --arg version "$version" '.version = $version' app/nsh.json > "$RUNNER_TEMP/nsh.json"
           mv "$RUNNER_TEMP/nsh.json" app/nsh.json
-          nsh update-manifest assets/noop-"$version"-*.tar.gz assets/noop-"$version"-*.zip --entry app --out assets \
-            --package assets/noop-"$version".nshpkg \
-            --link "android=https://github.com/$GITHUB_REPOSITORY/releases/latest/download/noop-android.apk"
+          nsh update-manifest assets/remi-"$version"-*.tar.gz assets/remi-"$version"-*.zip --entry app --out assets \
+            --package assets/remi-"$version".nshpkg \
+            --link "android=https://github.com/$GITHUB_REPOSITORY/releases/latest/download/remi-android.apk"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,5 +239,5 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" * --clobber
           else
-            gh release create "$GITHUB_REF_NAME" * --verify-tag --generate-notes --title "Noop $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" * --verify-tag --generate-notes --title "Remi $GITHUB_REF_NAME"
           fi

@@ -109,7 +109,7 @@ func (h *Hub) lines(ms []messageView, names map[string]string) string {
 		}
 		extra := ""
 		if m.ReplyCount > 0 {
-			extra = fmt.Sprintf(" [%d replies: teamagent read --thread %s]", m.ReplyCount, m.ID)
+			extra = fmt.Sprintf(" [%d replies: remi read --thread %s]", m.ReplyCount, m.ID)
 		}
 		if ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ? AND tracked = 1", m.ID)); m.ThreadID == nil && len(ts) > 0 {
 			extra += fmt.Sprintf(" [task %s %s]", ts[0].ID, ts[0].Status)
@@ -128,7 +128,7 @@ func writeText(w http.ResponseWriter, s string) {
 	_, _ = w.Write([]byte(s))
 }
 
-// v1AgentRead: `teamagent read [--channel X] [--thread MSG] [--limit N] [--before SEQ]`: a thread whole (oldest first),
+// v1AgentRead: `remi read [--channel X] [--thread MSG] [--limit N] [--before SEQ]`: a thread whole (oldest first),
 // or a channel's latest top-level messages (oldest first).
 func (h *Hub) v1AgentRead(w http.ResponseWriter, q *request) {
 	t, a, ok := h.reader(w, q)
@@ -159,7 +159,7 @@ func (h *Hub) v1AgentRead(w http.ResponseWriter, q *request) {
 			ms[i], ms[j] = ms[j], ms[i]
 		}
 		if len(ms) == limit {
-			defer fmt.Fprintf(w, "(older: teamagent read --channel %q --before %d)\n", c.Name, ms[0].Seq)
+			defer fmt.Fprintf(w, "(older: remi read --channel %q --before %d)\n", c.Name, ms[0].Seq)
 		}
 	}
 	if len(ms) == 0 {
@@ -288,6 +288,6 @@ func (h *Hub) v1AgentTask(w http.ResponseWriter, q *request) {
 	if x.PR != nil {
 		fmt.Fprintf(&b, "PR: %s (%s, checks %s)\n", x.PR.URL, x.PR.State, x.PR.Checks)
 	}
-	fmt.Fprintf(&b, "Thread: teamagent read --thread %s\n", x.ThreadID)
+	fmt.Fprintf(&b, "Thread: remi read --thread %s\n", x.ThreadID)
 	writeText(w, b.String())
 }

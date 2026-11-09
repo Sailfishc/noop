@@ -123,7 +123,7 @@ test("a request the agent has to act on: it claims it as a task with a \"task:\"
   rmSync(W, { recursive: true, force: true });
 });
 
-test("the agent's teamagent command asks the server with the run's read token, words and flags encoded", async () => {
+test("the agent's remi command (also installed as teamagent) asks the server with the run's read token, words and flags encoded", async () => {
   const W = mkdtempSync(join(tmpdir(), "teamwork-"));
   const seen: { path: string; query: Record<string, string>; auth: string | null }[] = [];
   const srv = Bun.serve({ port: 0, fetch(r) {
@@ -133,7 +133,7 @@ test("the agent's teamagent command asks the server with the run's read token, w
   } });
   const env = { ...process.env, ...cliEnv(W, `http://127.0.0.1:${srv.port}/`, "rt_abc") };
   const run = async (...args: string[]) => {
-    const p = Bun.spawn(["teamagent", ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn(["remi", ...args], { env, stdout: "pipe", stderr: "pipe" });
     const out = await new Response(p.stdout).text();
     await p.exited;
     return out;
@@ -147,9 +147,11 @@ test("the agent's teamagent command asks the server with the run's read token, w
     { path: "/api/v1/agent/read", query: { thread: "msg_9", limit: "5" }, auth: "Bearer rt_abc" },
     { path: "/api/v1/agent/tasks/T-0003", query: {}, auth: "Bearer rt_abc" },
   ]);
-  const help = Bun.spawn(["teamagent"], { env, stdout: "pipe" });
-  expect(await new Response(help.stdout).text()).toContain("teamagent search WORDS");
-  expect(taskPrompt({ ...claim(), read_token: "rt_abc" }, { cwd: "/w", writable: [] })).toContain("teamagent read --thread MSG");
+  const help = Bun.spawn(["remi"], { env, stdout: "pipe" });
+  expect(await new Response(help.stdout).text()).toContain("remi search WORDS");
+  const old = Bun.spawn(["teamagent"], { env, stdout: "pipe" }); // its first name keeps working
+  expect(await new Response(old.stdout).text()).toContain("remi search WORDS");
+  expect(taskPrompt({ ...claim(), read_token: "rt_abc" }, { cwd: "/w", writable: [] })).toContain("remi read --thread MSG");
   expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("# Looking things up");
   rmSync(W, { recursive: true, force: true });
 });

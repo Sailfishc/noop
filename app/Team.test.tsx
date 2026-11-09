@@ -496,7 +496,7 @@ describe("settings", () => {
   });
 
   test("links and install commands use the server's public address, not the one this device connects through", async () => {
-    const PUB = "http://teamagent.corp:8080";
+    const PUB = "http://remi.corp:8080";
     const app = await open("./App.tsx", {
       storage: SESSION, width: 1200, height: 900,
       network: {

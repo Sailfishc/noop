@@ -33,7 +33,7 @@ export type Claim = {
   wake?: Wake | null;
   /** Where an outside service can post to wake this task. */
   callback_url?: string;
-  /** What the run's `teamagent` command reads the chat with (only while this task runs). */
+  /** What the run's `remi` command reads the chat with (only while this task runs). */
   read_token?: string;
 };
 export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message"; note?: string; payload?: string; at: number };
@@ -164,7 +164,7 @@ function mandateLine(c: Claim): string {
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir): string {
   const a = c.agent, t = c.task;
-  return `You are ${a.name} (@${a.handle}), an AI teammate in a TeamAgent workspace, running headless on your owner's machine.
+  return `You are ${a.name} (@${a.handle}), an AI teammate in a Remi workspace, running headless on your owner's machine.
 ${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a channel with requests; this is one of them. Many are questions: just answer them.
 
 # Your memory (memory.md)
@@ -173,7 +173,7 @@ ${a.memory?.trim() || "(empty)"}
 ${RULES(wd)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
 # Channel #${c.channel.name}
-${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`teamagent read\` for more):
+${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`remi read\` for more):
 ${quote(c, c.recent) || "(none)"}
 
 # Request ${t.id}: ${t.title}${t.tracked ? " (tracked as a task)" : ""}
@@ -268,7 +268,7 @@ async function sh(cmd: string, cwd: string, env: Record<string, string>, timeout
 
 export type WorkerOptions = {
   api: Api;
-  /** The team server's address: the agent's `teamagent` command reads the chat there. */
+  /** The team server's address: the agent's `remi` command reads the chat there. */
   server?: string;
   maxParallel: number;
   workRoot?: string;
@@ -416,13 +416,13 @@ export function gateEnv(wd: Workdir): Record<string, string> {
 
 /** The agent's own read-only command for the team chat (as in Raft, where agents read and search with a CLI): it
  * asks the server with the run's read token, which works only while the task runs and only in the agent's channels. */
-export const TEAMAGENT_CLI = `#!/bin/sh
-# teamagent: look things up in the team chat (read-only).
-#   teamagent read [--channel NAME] [--limit N] [--before SEQ]   a channel's latest messages (default: this task's)
-#   teamagent read --thread MSG                                 a whole thread
-#   teamagent search WORDS [--channel NAME]                     messages with all the words, newest first
-#   teamagent tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
-#   teamagent task T-0001                                       one task: acceptance, summary, PR
+export const REMI_CLI = `#!/bin/sh
+# remi (also installed as teamagent): look things up in the team chat (read-only).
+#   remi read [--channel NAME] [--limit N] [--before SEQ]   a channel's latest messages (default: this task's)
+#   remi read --thread MSG                                 a whole thread
+#   remi search WORDS [--channel NAME]                     messages with all the words, newest first
+#   remi tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
+#   remi task T-0001                                       one task: acceptance, summary, PR
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) path="tasks/$2"; shift ;;
@@ -441,29 +441,32 @@ while [ "$n" -gt 0 ]; do
   esac
 done
 [ -n "$q" ] && set -- "$@" --data-urlencode "q=$q"
-exec curl -sS -G "$TEAMAGENT_URL/api/v1/agent/$path" -H "Authorization: Bearer $TEAMAGENT_TOKEN" "$@"
+exec curl -sS -G "$REMI_URL/api/v1/agent/$path" -H "Authorization: Bearer $REMI_TOKEN" "$@"
 `;
 
 /** The command on the runtime's PATH, and what it needs. */
 export function cliEnv(root: string, server: string, token: string): Record<string, string> {
   const bin = join(root, ".bin");
   mkdirSync(bin, { recursive: true });
-  const p = join(bin, "teamagent");
-  if (!existsSync(p) || readFileSync(p, "utf8") !== TEAMAGENT_CLI) writeFileSync(p, TEAMAGENT_CLI, { mode: 0o755 });
-  return { TEAMAGENT_URL: server.replace(/\/$/, ""), TEAMAGENT_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+  // "teamagent" is the command's first name: agents and notes written before the rename still use it
+  for (const name of ["remi", "teamagent"]) {
+    const p = join(bin, name);
+    if (!existsSync(p) || readFileSync(p, "utf8") !== REMI_CLI) writeFileSync(p, REMI_CLI, { mode: 0o755 });
+  }
+  return { REMI_URL: server.replace(/\/$/, ""), REMI_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
 }
 
 const LOOKUP = `# Looking things up
 You see only the request, its thread and a few recent messages here. When you need more of the team's context (what
-was said before, a related thread, other tasks), look it up with the \`teamagent\` command in your shell:
-- teamagent read                      this channel's latest messages (--channel NAME for another, --before SEQ for older)
-- teamagent read --thread MSG         a whole thread (the msg=… of a message)
-- teamagent search WORDS              messages with all the words, newest first
-- teamagent tasks [--status in_progress]   the team's tasks;  teamagent task T-0001   one of them
+was said before, a related thread, other tasks), look it up with the \`remi\` command in your shell:
+- remi read                      this channel's latest messages (--channel NAME for another, --before SEQ for older)
+- remi read --thread MSG         a whole thread (the msg=… of a message)
+- remi search WORDS              messages with all the words, newest first
+- remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
 Look up only what the request needs.`;
 
 export function createWorker(o: WorkerOptions) {
-  const log = o.log ?? ((s: string) => console.log(`teamagent: ${s}`));
+  const log = o.log ?? ((s: string) => console.log(`remi: ${s}`));
   const root = o.workRoot ?? join(homedir(), ".noop", "teamagent", "work");
   const runtimes = o.runtimes ?? RUNTIMES;
   const running = new Map<string, Promise<void>>();

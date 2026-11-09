@@ -263,7 +263,7 @@ func (h *Hub) v1OutputContent(w http.ResponseWriter, q *request) {
 	v, _ := strconv.Atoi(q.query("v"))
 	exp, _ := strconv.ParseInt(q.query("exp"), 10, 64)
 	if exp < h.nowMs()/1000 || !hmac.Equal([]byte(q.query("sig")), []byte(h.linkSig(id, v, exp))) {
-		errJSON(w, 403, "这个链接已经过期，请回到 TeamAgent 重新打开")
+		errJSON(w, 403, "这个链接已经过期，请回到 Remi 重新打开")
 		return
 	}
 	o, _, ok := h.output(id)

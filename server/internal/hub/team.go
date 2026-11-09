@@ -12,7 +12,7 @@ import (
 
 // People, invites and sign-in, machines and agents.
 //
-// There is no password and no mail. An admin invites a person (or `teamagent-server invite` does, for the first
+// There is no password and no mail. An admin invites a person (or `remi-server invite` does, for the first
 // admin) and the invite link signs them in. Another device signs in with a one-time login code made on a device
 // that is already signed in, or with a login link an admin makes. Accounts from before keep email + authenticator.
 
