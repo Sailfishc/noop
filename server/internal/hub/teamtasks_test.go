@@ -279,3 +279,49 @@ func TestTaskStatusAndReopen(t *testing.T) {
 	check(t, "the agent hears why", len(fresh) == 1 && fresh[0].(map[string]any)["text"] == "重新打开了这个任务：还有 /refunds", r)
 	check(t, "reopen only from done or closed", e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, nil).status == 409)
 }
+
+// As in Raft, a task is a message someone has to act on: a question is only answered; a run is tracked when the
+// person asks for it ("as task"), converts it, or the agent claims it.
+func TestTaskTracking(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	tasksOf := func(m map[string]any) map[string]any {
+		return e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
+	}
+	q := e.post(e.zw.session, "@acha /orders 的索引有哪些", "")
+	tk := tasksOf(q)
+	id := tk["id"].(string)
+	check(t, "an @agent is a conversation turn, not a tracked task", tk["tracked"] == false && tk["state"] == "queued", resp{raw: []byte(fmt.Sprint(tk))})
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r := e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "有两个", "answer": true})
+	check(t, "answered: done, still untracked", r.body["state"] == "done" && r.body["tracked"] == false, r)
+	r = e.do("GET", "/api/v1/tasks?tracked=1", e.zw.session, nil)
+	check(t, "the board has none", len(r.body["tasks"].([]any)) == 0, r)
+
+	// the agent claims what it has to act on
+	c := e.post(e.zw.session, "@acha 给 /orders 加个索引", "")
+	id2 := tasksOf(c)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"track": true, "title": "给 orders 加索引"})
+	check(t, "the agent claims it, with its title", r.body["tracked"] == true && r.body["title"] == "给 orders 加索引", r)
+
+	// a run that ends with something to accept is tracked even if the agent forgot to claim it
+	d := e.post(e.zw.session, "@acha 写个周报", "")
+	id3 := tasksOf(d)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id3+"/claim", e.token, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id3+"/report", e.token, map[string]any{"state": "review", "summary": "周报在 out/ 里"})
+	check(t, "review without answer: tracked", r.body["tracked"] == true && r.body["status"] == "in_review", r)
+
+	// the composer's "as task"
+	m := e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, map[string]any{"text": "@acha 整理一下慢查询清单", "as_task": true}).body
+	check(t, "as task: tracked from the start", tasksOf(m)["tracked"] == true)
+	check(t, "as task needs an agent", e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, map[string]any{"text": "整理清单", "as_task": true}).status == 400)
+	check(t, "a thread message cannot be a task", e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.zw.session,
+		map[string]any{"text": "@acha 也看下这个", "as_task": true, "thread_id": q["id"]}).status == 400)
+
+	// convert later
+	check(t, "a bystander cannot convert", e.do("POST", "/api/v1/tasks/"+id+"/track", e.ll.session, nil).status == 403)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/track", e.zw.session, nil)
+	check(t, "the asker converts the answer into a task", r.body["tracked"] == true, r)
+	r = e.do("GET", "/api/v1/tasks?tracked=1", e.zw.session, nil)
+	check(t, "four on the board now", len(r.body["tasks"].([]any)) == 4, r)
+}

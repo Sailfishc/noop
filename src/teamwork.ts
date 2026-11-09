@@ -18,6 +18,8 @@ export type TeamTask = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   state: string; step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; session: string;
   claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
+  /** A task people track; false: a request the agent may simply answer (it claims it with a "task:" line). */
+  tracked?: boolean;
   /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
   repo?: string;
 };
@@ -31,6 +33,8 @@ export type Claim = {
   wake?: Wake | null;
   /** Where an outside service can post to wake this task. */
   callback_url?: string;
+  /** What the run's `teamagent` command reads the chat with (only while this task runs). */
+  read_token?: string;
 };
 export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
@@ -57,7 +61,13 @@ export type Workdir = { cwd: string; repo?: string; base?: string; branch?: stri
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
 
-const REACT_LINE = /^\s*react:[^\n]*\n?/gim;
+const REACT_LINE = /^\s*(react|task):[^\n]*\n?/gim;
+
+/** The title of the agent's "task: …" line, if a message has one: it claims the request as a task. */
+export function taskClaimOf(text: string): string | null {
+  const m = text.match(/^\s*task:\s*(.*)$/im);
+  return m ? m[1].trim().slice(0, 60) : null;
+}
 
 /** The emoji of the agent's "react: …" line, if a message has one (one emoji, nothing else). */
 export function reactionOf(text: string): string {
@@ -155,7 +165,7 @@ function mandateLine(c: Claim): string {
 export function taskPrompt(c: Claim, wd: Workdir): string {
   const a = c.agent, t = c.task;
   return `You are ${a.name} (@${a.handle}), an AI teammate in a TeamAgent workspace, running headless on your owner's machine.
-${a.description ? `Your role: ${a.description}\n` : ""}People hand you tasks by @-mentioning you in a channel; you work on one task now.
+${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a channel with requests; this is one of them. Many are questions: just answer them.
 
 # Your memory (memory.md)
 ${a.memory?.trim() || "(empty)"}
@@ -163,17 +173,17 @@ ${a.memory?.trim() || "(empty)"}
 ${RULES(wd)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
 # Channel #${c.channel.name}
-${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters):
+${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`teamagent read\` for more):
 ${quote(c, c.recent) || "(none)"}
 
-# Task ${t.id}: ${t.title}
+# Request ${t.id}: ${t.title}${t.tracked ? " (tracked as a task)" : ""}
 Asked by ${c.creator.name} (@${c.creator.handle}).${mandateLine(c)}
 The request and its thread:
 ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
-${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${c.read_token ? `\n${LOOKUP}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
 ${REACT}
 
 ${RESULT_SPEC}`;
@@ -184,7 +194,11 @@ const REACT = `Before anything else (before any tool call), send one short messa
 react: <one emoji>
 choosing the emoji from how you read this request, the way a teammate reacts in chat: e.g. 🔍 a lookup or question, 🐛 a
 bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, 🎨 design, 🤔 unclear (say what is unclear when you
-report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.`;
+report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.
+If fulfilling the request needs you to act beyond replying (change files, run commands that change something, open a
+pull request, submit to an outside service, produce a file), claim it as a task in that same message with a second line
+task: <a short title, under 30 characters, in the people's language>
+so the team can track it. Only answering a question or talking needs no claim.`;
 
 const WAKE: Record<Wake["reason"], string> = {
   callback: "the outside service called your callback address",
@@ -254,6 +268,8 @@ async function sh(cmd: string, cwd: string, env: Record<string, string>, timeout
 
 export type WorkerOptions = {
   api: Api;
+  /** The team server's address: the agent's `teamagent` command reads the chat there. */
+  server?: string;
   maxParallel: number;
   workRoot?: string;
   runtimes?: Record<string, Runtime>;
@@ -398,6 +414,54 @@ export function gateEnv(wd: Workdir): Record<string, string> {
   return { ...env, GH_CONFIG_DIR: empty, GLAB_CONFIG_DIR: empty, GH_TOKEN: "", GITHUB_TOKEN: "", GITLAB_TOKEN: "" };
 }
 
+/** The agent's own read-only command for the team chat (as in Raft, where agents read and search with a CLI): it
+ * asks the server with the run's read token, which works only while the task runs and only in the agent's channels. */
+export const TEAMAGENT_CLI = `#!/bin/sh
+# teamagent: look things up in the team chat (read-only).
+#   teamagent read [--channel NAME] [--limit N] [--before SEQ]   a channel's latest messages (default: this task's)
+#   teamagent read --thread MSG                                 a whole thread
+#   teamagent search WORDS [--channel NAME]                     messages with all the words, newest first
+#   teamagent tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
+#   teamagent task T-0001                                       one task: acceptance, summary, PR
+case "$1" in
+  read|search|tasks) path=$1 ;;
+  task) path="tasks/$2"; shift ;;
+  *) sed -n '2,8p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2 ;;
+esac
+shift
+q=""
+n=$#
+while [ "$n" -gt 0 ]; do
+  a=$1; shift; n=$((n-1))
+  case "$a" in
+    --channel|--thread|--limit|--before|--status)
+      v=$1; shift; n=$((n-1))
+      set -- "$@" --data-urlencode "\${a#--}=$v" ;;
+    *) q="\${q:+$q }$a" ;;
+  esac
+done
+[ -n "$q" ] && set -- "$@" --data-urlencode "q=$q"
+exec curl -sS -G "$TEAMAGENT_URL/api/v1/agent/$path" -H "Authorization: Bearer $TEAMAGENT_TOKEN" "$@"
+`;
+
+/** The command on the runtime's PATH, and what it needs. */
+export function cliEnv(root: string, server: string, token: string): Record<string, string> {
+  const bin = join(root, ".bin");
+  mkdirSync(bin, { recursive: true });
+  const p = join(bin, "teamagent");
+  if (!existsSync(p) || readFileSync(p, "utf8") !== TEAMAGENT_CLI) writeFileSync(p, TEAMAGENT_CLI, { mode: 0o755 });
+  return { TEAMAGENT_URL: server.replace(/\/$/, ""), TEAMAGENT_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+}
+
+const LOOKUP = `# Looking things up
+You see only the request, its thread and a few recent messages here. When you need more of the team's context (what
+was said before, a related thread, other tasks), look it up with the \`teamagent\` command in your shell:
+- teamagent read                      this channel's latest messages (--channel NAME for another, --before SEQ for older)
+- teamagent read --thread MSG         a whole thread (the msg=… of a message)
+- teamagent search WORDS              messages with all the words, newest first
+- teamagent tasks [--status in_progress]   the team's tasks;  teamagent task T-0001   one of them
+Look up only what the request needs.`;
+
 export function createWorker(o: WorkerOptions) {
   const log = o.log ?? ((s: string) => console.log(`teamagent: ${s}`));
   const root = o.workRoot ?? join(homedir(), ".noop", "teamagent", "work");
@@ -430,12 +494,16 @@ export function createWorker(o: WorkerOptions) {
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
     const flushStep = () => { stepTimer = undefined; if (pendingStep) void report(t.id, { step: pendingStep }); lastStep = Date.now(); pendingStep = ""; };
-    let reacted = false;
+    let reacted = false, claimed = false;
     const onEvent = (e: RunEvent) => {
       if (e.kind === "session") void report(t.id, { session: e.id, branch: wd.branch ?? "" });
       if (e.kind === "message" && !reacted) {
         const emoji = reactionOf(e.text);
         if (emoji) { reacted = true; void report(t.id, { reaction: emoji }); }
+      }
+      if (e.kind === "message" && !claimed && !t.tracked) {
+        const title = taskClaimOf(e.text);
+        if (title !== null) { claimed = true; void report(t.id, { track: true, ...(title ? { title } : {}) }); }
       }
       if (e.kind !== "step") return;
       pendingStep = e.text;
@@ -444,7 +512,7 @@ export function createWorker(o: WorkerOptions) {
     };
     const start = (resumeId: string, text: string) => rt.start({
       cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined,
-      env: (o.env ?? gateEnv)(wd), logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
+      env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
     });
     log(`${t.id} @${c.agent.handle} 开工：${t.title}${resume ? "（续）" : ""}`);
     let h = start(resume, prompt);
