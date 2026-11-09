@@ -362,7 +362,7 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
     error.set("");
     const r = await t.createChannel(name().trim(), topic().trim(), picked());
     busy.set(false);
-    if (!r.ok) return error.set(r.status === 0 ? unreachable(t.url) : errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    if (!r.ok) return error.set(r.status === 0 ? unreachable(t.url, r.error) : errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     props.onCreated(r.data.id);
   }
   return (

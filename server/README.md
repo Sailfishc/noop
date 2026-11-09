@@ -23,6 +23,23 @@ export REMI_PUBLIC_URL=http://remi.内网域名:8080   # 别人访问这台服�
 | `-data` / `REMI_DATA` | 数据目录，数据库文件是 `hub.db` |
 | `-git-webhook-secret` / `REMI_GIT_WEBHOOK_SECRET` | Ant Code（GitLab）webhook 的密钥。为空时不收 webhook |
 | `-static` / `REMI_STATIC` | Web 客户端目录（`app/dist/web/noop`）。为空时只提供 API |
+| `-tls-cert`、`-tls-key` / `REMI_TLS_CERT`、`REMI_TLS_KEY` | 证书和私钥文件（PEM）。两个都设置时服务端直接提供 https，不设置时是 http |
+
+### http 还是 https
+
+服务端默认是 http，内网自部署最省事。桌面 App 和 iOS App 允许连 http 地址（`app/nsh.json` 里的 `NSAllowsArbitraryLoads`），所以不需要把服务器 IP 写进配置、换服务器也不用重新打包。代价是登录码和会话令牌在内网里明文传输，所以只适合可信的内网。
+
+以下情况应该换成 https：
+
+- 要给 Android 用：NSH 打的 Android 正式包不允许 http，没有开关。
+- 服务器要经过不可信的网络（公网、访客 Wi-Fi）。
+
+有两种做法：
+
+1. 服务端直接提供 https：用公司内网 CA 签的证书，`-tls-cert cert.pem -tls-key key.pem`。证书必须被各台电脑和手机信任，自签证书需要先装进系统钥匙串，否则 App 会报证书错误。机器上的守护进程用 Bun 发请求，内网 CA 不在 Bun 自带的根证书里时，给它设 `NODE_EXTRA_CA_CERTS=/path/to/ca.pem`。
+2. 前面加一层反向代理（如 Caddy、Nginx）终止 https，服务端仍然监听 http（最好只监听 `127.0.0.1`）。
+
+换成 https 后，把 `-public-url` 改成 `https://` 开头的地址，邀请链接和安装命令才会用 https。
 
 ## 怎么用起来
 

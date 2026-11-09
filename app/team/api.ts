@@ -108,7 +108,8 @@ export type Attachment = { path: string; name: string; mime: string; size: numbe
   preview?: string; more?: boolean };
 export type Session = { url: string; session: string };
 export type Conn = "connecting" | "live" | "offline" | "unauthorized";
-export type Reply = { ok: boolean; status: number; data: any };
+/** `error`: why a call got no response at all (status 0), in the network stack's words. */
+export type Reply = { ok: boolean; status: number; data: any; error?: string };
 
 export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email" } as const;
 
@@ -134,6 +135,10 @@ export function loginServer(text: string): string {
   return m ? normalizeServer(m[1]) : "";
 }
 
+/** Whether a failed call was refused because the app may not use plain http here (App Transport Security on
+ * Apple platforms, cleartext rules on Android) rather than because the server is unreachable. */
+export const insecureRefused = (error = "") => /App Transport Security|secure connection|cleartext/i.test(error);
+
 export const wsUrl = (base: string, token: string) => `${base.replace(/^http/, "ws")}/api/v1/stream?token=${encodeURIComponent(token)}`;
 
 /** One JSON call; never throws (status 0: unreachable). */
@@ -143,8 +148,8 @@ export async function call(base: string, method: string, path: string, token = "
   let r: Response;
   try {
     r = await fetch(`${base}${path}`, method === "GET" ? { headers } : { method, headers, body: JSON.stringify(body ?? {}) });
-  } catch {
-    return { ok: false, status: 0, data: {} };
+  } catch (e) {
+    return { ok: false, status: 0, data: {}, error: e instanceof Error ? e.message : String(e) };
   }
   let data: any = {};
   try {

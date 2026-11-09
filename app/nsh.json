@@ -12,6 +12,20 @@
     }
   },
   "appearance": "system",
+  "macos": {
+    "infoPlist": {
+      "NSAppTransportSecurity": {
+        "NSAllowsArbitraryLoads": true
+      }
+    }
+  },
+  "ios": {
+    "infoPlist": {
+      "NSAppTransportSecurity": {
+        "NSAllowsArbitraryLoads": true
+      }
+    }
+  },
   "theme": "theme.json",
   "web": {
     "host": "./host.js"
