@@ -21,7 +21,12 @@ function MessageText(props: { text: string; mentions: readonly Mention[] | null 
       document={TextView.parse(props.text, { math: false, html: false }, MENTION)}
       selectable
       onLinkPress={({ url }) => { if (/^(https?|mailto):/i.test(url)) void openUrl(url).catch(() => {}); }}
-      renderCustom={(n) => <Text style={known().has(n.text ?? "") ? { color: colors.accent, fontWeight: "500" } : {}}>{n.text}</Text>}
+      renderCustom={(n) => (
+        // An inline custom node is an attachment of its paragraph: its own layout root (it inherits neither size nor
+        // color) whose bottom sits on the baseline unless told otherwise. Same size as the text, and text-bottom, so
+        // the mention's baseline is the line's (nsh docs/dev/text.md, "Inline attachments").
+        <Text style={{ fontSize: 15, verticalAlign: "text-bottom", color: known().has(n.text ?? "") ? colors.accent : colors.text, fontWeight: known().has(n.text ?? "") ? "500" : "400" }}>{n.text}</Text>
+      )}
       styles={{
         root: { gap: 6, fontSize: 15, lineHeight: 22, color: colors.text },
         code: { fontFamily: "monospace", fontSize: 13.5, color: colors.text, backgroundColor: alpha(colors.text, 0.07) },

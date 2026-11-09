@@ -24,3 +24,10 @@ The existing device build is `app/.nsh/out/noop.app`. Its embedded provisioning 
 Prefer `nsh package app --target ios --sign <identity> --profile <profile>` when the iOS runtime can be built. Copy the embedded profile to a temporary location first so it survives replacement of the output app. If the runtime build is blocked, the following workflow was verified with the existing runtime: `nsh build app --release -o <temporary-bundle>`, copy the existing app to a temporary `.app`, replace its `nsh/bundle.nshc`, `nsh/app.json`, and `nsh/capabilities.json` with the freshly built files, then sign the copy using the existing `app/.nsh/out/noop.entitlements`. This fallback reuses the existing native runtime; if native runtime changes are needed, build a fresh package instead.
 
 Verify the signature with `codesign --verify --strict`, install with `xcrun devicectl device install app --device 00008150-001603543C08401C <app-path>`, then launch with `xcrun devicectl device process launch --device 00008150-001603543C08401C dev.noop.app`. Preserve the bundle ID so the installation updates the existing app and retains its data. Report any build, signing, connection, or launch failure accurately.
+
+## Changing the client without running it
+
+When nsh is not installed (cloud sessions: no `app/.nsh`, so `nsh/test` and `app/Team.test.tsx` cannot run and `tsc` knows nothing about nsh), client changes are unverified until someone opens the app. Then:
+
+- Use only nsh components and props that already work elsewhere in `app/`. A prop that appears nowhere else is unproven: `<Scroll horizontal>` stacked a task board's columns vertically on the Mac (fixed in #43). For side-by-side layout, put a `flexDirection: "row"` View inside a plain Scroll.
+- Say in the PR which screens changed and that they were not run, so the person checks those screens before merging.
