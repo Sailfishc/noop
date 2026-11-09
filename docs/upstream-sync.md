@@ -18,13 +18,13 @@ GitHub 页面上的「Sync fork」按钮会把上游直接合进 `main`，**不�
 | 上游改动的位置 | 判断 | 理由 |
 | --- | --- | --- |
 | `app/ui/`、通用组件、主题、字体、i18n 基础设施 | 拿 | 我们的界面建立在这些组件上 |
-| `NSH_REF`、`app/.nsh/types`、`.github/actions/setup-nsh` | 拿 | NSH 升级和它的类型要跟上，否则客户端构建会落后 |
+| NSH 版本、`app/.nsh/types` | 拿 | NSH 升级和它的类型要跟上，否则客户端构建会落后 |
 | 运行时与执行：Codex/Claude Code 的调用、账号切换、worktree、日志 | 拿，逐个看 | 这是我们 runtime adapter 的上游来源，修复通常直接适用 |
 | 安全修复、依赖升级 | 拿 | 不管在哪个目录 |
 | `src/core.ts`、`src/cli.ts`、`app/App.tsx` | 逐个看 | 我们也改了这些文件，最容易冲突；只拿修 bug 的部分 |
 | `cloud/`（Cloudflare Worker）、`install*.sh`、`install*.ps1`、`website/` | 不拿也行 | 我们用 Go 服务端和自己的部署方式。合进来不影响运行，但不用为它解决冲突 |
 | 单人模式的产品功能：brain、routines、owner 学习决策、单人频道 | 默认不拿 | 和多人模型冲突。真正有价值的想法，按 TeamAgent 的模型重新实现 |
-| `.github/workflows/release.yml`、`app/nsh.json` 的 updater | 不拿 | 指向上游的 Release 和签名密钥 |
+| 上游的 release 工作流、`app/nsh.json` 的 updater | 不拿 | 指向上游的 Release 和签名密钥；我们暂时没有 release CI |
 
 拿不准的时候，问三个问题：
 
