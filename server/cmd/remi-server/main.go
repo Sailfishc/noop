@@ -70,6 +70,8 @@ func main() {
 	data := flag.String("data", env("DATA", "./data"), "directory for the SQLite database")
 	static := flag.String("static", env("STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
 	public := flag.String("public-url", env("PUBLIC_URL", ""), "the address others reach this server at (http://remi.corp:8080), used in invite links, login links and machine install commands; empty: each app uses the address it connected to")
+	tlsCert := flag.String("tls-cert", env("TLS_CERT", ""), "certificate file (PEM, with any intermediates) to serve https; set together with -tls-key; empty: plain http")
+	tlsKey := flag.String("tls-key", env("TLS_KEY", ""), "private key file (PEM) for -tls-cert")
 	hookSecret := flag.String("git-webhook-secret", env("GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
 	flag.Parse()
 
@@ -86,6 +88,16 @@ func main() {
 	if pub != "" && !strings.HasPrefix(pub, "http://") && !strings.HasPrefix(pub, "https://") {
 		log.Fatal("-public-url must start with http:// or https://")
 	}
+	if (*tlsCert == "") != (*tlsKey == "") {
+		log.Fatal("-tls-cert and -tls-key go together")
+	}
+	scheme := "http"
+	if *tlsCert != "" {
+		scheme = "https"
+	}
+	if pub != "" && !strings.HasPrefix(pub, scheme+"://") {
+		log.Printf("warning: -public-url %s does not match the server's own scheme (%s); fine behind a proxy that changes it", pub, scheme)
+	}
 	h := hub.New(hub.Config{PublicURL: pub, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
 
 	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
@@ -95,8 +107,14 @@ func main() {
 		}
 	}()
 	go func() {
-		log.Printf("remi-server listening on %s (data %s, public url %q)", *addr, *data, pub)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Printf("remi-server listening on %s (%s, data %s, public url %q)", *addr, scheme, *data, pub)
+		var err error
+		if *tlsCert != "" {
+			err = srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}
 	}()

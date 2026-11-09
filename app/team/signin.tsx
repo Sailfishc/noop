@@ -20,7 +20,7 @@ export function SignIn(props: { url: string; email: string; notice: string; onSe
   const handle = signal("");
 
   const fail = (r: Reply, server: string, fallback: string) =>
-    error.set(r.status === 0 ? unreachable(server) : errorOf(r, fallback));
+    error.set(r.status === 0 ? unreachable(server, r.error) : errorOf(r, fallback));
 
   async function login() {
     const server = loginServer(code()) || normalizeServer(url());
