@@ -12,6 +12,7 @@ import {
   EXTERNAL_TRIES, repoLabel, type Agent, type Member, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { NEEDS, STATUS, statusOf, type Needs } from "./status";
+import { LayoutSwitch, TaskBoard, TasksPage, trackedTasks, type TaskLayout } from "./tasks";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
@@ -127,7 +128,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
 
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "home" };
 /** What the right column shows beside a channel: a thread, or the channel's members. */
 type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
@@ -174,6 +175,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       );
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
+    if (p.kind === "tasks") return <TasksPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -267,6 +269,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
         <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+        <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         <Section
           label={L("CHANNELS", "频道")}
           right={
@@ -668,6 +671,20 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
   const agents = () => (channel()?.members ?? []).filter((m) => m.kind === "agent");
   const faces = () => [...people(), ...agents()].slice(0, 4);
   const joining = signal(false);
+  /** Conversation | Tasks (as in Raft: the channel's tasks as a board or a list). */
+  const tab = signal<"chat" | "tasks">("chat");
+  const layout = signal<TaskLayout>("board");
+  effect(() => { if (tab() === "tasks") void t.loadTasks(props.id); });
+  const channelTasks = () => trackedTasks(t).filter((x) => x.channel_id === props.id);
+  const tabItem = (v: "chat" | "tasks", label: string, count?: number) => (
+    <View role="tab" testID={`channel-tab-${v}`} accessibilityState={{ selected: tab() === v }} onPress={() => tab.set(v)} hoverStyle={hovered()}
+      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderBottomWidth: 2, borderBottomColor: tab() === v ? colors.accent : "transparent" }}>
+      <Text style={{ fontSize: 13.5, fontWeight: tab() === v ? "600" : "400", color: tab() === v ? colors.text : colors.muted }}>{label}</Text>
+      <If when={count}>
+        <Text style={{ fontSize: 12, color: colors.faint }}>{String(count)}</Text>
+      </If>
+    </View>
+  );
   return (
     <View style={{ flex: 1 }}>
       <Header
@@ -697,37 +714,48 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           </View>
         }
       />
-      <List
-        testID="messages"
-        each={messages()}
-        keyExtractor={(m) => m.id}
-        alignment="bottom"
-        maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 80 }}
-        estimatedItemSize={72}
-        onLoadMoreAtStart={() => t.loadOlder(props.id)}
-        contentStyle={{ paddingVertical: 12 }}
-        empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
-        style={{ flex: 1 }}
-      >
-        {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
-      </List>
-      <If
-        when={member()}
-        else={
-          <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
-            <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
-          </View>
-        }
-      >
-        <Composer
-          team={t}
-          channelId={props.id}
-          testID="team-composer"
-          placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-          asTask
-          onSend={(text, asTask) => t.send(props.id, text, null, asTask)}
-        />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+        {tabItem("chat", L("Conversation", "对话"))}
+        {tabItem("tasks", L("Tasks", "任务"), channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length)}
+        <View style={{ flex: 1 }} />
+        <If when={tab() === "tasks"}>
+          <LayoutSwitch value={layout()} onChange={layout.set} />
+        </If>
+      </View>
+      <If when={tab() === "chat"} else={<TaskBoard team={t} tasks={channelTasks()} layout={layout()} onOpen={(x) => props.onThread(x.thread_id)}
+        empty={L("No tasks in this channel yet. Tick “As task” when you @ an agent, or let it claim the work.", "这个频道还没有任务。@Agent 时勾选「作为任务」，或者让它自己认领。")} />}>
+        <List
+          testID="messages"
+          each={messages()}
+          keyExtractor={(m) => m.id}
+          alignment="bottom"
+          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 80 }}
+          estimatedItemSize={72}
+          onLoadMoreAtStart={() => t.loadOlder(props.id)}
+          contentStyle={{ paddingVertical: 12 }}
+          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
+          style={{ flex: 1 }}
+        >
+          {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
+        </List>
+        <If
+          when={member()}
+          else={
+            <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
+              <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
+              <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
+            </View>
+          }
+        >
+          <Composer
+            team={t}
+            channelId={props.id}
+            testID="team-composer"
+            placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
+            asTask
+            onSend={(text, asTask) => t.send(props.id, text, null, asTask)}
+          />
+        </If>
       </If>
     </View>
   );
