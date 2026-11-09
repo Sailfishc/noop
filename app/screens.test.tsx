@@ -58,7 +58,9 @@ describe("screens", () => {
 
   test("tasks-board", async () => {
     const app = await start();
-    await app.waitFor("id:channel-tab-tasks");
+    // Press the tab only once the channel has loaded: an earlier press can land on a channel view that the
+    // first load then replaces, and the board never opens (seen once in headless Chromium).
+    await app.waitFor("text:今天下午三点发版，大家注意一下");
     await app.press("id:channel-tab-tasks");
     await app.waitFor("id:tasks-board");
     await shot(app, "tasks-board");
