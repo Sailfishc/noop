@@ -15,6 +15,15 @@ import (
 	"unicode/utf8"
 )
 
+// Go's built-in MIME table has no Markdown entry, so mime.TypeByExtension(".md") depends on the host's
+// mime.types files: text/markdown on most Linux, nothing on macOS (then sniffed as text/plain). Register it so
+// uploads and outputs get the same type everywhere.
+func init() {
+	for _, ext := range []string{".md", ".markdown"} {
+		_ = mime.AddExtensionType(ext, "text/markdown; charset=utf-8")
+	}
+}
+
 // A task's outputs: what came out of it and where it is. A file is kept here (its bytes in the media table, every
 // version); a PR lives on its Git platform (the task's pr); an external result lives in a third-party service (its
 // id and link, and a small preview kept here). The thread shows them all as the same kind of card.

@@ -1,5 +1,5 @@
 // Task views (as in Raft, design "Remi 任务视图 v2"): the team-wide Tasks page and a channel's Tasks tab are one view,
-// a board (a column per status, done and closed folded away) or a list. A task lives in its channel; the page looks at
+// a board (a column per status side by side, done and closed folded to their heads) or a list. A task lives in its channel; the page looks at
 // it from the person: by default the tasks that concern me (I asked, my agent does it, it waits for me), narrowed
 // further by channel, by who asked and by which agent does it. Only tasks people track show; a question the agent
 // only answered stays in the conversation.
@@ -105,10 +105,11 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
           </Each>
         </Scroll>
       }>
-        <Scroll testID="tasks-board" horizontal style={{ flex: 1 }} contentStyle={{ padding: 12, gap: 10, alignItems: "flex-start" }}>
+        <Scroll testID="tasks-board" style={{ flex: 1 }} contentStyle={{ padding: 12 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
           <Each of={STATUSES} key={(s) => s}>
             {(s) => (
-              <View testID={`tasks-col-${s()}`} style={{ width: folded(s()) ? 128 : 264, gap: 8, padding: 8, borderRadius: 10, backgroundColor: alpha(colors.text, 0.03) }}>
+              <View testID={`tasks-col-${s()}`} style={{ flex: 1, flexBasis: 0, minWidth: 0, gap: 8, padding: 8, borderRadius: 10, backgroundColor: alpha(colors.text, 0.03) }}>
                 <View role={s() === "done" || s() === "closed" ? "button" : undefined} testID={`tasks-col-${s()}-head`}
                   onPress={s() === "done" || s() === "closed" ? () => unfolded.update((u) => ({ ...u, [s()]: !u[s()] })) : undefined}
                   style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
@@ -127,6 +128,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
               </View>
             )}
           </Each>
+          </View>
         </Scroll>
       </If>
     </If>
