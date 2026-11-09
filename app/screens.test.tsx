@@ -1,4 +1,4 @@
-import { describe, open, test } from "nsh/test";
+import { describe, expect, open, test } from "nsh/test";
 import { m1, msg, r1, SESSION, server, newLog, task, URL } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
@@ -9,7 +9,7 @@ import { m1, msg, r1, SESSION, server, newLog, task, URL } from "./fixtures";
 // - `scripts/check-layout.ts` reads the `--trace` of a headless run and checks the layouts
 //   that tests can't see (the task board's columns side by side).
 //
-// Desktop only for now (the team uses the Mac app); add phone widths here later.
+// Desktop at 1280×800, and the phone layout (bottom tabs, one page at a time) at 390×844 in Chinese.
 const SIZE = { width: 1280, height: 800 };
 
 async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
@@ -86,5 +86,60 @@ describe("screens", () => {
     await app.press("id:settings-nav-general");
     await app.waitFor("id:notify");
     await shot(app, "settings-general");
+  });
+});
+
+// Phones: the tab bar's four tabs, a channel and its thread, one agent's page.
+const PHONE = { width: 390, height: 844 };
+const phone = () => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...PHONE, network: net() });
+
+describe("phone", () => {
+  test("messages tab, a channel, a thread", async () => {
+    const app = await phone();
+    await app.waitFor("id:tab-chat");
+    await app.waitFor("id:channel-pay");
+    expect(app.shows("id:open-inbox")).toBe(false); // a tab on phones
+    await shot(app, "phone-1-messages");
+    await app.press("id:channel-pay");
+    await app.waitFor("text:今天下午三点发版，大家注意一下");
+    expect(app.shows("id:tabbar")).toBe(false);
+    await shot(app, "phone-2-channel");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("text:收到，在看");
+    await shot(app, "phone-3-thread");
+  });
+
+  test("waiting and tasks tabs: tasks as a list", async () => {
+    const app = await phone();
+    await app.waitFor("id:tab-inbox");
+    await app.press("id:tab-inbox");
+    await app.waitFor("text:写周报");
+    await shot(app, "phone-4-waiting");
+    await app.press("id:tab-tasks");
+    await app.waitFor("id:tasks-filter-all");
+    await app.press("id:tasks-filter-all");
+    await app.waitFor("id:tasks-list");
+    expect(app.shows("id:tasks-board")).toBe(false);
+    expect(app.shows("id:tasks-layout-board")).toBe(false);
+    await shot(app, "phone-5-tasks");
+  });
+
+  test("me tab: settings, then the agents list, then one agent", async () => {
+    const app = await phone();
+    await app.waitFor("id:tab-me");
+    await app.press("id:tab-me");
+    await app.waitFor("id:settings-nav-agents");
+    await shot(app, "phone-6-me");
+    await app.press("id:settings-nav-agents");
+    await app.waitFor("id:agent-acha");
+    expect(app.shows("id:tabbar")).toBe(false);
+    await app.press("id:agent-acha");
+    await app.waitFor("text:阿查");
+    expect(app.shows("id:agent-acha")).toBe(false); // the page, not the list beside it
+    await shot(app, "phone-7-agent");
+    await app.press("id:back");
+    await app.waitFor("id:agent-acha");
+    await app.press("id:back");
+    await app.waitFor("id:tabbar");
   });
 });

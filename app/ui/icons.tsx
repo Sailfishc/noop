@@ -23,6 +23,9 @@ export type IconName =
   | "storage"
   | "stocks"
   | "chat"
+  | "bubble"
+  | "task"
+  | "user"
   | "github"
   | "chevron"
   | "pipette"
@@ -392,6 +395,27 @@ const glyphs: Record<IconName, Draw> = {
     line(c, [6, 16.5, 6, 14, 5, 14, 3, 12, 3, 6, 5, 4, 15, 4, 17, 6, 17, 12, 15, 14, 9, 14, 6, 16.5]);
     line(c, [7, 8, 13, 8]);
     line(c, [7, 10.5, 11, 10.5]);
+  },
+  // the phone's tab bar: messages, tasks, me
+  bubble: (c) => {
+    c.beginPath();
+    c.arc(10, 9.5, 7, 2.55, 2.04 + Math.PI * 2);
+    c.lineTo(3, 17);
+    c.closePath();
+    c.stroke();
+    for (const x of [6.8, 10, 13.2]) circle(c, x, 9.5, 0.9, true);
+  },
+  task: (c) => {
+    rect(c, 3, 3, 14, 14, 3.5);
+    line(c, [6.7, 10.2, 8.8, 12.3, 13.3, 7.8]);
+  },
+  user: (c) => {
+    circle(c, 10, 6.7, 3.3);
+    c.beginPath();
+    c.moveTo(3.8, 17);
+    c.bezierCurveTo(4.5, 14, 7, 12.5, 10, 12.5);
+    c.bezierCurveTo(13, 12.5, 15.5, 14, 16.2, 17);
+    c.stroke();
   },
   chevron: (c) => line(c, [7.5, 5, 12.5, 10, 7.5, 15]),
   "chevron-up": (c) => line(c, [5, 12.5, 10, 7.5, 15, 12.5]),

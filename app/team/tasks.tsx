@@ -3,14 +3,14 @@
 // it from the person: by default the tasks that concern me (I asked, my agent does it, it waits for me), narrowed
 // further by channel, by who asked and by which agent does it. Only tasks people track show; a question the agent
 // only answered stays in the conversation.
-import { computed, effect, Scroll, signal, Storage, Text, View, type JSX } from "nsh";
+import { computed, effect, Scroll, signal, Storage, Text, View, windowSize, type JSX } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon } from "../ui";
 import type { Task, Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
-import { Avatar, Header, StateDot, time } from "./ui";
+import { Avatar, Header, StateDot, time, WIDE } from "./ui";
 
 export type TaskLayout = "board" | "list";
 /** The page's quick views: what concerns me (the default), what waits for me, what I asked for, my agents' work, all. */
@@ -86,6 +86,8 @@ function TaskRow(props: { team: Team; task: Task; showStatus?: boolean; showChan
  * (newest first). */
 export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout; showChannel?: boolean; onOpen: (t: Task) => void; empty?: string }) {
   const t = props.team;
+  // phones: five columns don't fit, so always the list
+  const layout = () => (windowSize().width < WIDE ? "list" : props.layout);
   const unfolded = signal<Record<string, boolean>>({});
   const folded = (s: Status) => (s === "done" || s === "closed") && !unfolded()[s];
   const byStatus = computed(() => {
@@ -98,7 +100,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
   const sorted = () => [...props.tasks].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
   return (
     <If when={props.tasks.length} else={<Text testID="tasks-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{props.empty ?? L("No tasks yet.", "还没有任务。")}</Text>}>
-      <If when={props.layout === "board"} else={
+      <If when={layout() === "board"} else={
         <Scroll testID="tasks-list" style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 8, maxWidth: 720 }}>
           <Each of={sorted()} key={(x) => x.id}>
             {(x) => <TaskRow team={t} task={x()} showStatus showChannel={props.showChannel} onOpen={props.onOpen} />}
@@ -144,10 +146,12 @@ export function LayoutSwitch(props: { value: TaskLayout; onChange: (v: TaskLayou
     </View>
   );
   return (
-    <View style={{ flexDirection: "row", gap: 2 }}>
-      {item("board", L("Board", "看板"))}
-      {item("list", L("List", "列表"))}
-    </View>
+    <If when={windowSize().width >= WIDE}>
+      <View style={{ flexDirection: "row", gap: 2 }}>
+        {item("board", L("Board", "看板"))}
+        {item("list", L("List", "列表"))}
+      </View>
+    </If>
   );
 }
 
