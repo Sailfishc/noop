@@ -11,7 +11,9 @@
     "daemon": "bun src/cli.ts daemon",
     "doctor": "bun src/cli.ts doctor",
     "check": "bunx tsc --noEmit",
-    "test": "bun test"
+    "secrets": "bun scripts/check-secrets.ts",
+    "test": "bun test",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "devDependencies": {
     "@types/bun": "latest",

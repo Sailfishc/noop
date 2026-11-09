@@ -27,7 +27,7 @@ Keep fixes focused on the existing behavior. A bug fix, security fix, or perform
 ## Development
 
 ```bash
-bun install
+bun install                               # also installs the pre-commit secret scan
 bun test                                  # the daemon
 bunx tsc --noEmit
 cd server && go test -race ./...          # the server
@@ -35,6 +35,9 @@ cd server && go test -race ./...          # the server
 
 End-to-end scripts against a running server are in `server/test/` (see [server/README.md](server/README.md)).
 App: `cd app && nsh test` and `./build-web.sh`.
+
+Keys, tokens, IP addresses and intranet names are refused at commit time and in CI
+(`bun run secrets`); rules and how to handle a false positive: [docs/secret-scan.md](docs/secret-scan.md).
 
 ## Releasing the client apps
 

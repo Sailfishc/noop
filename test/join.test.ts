@@ -22,17 +22,17 @@ test("joinServer trades the code for a token and writes it beside what was there
     sent.push(JSON.parse(String(init.body)));
     return new Response(JSON.stringify({ token: "tam_abc", machine: { name: "王磊的 Mac" } }));
   }) as unknown as typeof fetch;
-  const r = await joinServer("http://10.0.0.5:8080/", " tj_123 ", { data, fetch: fake });
+  const r = await joinServer("http://192.0.2.5:8080/", " tj_123 ", { data, fetch: fake });
   const key = readFileSync(join(data, "machine-id"), "utf8").trim();
   expect(key).toHaveLength(32);
-  await joinServer("http://10.0.0.5:8080", "te_9", { data, fetch: fake });
+  await joinServer("http://192.0.2.5:8080", "te_9", { data, fetch: fake });
   expect(sent[1]!.key).toBe(key); // the same computer says the same id
   expect(sent[1]!.os).toBeTruthy();
-  expect(asked[0]).toBe("http://10.0.0.5:8080/api/v1/machines/join tj_123");
+  expect(asked[0]).toBe("http://192.0.2.5:8080/api/v1/machines/join tj_123");
   expect(r.name).toBe("王磊的 Mac");
-  expect(readFileSync(r.file, "utf8")).toBe('[git.github]\ntoken = "ghp"\n\n[cloud]\nurl = "http://10.0.0.5:8080"\n\n[server]\ntoken = "tam_abc"\n');
+  expect(readFileSync(r.file, "utf8")).toBe('[git.github]\ntoken = "ghp"\n\n[cloud]\nurl = "http://192.0.2.5:8080"\n\n[server]\ntoken = "tam_abc"\n');
 
   const expired = (async () => new Response(JSON.stringify({ error: "接入码已过期" }), { status: 410 })) as unknown as typeof fetch;
   await expect(joinServer("http://x", "tj_1", { data, fetch: expired })).rejects.toThrow("接入码已过期");
-  await expect(joinServer("10.0.0.5:8080", "tj_1", { data, fetch: expired })).rejects.toThrow("http://");
+  await expect(joinServer("192.0.2.5:8080", "tj_1", { data, fetch: expired })).rejects.toThrow("http://");
 });
