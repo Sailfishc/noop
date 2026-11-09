@@ -160,3 +160,27 @@ test("shell line: version, build and NSH; a phone shell without packages says to
   expect(shellLine(undefined, "macos")).toBeNull();
   expect(shellLine({ ...info, packages: false }, "android")).toEqual({ text: "no-packages", tone: "bad" });
 });
+
+test("a check someone asked for says what it found", async () => {
+  const none = setup(null);
+  expect(await none.updates.check()).toBe("current");
+  const found = setup(update);
+  expect(await found.updates.check()).toBe("update");
+  // Held for its restart: still an update, with no second download.
+  expect(await found.updates.check()).toBe("update");
+  expect(found.calls).toEqual(["check", "download", "check"]);
+  const offline = setup(update);
+  offline.api.check = async () => { throw new Error("offline"); };
+  expect(await offline.updates.check()).toBe("failed");
+  expect(offline.states).toEqual([]);
+});
+
+test("a check while one runs says busy and does not check twice", async () => {
+  const t = setup(null);
+  let release = () => {};
+  t.api.check = () => new Promise((r) => { release = () => r(null); });
+  const first = t.updates.check();
+  expect(await t.updates.check()).toBe("busy");
+  release();
+  expect(await first).toBe("current");
+});
