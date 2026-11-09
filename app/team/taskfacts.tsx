@@ -1,5 +1,5 @@
-// A task's facts beside its thread: who asked, the mandate, the repository, acceptance criteria, time spent.
-import { openUrl, signal, Text, View } from "nsh";
+// A task's facts beside its thread: who does it, who asked, time spent; folded: acceptance criteria, repository, mandate, run log.
+import { openUrl, signal, Text, View, type JSX } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, radius } from "../ui";
@@ -13,71 +13,92 @@ const minutes = (ms: number) => {
   return m < 60 ? L(`${m} min`, `${m} 分钟`) : L(`${Math.floor(m / 60)} h ${m % 60} min`, `${Math.floor(m / 60)} 小时 ${m % 60} 分钟`);
 };
 
-/** The facts of a thread's task at its top: who does it on what, where its code goes, what came out; and its run log. */
+/** The facts under a task's head in its thread, slim (design "Remi 任务视图 v2"): who does it on what, who asked,
+ * how long; what it waits for; the first outputs. The rest (acceptance criteria, repository and branch, mandate, run
+ * log) sits behind one row of folds, one open at a time. */
 export function TaskFacts(props: { team: Team; task: Task }) {
   const t = props.team;
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
+  const creator = () => t.users().find((u) => u.id === task().created_by);
   const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
-  const log = signal(false);
+  const fold = signal<"" | "acceptance" | "repo" | "mandate" | "log">("");
+  const allOutputs = signal(false);
   const live = () => ["running", "queued", "pending", "needs_decision"].includes(task().state);
   const fact = (label: string, value: JSX.Element) => (
     <View style={{ flexDirection: "row", gap: 10, alignItems: "center", minHeight: 22 }}>
-      <Text style={{ width: 68, fontSize: 12.5, color: colors.faint }}>{label}</Text>
+      <Text style={{ width: 52, fontSize: 12.5, color: colors.faint }}>{label}</Text>
       <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>{value}</View>
     </View>
   );
   const plain = (s: string, testID?: string) => <Text testID={testID} style={{ fontSize: 13, color: colors.text }}>{s}</Text>;
+  const outputs = () => outputsOf(task());
+  const lines = (s?: string) => (s ?? "").split("\n").filter((x) => x.trim()).length;
+  const foldChip = (k: "acceptance" | "repo" | "mandate" | "log", label: string) => (
+    <View role="button" testID={`task-${task().id}-fold-${k}`} accessibilityState={{ expanded: fold() === k }} onPress={() => fold.set(fold() === k ? "" : k)} hoverStyle={hovered()}
+      style={{ height: 26, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 8, borderRadius: 7, backgroundColor: fold() === k ? alpha(colors.text, 0.08) : alpha(colors.text, 0.04) }}>
+      <Text style={{ fontSize: 12.5, color: fold() === k ? colors.text : colors.muted }}>{label}</Text>
+      <Icon name={fold() === k ? "chevron-down" : "chevron"} size={11} tint={colors.faint} />
+    </View>
+  );
   return (
-    <View testID={`task-${task().id}-facts`} style={{ gap: 6, paddingTop: 4 }}>
-      <Text style={{ fontSize: 12, color: colors.faint }}>
-        {`${task().id} · ${live() ? L(`running for ${minutes(Date.now() - task().created)}`, `已运行 ${minutes(Date.now() - task().created)}`) : L(`updated ${time(task().updated)}`, `更新于 ${time(task().updated)}`)}`}
-      </Text>
-      {fact(L("Assignee", "负责人"), plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`))}
-      {fact(L("Runs on", "运行在"), <>
+    <View testID={`task-${task().id}-facts`} style={{ gap: 6, paddingTop: 2 }}>
+      {fact(L("Done by", "执行"), <>
+        {plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`)}
         <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-        <If when={agent()?.model}>{plain(agent()?.model ?? "")}</If>
-        {plain(machine()?.name ?? L("no machine", "没有机器"), `task-${task().id}-machine`)}
+        <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
       </>)}
-      <TaskRepo team={t} task={task()} />
-      <If when={task().repo || agent()?.repo}>
-        {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
-      </If>
-      <If when={task().mandate}>
-        {fact(L("Mandate", "授权"), <Text testID={`task-${task().id}-mandate`} style={{ flex: 1, flexShrink: 1, fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>)}
-      </If>
-      <Acceptance team={t} task={task()} />
+      {fact(L("Asked by", "发起人"), plain(`${creator()?.name ?? "?"} · ${time(task().created)}`))}
+      {fact(live() ? L("Time", "用时") : L("Updated", "更新"), <>
+        {plain(live() ? minutes(Date.now() - task().created) : time(task().updated))}
+        <If when={task().result}>
+          <Text testID={`task-${task().id}-result`} style={{ fontSize: 12.5, fontWeight: "600", color: task().result === "confirmed" ? colors.up : colors.warn }}>
+            {task().result === "confirmed" ? L("result confirmed", "结果已确认") : L("submitted, result not confirmed", "已提交，结果未确认")}
+          </Text>
+        </If>
+      </>)}
       <If when={task().state === "waiting" && task().wait}>
         {fact(L("Waiting", "等待"), <View testID={`task-${task().id}-wait`} style={{ flex: 1, gap: 2 }}>
           <Each of={waitLines(task())} key="index">{(l) => <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{l()}</Text>}</Each>
           <Text style={{ fontSize: 12, color: colors.faint }}>{L("Nobody is notified while it waits.", "等待期间不打扰任何人。")}</Text>
         </View>)}
       </If>
-      <If when={task().result}>
-        {fact(L("Result", "结果"), <Text testID={`task-${task().id}-result`} style={{ fontSize: 13, fontWeight: "600", color: task().result === "confirmed" ? colors.up : colors.warn }}>
-          {task().result === "confirmed" ? L("Result confirmed", "结果已确认") : L("Submitted, result not confirmed", "已提交，结果未确认")}
-        </Text>)}
-      </If>
-      <If when={externalTries(task())}>
-        {fact(L("Outside", "外部提交"), plain(`${externalTries(task())}/${EXTERNAL_TRIES}`, `task-${task().id}-tries`))}
-      </If>
-      <If when={outputsOf(task()).length} else={fact(L("Output", "产出"), plain(task().state === "done" ? L("done, nothing to show", "完成，没有产出") : L("nothing yet", "还没有产出")))}>
-        <View style={{ gap: 6 }}>
-          <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Output", "产出")}</Text>
-          <Each of={outputsOf(task())} key={(o) => o.id}>
+      <If when={outputs().length}>
+        <View style={{ gap: 6, paddingTop: 2 }}>
+          <Each of={allOutputs() ? outputs() : outputs().slice(0, 2)} key={(o) => o.id}>
             {(o) => <OutputCard team={t} task={task()} output={o()} />}
           </Each>
+          <If when={outputs().length > 2}>
+            <View role="button" testID={`task-${task().id}-outputs-all`} onPress={() => allOutputs.update((v) => !v)} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 24, justifyContent: "center", paddingHorizontal: 6, marginLeft: -6, borderRadius: 6 }}>
+              <Text style={{ fontSize: 12.5, color: colors.accent }}>{allOutputs() ? L("Fewer", "收起") : L(`All ${outputs().length} outputs`, `全部 ${outputs().length} 个产出`)}</Text>
+            </View>
+          </If>
         </View>
       </If>
-      <View role="button" testID={`task-${task().id}-runlog`} onPress={() => log.update((v) => !v)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingHorizontal: 8, marginTop: 2, borderRadius: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-        <Icon name={log() ? "chevron-down" : "chevron"} size={12} tint={colors.muted} />
-        <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>
-          {[L("Run log", "运行记录"), L(`${task().runs} run${task().runs === 1 ? "" : "s"}`, `${task().runs} 次运行`), task().step].filter(Boolean).join(" · ")}
-        </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingTop: 2 }}>
+        {foldChip("acceptance", lines(task().acceptance) ? L(`Acceptance (${lines(task().acceptance)})`, `验收标准 (${lines(task().acceptance)})`) : L("Acceptance", "验收标准"))}
+        {foldChip("repo", L("Repository & branch", "仓库与分支"))}
+        <If when={task().mandate}>{foldChip("mandate", L("Mandate", "授权"))}</If>
+        {foldChip("log", L(`Run log (${task().runs})`, `运行记录 (${task().runs})`))}
+        <If when={externalTries(task())}>
+          <Text testID={`task-${task().id}-tries`} style={{ alignSelf: "center", fontSize: 12, color: colors.faint }}>{L(`outside ${externalTries(task())}/${EXTERNAL_TRIES}`, `外部提交 ${externalTries(task())}/${EXTERNAL_TRIES}`)}</Text>
+        </If>
       </View>
-      <If when={log()}>
-        <View style={{ gap: 4, paddingHorizontal: 8 }}>
+      <If when={fold() === "acceptance"}><Acceptance team={t} task={task()} /></If>
+      <If when={fold() === "repo"}>
+        <View style={{ gap: 6 }}>
+          <TaskRepo team={t} task={task()} />
+          <If when={task().repo || agent()?.repo}>
+            {fact(L("Branch", "分支"), plain(`${task().branch || "agent/" + task().id} → ${L("main branch", "主分支")}`))}
+          </If>
+        </View>
+      </If>
+      <If when={fold() === "mandate"}>
+        <Text testID={`task-${task().id}-mandate`} style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{mandateLine(t, task())}</Text>
+      </If>
+      <If when={fold() === "log"}>
+        <View testID={`task-${task().id}-runlog`} style={{ gap: 4 }}>
           <Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Created ${time(task().created)} · last change ${time(task().updated)}`, `创建 ${time(task().created)} · 最近变化 ${time(task().updated)}`)}</Text>
           <If when={task().step}><Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Now: ${task().step}`, `当前：${task().step}`)}</Text></If>
           <If when={task().summary}><Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.text }}>{task().summary}</Text></If>

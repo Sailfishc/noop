@@ -3,12 +3,13 @@ import { effect, List, Scroll, signal, Text, View, type JSX } from "nsh";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, Spinner } from "../ui";
 import { errorOf, isMember, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
-import { LayoutSwitch, TaskBoard, trackedTasks, type TaskLayout } from "./tasks";
-import { agentState, authorOf, Avatar, Btn, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, unreachable } from "./ui";
+import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
+import { agentState, authorOf, Avatar, Btn, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
 import { TaskCard, shownAsTask } from "./taskcard";
+import { NEEDS, STATUS, type Needs } from "./status";
 
 /** What the right column shows beside a channel: a thread, or the channel's members. */
 export type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
@@ -27,7 +28,7 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   const joining = signal(false);
   /** Conversation | Tasks (as in Raft: the channel's tasks as a board or a list). */
   const tab = signal<"chat" | "tasks">("chat");
-  const layout = signal<TaskLayout>("board");
+  const layout = rememberedLayout("channel");
   effect(() => { if (tab() === "tasks") void t.loadTasks(props.id); });
   const channelTasks = () => trackedTasks(t).filter((x) => x.channel_id === props.id);
   const tabItem = (v: "chat" | "tasks", label: string, count?: number) => (
@@ -73,10 +74,10 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
         {tabItem("tasks", L("Tasks", "任务"), channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length)}
         <View style={{ flex: 1 }} />
         <If when={tab() === "tasks"}>
-          <LayoutSwitch value={layout()} onChange={layout.set} />
+          <LayoutSwitch value={layout.get()} onChange={layout.set} />
         </If>
       </View>
-      <If when={tab() === "chat"} else={<TaskBoard team={t} tasks={channelTasks()} layout={layout()} onOpen={(x) => props.onThread(x.thread_id)}
+      <If when={tab() === "chat"} else={<TaskBoard team={t} tasks={channelTasks()} layout={layout.get()} onOpen={(x) => props.onThread(x.thread_id)}
         empty={L("No tasks in this channel yet. Tick “As task” when you @ an agent, or let it claim the work.", "这个频道还没有任务。@Agent 时勾选「作为任务」，或者让它自己认领。")} />}>
         <List
           testID="messages"
@@ -293,6 +294,18 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
     return !!c && !!me && isMember(c, "user", me.id);
   };
   const tasks = () => t.taskOfThread(props.rootId);
+  /** The replies, with where its tracked tasks went between them (as in Raft, a status change shows in the thread). */
+  const flow = () => {
+    const items: { key: string; at: number; m?: Message; line?: string }[] = replies().map((m) => ({ key: m.id, at: m.created, m }));
+    for (const x of tasks().filter(shownAsTask)) {
+      (x.events ?? []).forEach((e, i) => {
+        if (i === 0 && e.at - x.created < 2000) return; // its first status is on its card
+        const needs = e.needs && e.needs in NEEDS ? NEEDS[e.needs as Exclude<Needs, "">].label() : "";
+        items.push({ key: `${x.id}-ev-${i}`, at: e.at, line: [`${x.id} → ${STATUS[e.status]?.label() ?? e.status}`, needs].filter(Boolean).join(" · ") });
+      });
+    }
+    return items.sort((a, b) => a.at - b.at);
+  };
   const task = () => tasks()[tasks().length - 1];
   const agentOf = (x: Task) => t.agents().find((a) => a.id === x.agent_id);
   const hint = () => {
@@ -327,8 +340,8 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
               </Each>
               <MessageRow team={t} m={r()} noTask />
               <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.border }} />
-              <Each of={replies()} key={(m) => m.id}>
-                {(m) => <MessageRow team={t} m={m()} />}
+              <Each of={flow()} key={(x) => x.key}>
+                {(x) => <If when={x().m} else={<StatusLine text={x().line!} at={x().at} testID={x().key} />}>{(m) => <MessageRow team={t} m={m()} />}</If>}
               </Each>
             </Scroll>
             <If when={member()}>
@@ -396,5 +409,12 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
         <Btn testID="channel-create" kind="primary" label={L("Create channel", "创建频道")} busy={busy()} disabled={!name().trim()} onPress={create} />
       </Scroll>
     </View>
+  );
+}
+
+/** A task's status change between a thread's replies: one quiet centred line. */
+function StatusLine(props: { text: string; at: number; testID: string }) {
+  return (
+    <Text testID={props.testID} style={{ paddingVertical: 4, paddingHorizontal: 16, fontSize: 12, color: colors.faint, textAlign: "center" }}>{`${props.text} · ${time(props.at)}`}</Text>
   );
 }

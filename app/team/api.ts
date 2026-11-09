@@ -58,7 +58,13 @@ export type Task = {
   tracked?: boolean;
   /** Whether the agent saw the outcome itself, or only handed the work over. */
   result?: "confirmed" | "unconfirmed" | "";
+  /** Its title was given (by the agent or a person), not cut from the request. */
+  titled?: boolean;
+  /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
+  events?: TaskEvent[] | null;
 };
+/** A task came to a status (and then needed this of a person). */
+export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
   how: "callback" | "poll" | "timer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
@@ -635,6 +641,12 @@ export function createTeam(s: Session) {
     return r.ok ? s.url.replace(/\/$/, "") + r.data.url : null;
   }
   /** Where a task runs, before it ever ran (an address; "" = a general task). */
+  /** Rename a task (its creator or the agent's owner); the agent then leaves the title as it is. */
+  async function setTaskTitle(id: string, title: string) {
+    const r = await api("PATCH", `/api/v1/tasks/${id}`, { title });
+    if (r.ok) putTasks([r.data as Task]);
+    return r;
+  }
   async function setTaskRepo(id: string, repo: string) {
     const r = await api("PATCH", `/api/v1/tasks/${id}`, { repo });
     if (r.ok) putTasks([r.data as Task]);
@@ -662,7 +674,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
