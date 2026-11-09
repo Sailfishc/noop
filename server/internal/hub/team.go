@@ -412,7 +412,7 @@ func (h *Hub) v1Logout(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 	u, _ := h.user(q.who.userID)
-	out := obj{"user": u,
+	out := obj{"user": u, "public_url": h.cfg.PublicURL,
 		"machines": h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE owner_id = ? ORDER BY created", u.ID)),
 		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
 	if q.who.machineID != "" {
