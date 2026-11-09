@@ -12,7 +12,7 @@ if [ -z "$SERVER" ] || [ -z "$CODE" ]; then
 fi
 HOME_DIR="${NOOP_HOME:-$HOME/.noop}"
 APP="$HOME_DIR/app"
-REPO="${TEAMAGENT_REPO:-https://github.com/Sailfishc/noop.git}"
+REPO="${REMI_REPO:-${TEAMAGENT_REPO:-https://github.com/Sailfishc/noop.git}}"
 LOG="$HOME_DIR/install.log"
 mkdir -p "$HOME_DIR" && : > "$LOG"
 
@@ -43,7 +43,7 @@ if [ -d "$APP/.git" ]; then
   origin="$(git -C "$APP" remote get-url origin 2>/dev/null || true)"
   case "$origin" in
     *Sailfishc/noop*|"$REPO") run git -C "$APP" pull -q --ff-only || true ;;
-    *) fail "$APP 已经装了别的 noop（$origin）。换个目录再装：NOOP_HOME=~/.teamagent 加在命令最前面" ;;
+    *) fail "$APP 已经装了别的 noop（$origin）。换个目录再装：NOOP_HOME=~/.remi 加在命令最前面" ;;
   esac
 else
   run git clone -q "$REPO" "$APP"

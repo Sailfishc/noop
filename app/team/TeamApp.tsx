@@ -94,7 +94,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
               when={mode() === "invite"}
               else={
                 <>
-                  <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://teamagent.corp:8080" keyboardType="url" testID="team-url" />
+                  <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="team-url" />
                   <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("On a signed-in device: Settings › Account › Sign in on another device.", "在已登录的设备上：设置 › 账号 › 在其他设备登录。")} />
                   <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim()} onPress={login} />
                 </>
@@ -104,7 +104,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
                 when={invite()}
                 else={
                   <>
-                    <Field label={L("Invite link", "邀请链接")} value={link()} onChange={(v) => link.set(v)} onSubmit={openInvite} placeholder="http://teamagent.corp:8080/invite/…" keyboardType="url" testID="invite-link" autoFocus />
+                    <Field label={L("Invite link", "邀请链接")} value={link()} onChange={(v) => link.set(v)} onSubmit={openInvite} placeholder="http://remi.corp:8080/invite/…" keyboardType="url" testID="invite-link" autoFocus />
                     <Btn testID="invite-open" kind="primary" grow label={L("Continue", "继续")} busy={busy()} onPress={openInvite} />
                   </>
                 }

@@ -88,7 +88,7 @@ func TestV1PeopleAndSignIn(t *testing.T) {
 	check(t, "a member cannot make a code for someone else", e.do("POST", "/api/v1/login-codes", lei.session, map[string]any{"user_id": admin.id}).status == 403)
 	r = e.do("POST", "/api/v1/login-codes", admin.session, map[string]any{"user_id": lei.id})
 	e.advance(12 * time.Hour)
-	r = e.do("POST", "/api/v1/login", "", map[string]any{"code": "http://teamagent.corp:8080" + r.body["path"].(string)})
+	r = e.do("POST", "/api/v1/login", "", map[string]any{"code": "http://remi.corp:8080" + r.body["path"].(string)})
 	check(t, "an admin's login link works for a day", r.status == 200 && r.body["user"].(map[string]any)["id"] == lei.id, r)
 
 	// admin disables a member: their sessions stop at once

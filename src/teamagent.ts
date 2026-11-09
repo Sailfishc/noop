@@ -118,7 +118,7 @@ export function addressedTo(m: TeamMessage, mine: TeamAgent[], threadAgents: Set
 }
 
 type Handler = (m: TeamMessage, agents: TeamAgent[]) => void | Promise<void>;
-let handler: Handler = (m, agents) => console.log(`teamagent: ${agents.map((a) => `@${a.handle}`).join(" ")} ← ${m.text.slice(0, 80)}`);
+let handler: Handler = (m, agents) => console.log(`remi: ${agents.map((a) => `@${a.handle}`).join(" ")} ← ${m.text.slice(0, 80)}`);
 /** Who acts on a message for this machine's agents (M2: the dispatcher). */
 export const onAgentMessage = (h: Handler) => { handler = h; };
 
@@ -126,7 +126,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   if (!teamEnabled(cfg)) return null;
   const base = String(cfg.cloud.url).replace(/\/$/, "");
   const auth = { Authorization: `Bearer ${cfg.server.token}` };
-  const log = opts.log ?? ((s: string) => console.log(`teamagent: ${s}`));
+  const log = opts.log ?? ((s: string) => console.log(`remi: ${s}`));
   const stateFile = opts.stateFile ?? join(HOME_DIR, "teamagent.json");
   const state = (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")) as { url?: string; after?: number }; } catch { return {}; } })();
   let after = state.url === base ? Number(state.after) || 0 : 0;
@@ -140,7 +140,8 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     return r.ok ? (r.json() as Promise<any>) : null;
   };
   // the checkouts here, by remote; tasks name their repository by remote and the machine finds (or clones) it
-  const roots = Array.isArray(cfg.teamagent?.roots) ? cfg.teamagent.roots.map(String) : undefined;
+  const section = cfg.remi ?? cfg.teamagent; // [remi], or [teamagent] as it was first called
+  const roots = Array.isArray(section?.roots) ? section.roots.map(String) : undefined;
   const repos = opts.repos ?? repoBook({ roots, clones: join(HOME_DIR, "teamagent", "repos"), extra: () => agents.map((a) => a.repo ?? "").filter(Boolean) });
   // runtimes and Git credentials change rarely and cost a few process spawns and HTTP calls: look every 10 minutes
   let probe: { at: number; runtime_info: RuntimeInfo[]; git: GitCred[] } | null = null;

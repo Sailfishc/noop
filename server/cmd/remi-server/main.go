@@ -1,15 +1,15 @@
-// teamagent-server: the self-hosted coordination plane for noop machines and clients.
+// remi-server: the self-hosted coordination plane for noop machines and clients.
 //
-//	TEAMAGENT_TOKEN=<machine token> teamagent-server -addr :8080 -data /var/lib/teamagent
+//	REMI_TOKEN=<machine token> remi-server -addr :8080 -data /var/lib/remi
 //
-//	teamagent-server invite -data /var/lib/teamagent -email you@company.com -role admin
+//	remi-server invite -data /var/lib/remi -email you@company.com -role admin
 //
-//	teamagent-server -addr :8080 -public-url http://teamagent.corp:8080   # the address others use
+//	remi-server -addr :8080 -public-url http://remi.corp:8080   # the address others use
 //
 // The invite prints a link: the first admin opens it in the app, which signs them in, and invites everyone else
 // from the app. Each person adds their machines there and puts each machine's token in its config.local.toml
-// ([cloud] url = "http://<host>:8080", [server] token = "tam_…"). TEAMAGENT_TOKEN, a token shared by every machine,
-// is the legacy noop setup and optional.
+// ([cloud] url = "http://<host>:8080", [server] token = "tam_…"). REMI_TOKEN, a token shared by every machine,
+// is the legacy noop setup and optional. Every REMI_* variable may also be spelled TEAMAGENT_*.
 package main
 
 import (
@@ -30,19 +30,22 @@ import (
 	"github.com/Sailfishc/noop/server/internal/hub"
 )
 
+// env reads REMI_<k>, or TEAMAGENT_<k> as the product was first called, so older deployments keep working.
 func env(k, def string) string {
-	if v := os.Getenv(k); v != "" {
-		return v
+	for _, prefix := range []string{"REMI_", "TEAMAGENT_"} {
+		if v := os.Getenv(prefix + k); v != "" {
+			return v
+		}
 	}
 	return def
 }
 
 func invite(args []string) {
 	fs := flag.NewFlagSet("invite", flag.ExitOnError)
-	data := fs.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
+	data := fs.String("data", env("DATA", "./data"), "directory for the SQLite database")
 	email := fs.String("email", "", "the person's email")
 	role := fs.String("role", "admin", "admin or member")
-	base := fs.String("url", env("TEAMAGENT_PUBLIC_URL", env("TEAMAGENT_URL", "")), "the server's public address, to print a full link")
+	base := fs.String("url", env("PUBLIC_URL", env("URL", "")), "the server's public address, to print a full link")
 	_ = fs.Parse(args)
 	if err := os.MkdirAll(*data, 0o700); err != nil {
 		log.Fatal(err)
@@ -64,23 +67,23 @@ func main() {
 		invite(os.Args[2:])
 		return
 	}
-	addr := flag.String("addr", env("TEAMAGENT_ADDR", ":8080"), "listen address")
-	data := flag.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
-	static := flag.String("static", env("TEAMAGENT_STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
-	owners := flag.String("owners", env("TEAMAGENT_OWNER_EMAIL", ""), "owner emails allowed to sign in, comma-separated")
-	public := flag.String("public-url", env("TEAMAGENT_PUBLIC_URL", ""), "the address others reach this server at (http://teamagent.corp:8080), used in invite links, login links and machine install commands; empty: each app uses the address it connected to")
-	hookSecret := flag.String("git-webhook-secret", env("TEAMAGENT_GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
+	addr := flag.String("addr", env("ADDR", ":8080"), "listen address")
+	data := flag.String("data", env("DATA", "./data"), "directory for the SQLite database")
+	static := flag.String("static", env("STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
+	owners := flag.String("owners", env("OWNER_EMAIL", ""), "owner emails allowed to sign in, comma-separated")
+	public := flag.String("public-url", env("PUBLIC_URL", ""), "the address others reach this server at (http://remi.corp:8080), used in invite links, login links and machine install commands; empty: each app uses the address it connected to")
+	hookSecret := flag.String("git-webhook-secret", env("GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
 	flag.Parse()
 
-	token := os.Getenv("TEAMAGENT_TOKEN")
+	token := env("TOKEN", "")
 	if token != "" && len(token) < 16 {
-		log.Fatal("TEAMAGENT_TOKEN, when set, must be at least 16 characters")
+		log.Fatal("REMI_TOKEN, when set, must be at least 16 characters")
 	}
 	var smtp *hub.SMTPConfig
-	if s := os.Getenv("TEAMAGENT_SMTP"); s != "" {
+	if s := env("SMTP", ""); s != "" {
 		smtp = &hub.SMTPConfig{}
 		if err := json.Unmarshal([]byte(s), smtp); err != nil {
-			log.Fatalf("TEAMAGENT_SMTP is not JSON {host, port, secure, user, pass, from}: %v", err)
+			log.Fatalf("REMI_SMTP is not JSON {host, port, secure, user, pass, from}: %v", err)
 		}
 	}
 	if err := os.MkdirAll(*data, 0o700); err != nil {
@@ -111,7 +114,7 @@ func main() {
 		}
 	}()
 	go func() {
-		log.Printf("teamagent-server listening on %s (data %s, public url %q)", *addr, *data, pub)
+		log.Printf("remi-server listening on %s (data %s, public url %q)", *addr, *data, pub)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

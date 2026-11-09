@@ -1,13 +1,13 @@
 // End-to-end: noop's real host code (src/core.ts pull + claim over the files API) against a running Go server.
 // Three simulated hosts race to claim the same task, five times; exactly one must win each time, and the losers'
 // mirrors must end up showing the winner.
-//   TEAMAGENT_TOKEN=... bun server/test/e2e-claim.ts http://127.0.0.1:8080
+//   REMI_TOKEN=... bun server/test/e2e-claim.ts http://127.0.0.1:8080
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const BASE = (process.argv[2] ?? "http://127.0.0.1:8080").replace(/\/$/, "");
-const TOKEN = process.env.TEAMAGENT_TOKEN ?? "";
+const TOKEN = process.env.REMI_TOKEN ?? process.env.TEAMAGENT_TOKEN ?? "";
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 let fails = 0;
 const check = (name: string, ok: boolean, extra = "") => { console.log(`${ok ? "ok  " : "FAIL"} ${name}${extra ? ` — ${extra}` : ""}`); if (!ok) fails++; };

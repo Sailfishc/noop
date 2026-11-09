@@ -79,11 +79,11 @@ func TestPublicURL(t *testing.T) {
 	e := newTaskEnv(t, "channel", false)
 	r := e.do("GET", "/api/v1/me", e.zw.session, nil)
 	check(t, "no public address set: the apps use their own", r.body["public_url"] == "", r)
-	e.h.cfg.PublicURL = "http://teamagent.corp:8080"
+	e.h.cfg.PublicURL = "http://remi.corp:8080"
 	r = e.do("GET", "/api/v1/me", e.zw.session, nil)
-	check(t, "the apps learn the public address", r.body["public_url"] == "http://teamagent.corp:8080", r)
+	check(t, "the apps learn the public address", r.body["public_url"] == "http://remi.corp:8080", r)
 	m := e.post(e.wl.session, "@acha 看一下", "")
 	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
-	check(t, "callbacks use it too", strings.HasPrefix(r.body["callback_url"].(string), "http://teamagent.corp:8080/api/v1/hooks/wait/"), r)
+	check(t, "callbacks use it too", strings.HasPrefix(r.body["callback_url"].(string), "http://remi.corp:8080/api/v1/hooks/wait/"), r)
 }
