@@ -5,6 +5,7 @@ import { checkForPackage, checkForUpdate, downloadPackage, downloadUpdate, insta
 import { L } from "../i18n";
 import { alpha, colors, hovered, Spinner } from "../ui";
 import { CHECK_EVERY_MS, createUpdates, type UpdateState } from "../update";
+import { CLIENT_VERSION } from "../version";
 
 export const appUpdate = signal<UpdateState>({ kind: "none" });
 export const updates = createUpdates(
@@ -23,8 +24,51 @@ export function watchUpdates() {
   cleanup(() => { clearTimeout(first); clearInterval(timer); });
 }
 
-/** Above the sidebar's footer, only when there is something to press. */
+/** A development build has no update source (scripts/release-config.sh adds it to release builds only). */
+export const canCheckUpdates = CLIENT_VERSION !== "dev";
+
+/** What a check someone asked for found, shown in the update row's place while there is nothing to press. */
+export const checkNote = signal<"" | "checking" | "current" | "failed" | "staged">("");
+let noteTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The menu's "Check for updates": checks now; a found update shows as the timer's would, the rest as a short note. */
+export async function checkNow() {
+  clearTimeout(noteTimer);
+  checkNote.set("checking");
+  const result = await updates.check();
+  if (result === "busy") return;
+  const note = result === "current" ? "current" : result === "failed" ? "failed" : appUpdate().kind === "staged" ? "staged" : "";
+  checkNote.set(note);
+  if (note) noteTimer = setTimeout(() => checkNote.set(""), 8000);
+}
+
+function noteText(note: ReturnType<typeof checkNote>): string {
+  const u = appUpdate();
+  if (note === "checking") return L("Checking for updates…", "正在检查更新…");
+  if (note === "current") return L(`Remi ${CLIENT_VERSION} is up to date`, `Remi ${CLIENT_VERSION} 已是最新版本`);
+  if (note === "failed") return L("Couldn't check for updates. Try again later.", "检查更新失败，稍后再试");
+  if (note === "staged" && u.kind === "staged") return L(`${u.version} is downloaded and runs from the next launch`, `${u.version} 已下载，下次打开时生效`);
+  return "";
+}
+
+/** Above the sidebar's footer, only when there is something to press, or a note from a check someone asked for. */
 export function UpdateRow() {
+  return (
+    <>
+      <UpdateButton />
+      <If when={(appUpdate().kind === "none" || appUpdate().kind === "staged") && noteText(checkNote())}>
+        <View testID="update-note" style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 30, paddingHorizontal: 10 }}>
+          <If when={checkNote() === "checking"}>
+            <Spinner size={12} tint={colors.muted} />
+          </If>
+          <Text style={{ flexShrink: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 2 }}>{noteText(checkNote())}</Text>
+        </View>
+      </If>
+    </>
+  );
+}
+
+function UpdateButton() {
   const state = () => appUpdate();
   const version = () => { const u = state(); return u.kind === "none" ? "" : u.version; };
   const label = () => {

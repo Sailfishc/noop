@@ -41,4 +41,4 @@ Keys, tokens, IP addresses and intranet names are refused at commit time and in 
 
 ## Releasing the client apps
 
-There is no release CI for now: the packaging workflow was removed until the apps are released again. Build the client locally with `nsh` at commit `c4c4bf5cec60886b3308034a51eef9c3fbb58c50`.
+Push a tag `vX.Y.Z`: `.github/workflows/release.yml` packages macOS (Apple silicon) and Linux, signs an OTA package and the update manifest, and publishes the latest GitHub release that installed apps update from. One-time key setup (`scripts/release-keys.sh`) and how updates work: [docs/app-updates.md](docs/app-updates.md). To build the client locally, use `nsh` at the commit in `app/nsh-version`; a local build does not update itself.

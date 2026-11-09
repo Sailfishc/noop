@@ -40,6 +40,9 @@ export type UpdateState =
 
 export const CHECK_EVERY_MS = 60 * 60 * 1000;
 
+/** What a check found: something to press (or already held), nothing newer, an error, or a check already running. */
+export type CheckResult = "update" | "current" | "failed" | "busy";
+
 export function createUpdates(api: UpdaterApi, onChange: (state: UpdateState) => void) {
   let state: UpdateState = { kind: "none" };
   let busy = false;
@@ -48,26 +51,32 @@ export function createUpdates(api: UpdaterApi, onChange: (state: UpdateState) =>
     onChange(next);
   };
 
-  /** A failed check or download stays silent and the next tick tries again: a blip is not worth a banner. */
-  async function check() {
+  /**
+   * A failed check or download stays silent and the next tick tries again: a blip is not worth a banner. The result
+   * is for a check someone asked for (the menu's "Check for updates"); the timer ignores it.
+   */
+  async function check(): Promise<CheckResult> {
     // A download waiting for its restart keeps being checked: a newer release replaces it, so the restart lands on
     // the latest instead of one version short (nsh/updater keeps the held download when the same version comes back).
-    if (busy || state.kind === "installing" || state.kind === "failed") return;
+    if (state.kind === "installing" || state.kind === "failed") return "update";
+    if (busy) return "busy";
     busy = true;
     let downloading = false;
     try {
-      if (await checkPackage()) return;
+      if (await checkPackage()) return "update";
       const found = await api.check();
-      if (!found || runsAtLeast(found.version)) { if (state.kind !== "none") set({ kind: "none" }); return; }
-      if (!found.canInstall) return set({ kind: "link", version: found.version, url: found.url });
-      if (state.kind === "ready" && state.version === found.version) return;
+      if (!found || runsAtLeast(found.version)) { if (state.kind !== "none") set({ kind: "none" }); return "current"; }
+      if (!found.canInstall) { set({ kind: "link", version: found.version, url: found.url }); return "update"; }
+      if (state.kind === "ready" && state.version === found.version) return "update";
       downloading = true;
       await api.download();
       set({ kind: "ready", version: found.version });
+      return "update";
     } catch (e) {
       console.warn("update check failed:", String(e));
       // A newer download that failed has already replaced the held one, so there is nothing left to restart into.
       if (downloading && state.kind === "ready") set({ kind: "none" });
+      return "failed";
     } finally {
       busy = false;
     }
