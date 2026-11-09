@@ -16,6 +16,7 @@ import {
 import { NEEDS, STATUS, statusOf, type Needs } from "./status";
 import { LayoutSwitch, TaskBoard, TasksPage, trackedTasks, type TaskLayout } from "./tasks";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
+import { SearchPage } from "./search";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
@@ -130,7 +131,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
 
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search" } | { kind: "home" };
 /** What the right column shows beside a channel: a thread, or the channel's members. */
 type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
@@ -190,6 +191,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   }
   const openSettings = (tab: SettingsTab | null = untracked(wide) ? "account" : null, agent?: string) => settings.set({ tab, agent });
   keymap.bind("mod+,", () => openSettings(), { when: "always" });
+  keymap.bind("mod+k", () => open({ kind: "search" }), { when: "always" });
 
   const sidebar = () => (
     <Sidebar team={t} page={page()} inset={wide()} onOpen={open} onSettings={openSettings} onSignOut={props.onSignOut} />
@@ -206,6 +208,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
     if (p.kind === "tasks") return <TasksPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
+    if (p.kind === "search") return <SearchPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(id, threadId) => open({ kind: "channel", id }, threadId)} />;
     if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -303,6 +306,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
         {/* no logo or name for now: the bar stays as the window's drag area and the traffic lights' room */}
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
+        <Row testID="open-search" icon="search" label={L("Search", "搜索")} active={props.page.kind === "search"} onPress={() => props.onOpen({ kind: "search" })} />
         <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
         <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         <Section
