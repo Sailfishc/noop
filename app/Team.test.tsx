@@ -44,6 +44,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
+    [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
     [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
@@ -684,7 +685,7 @@ describe("channel v2", () => {
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
     await app.waitFor("id:task-T-0001-wait");
-    expect(app.shows("text:Waiting for an outside result")).toBe(true);
+    expect(app.shows("text:In progress")).toBe(true); // waiting is in progress; what for is on its second line
     expect(app.shows("text:3D 云渲染底座模型 · checked now and then")).toBe(true);
     expect(app.shows("text:/^checked 2×/")).toBe(true);
     expect(app.shows("text:排队第 3 位")).toBe(true);
@@ -727,9 +728,11 @@ describe("tasks", () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({})]) });
     await app.waitFor("id:task-T-0001");
-    expect(app.shows("text:Waiting for its owner")).toBe(true);
+    expect(app.shows("text:To do")).toBe(true);
+    expect(app.shows("text:Needs its owner’s OK")).toBe(true);
     await app.press("id:task-T-0001-confirm");
-    await app.waitFor("text:Waiting for its machine");
+    await app.waitFor("text:In progress");
+    expect(app.shows("id:task-T-0001-needs")).toBe(false);
     expect(log.acts).toEqual(["T-0001 confirm"]);
     expect(app.shows("text:/张伟的 Mac will pick it up/")).toBe(true);
     expect(app.shows("id:task-T-0001-confirm")).toBe(false);
@@ -740,8 +743,9 @@ describe("tasks", () => {
     const t = task({ created_by: "u_1", state: "needs_decision", decision: { question: "现在上线吗？", options: ["A: 现在上", "B: 夜里再上"], recommendation: "B" } });
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
     await app.waitFor("text:现在上线吗？");
+    expect(app.shows("text:Needs a decision")).toBe(true);
     await app.press("id:task-T-0001-option-1");
-    await app.waitFor("text:Waiting for its machine");
+    await app.waitFor("text:In progress");
     expect(log.acts).toEqual(["T-0001 decide B: 夜里再上"]);
   });
 
@@ -754,6 +758,20 @@ describe("tasks", () => {
     await app.press("id:task-T-0001-accept");
     await app.waitFor("text:Done");
     expect(log.acts).toEqual(["T-0001 accept"]);
+  });
+
+  test("five statuses: a blocked run is in progress with a mark; people may call it done, and reopen it", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "blocked", summary: "没有数据库权限" });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("id:task-T-0001-needs");
+    expect(app.shows("text:In progress")).toBe(true);
+    expect(app.shows("text:Blocked")).toBe(true);
+    await app.press("id:task-T-0001-done");
+    await app.waitFor("text:Done");
+    await app.press("id:task-T-0001-reopen");
+    await app.waitFor("text:In progress");
+    expect(log.acts).toEqual(["T-0001 accept", "T-0001 reopen"]);
   });
 
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {

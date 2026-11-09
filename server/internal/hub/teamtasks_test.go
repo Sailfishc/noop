@@ -251,3 +251,31 @@ func TestDispatchMigration(t *testing.T) {
 	a, _ = e.h.agent(e.aid)
 	check(t, "confirm → channel with confirmation", a.Dispatch == "channel" && a.Confirm, resp{raw: []byte(fmt.Sprint(a))})
 }
+
+// People see five statuses and a "needs you" mark; the run's state stays underneath.
+func TestTaskStatusAndReopen(t *testing.T) {
+	e := newTaskEnv(t, "channel", true)
+	m := e.post(e.zw.session, "@acha 看下慢查询", "")
+	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	tk := e.task(id)
+	check(t, "pending: todo, needs the owner's yes", tk["status"] == "todo" && tk["needs"] == "confirm", resp{raw: []byte(fmt.Sprint(tk))})
+	e.do("POST", "/api/v1/tasks/"+id+"/confirm", e.wl.session, nil)
+	tk = e.task(id)
+	check(t, "queued: in progress, nothing needed", tk["status"] == "in_progress" && tk["needs"] == "", resp{raw: []byte(fmt.Sprint(tk))})
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "blocked", "summary": "没有数据库权限"})
+	tk = e.task(id)
+	check(t, "blocked: still in progress, needs a person", tk["status"] == "in_progress" && tk["needs"] == "unblock", resp{raw: []byte(fmt.Sprint(tk))})
+	r := e.do("GET", "/api/v1/tasks?status=in_progress", e.zw.session, nil)
+	check(t, "filter by status", len(r.body["tasks"].([]any)) == 1, r)
+	check(t, "a status filter must be one of the five", e.do("GET", "/api/v1/tasks?status=blocked", e.zw.session, nil).status == 400)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/accept", e.zw.session, nil)
+	check(t, "people may call it done themselves", r.body["status"] == "done", r)
+	check(t, "only the parties reopen", e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.ll.session, nil).status == 403)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, map[string]any{"note": "还有 /refunds"})
+	check(t, "reopened: back in progress", r.body["status"] == "in_progress" && r.body["state"] == "queued", r)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	fresh := r.body["new"].([]any)
+	check(t, "the agent hears why", len(fresh) == 1 && fresh[0].(map[string]any)["text"] == "重新打开了这个任务：还有 /refunds", r)
+	check(t, "reopen only from done or closed", e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, nil).status == 409)
+}

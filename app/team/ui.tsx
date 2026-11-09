@@ -203,16 +203,20 @@ export function RuntimeBadge(props: { runtime: string; testID?: string }) {
   return <Tag testID={props.testID} label={runtimeLabel(props.runtime)} tone={props.runtime === "codex" ? "accent" : "muted"} />;
 }
 
-/** An agent's state as people need it: can't take work (and why), busy with N tasks, waiting for someone, or idle. */
+/** An agent's status dot (as in Raft): grey offline (no machine, or it is off), orange an error it can't get past by
+ * itself (its runtime missing or logged out, or its last run failed), yellow working, green ready. What a task needs
+ * from people is on the task, not here. */
 export function agentState(t: Team, a: Agent): { label: string; tone: "up" | "warn" | "danger" | "muted" | "accent"; blocked: boolean } {
-  const why = blockedReason(a, t.machines().find((m) => m.id === a.machine_id), lang() !== "zh");
-  if (why) return { label: L(`Can’t take work: ${why}`, `接不了活：${why}`), tone: "danger", blocked: true };
+  const m = t.machines().find((x) => x.id === a.machine_id);
+  const why = blockedReason(a, m, lang() !== "zh");
+  if (!a.machine_id || !m || !m.online) return { label: L(`Offline: ${why}`, `离线：${why}`), tone: "muted", blocked: true };
+  if (why) return { label: L(`Error: ${why}`, `出错：${why}`), tone: "danger", blocked: true };
   const ts = Object.values(t.tasks()).filter((x) => x.agent_id === a.id);
-  const waiting = ts.filter((x) => x.state === "pending" || x.state === "needs_decision").length;
-  const running = ts.filter((x) => x.state === "running" || x.state === "queued").length;
-  if (waiting) return { label: L("Needs you", "需处理"), tone: "warn", blocked: false };
-  if (running) return { label: L(`${running} task${running > 1 ? "s" : ""}`, `${running} 个 Task`), tone: "accent", blocked: false };
-  return { label: L("Idle", "空闲"), tone: "up", blocked: false };
+  const working = ts.filter((x) => x.state === "running" || x.state === "queued").length;
+  if (working) return { label: L(`Working · ${working} task${working > 1 ? "s" : ""}`, `工作中 · ${working} 个任务`), tone: "warn", blocked: false };
+  const last = ts.filter((x) => x.state !== "closed").sort((x, y) => y.updated - x.updated)[0];
+  if (last?.state === "failed") return { label: L("Error: its last run failed", "出错：上次运行失败"), tone: "danger", blocked: false };
+  return { label: L("Ready", "空闲"), tone: "up", blocked: false };
 }
 
 export function StateDot(props: { tone: string }) {
