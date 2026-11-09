@@ -93,6 +93,13 @@ export type Message = {
   /** Who put which emoji on it, oldest first (an agent's 👀: it took the message up). */
   reactions?: { emoji: string; author: Member }[];
 };
+/** A reminder: set from a message ("remind me later"), by /remind, or by an agent (remi remind). */
+export type Reminder = {
+  id: string; by: string; by_agent?: string | null; target: Member; channel_id: string; thread_id: string | null; message_id: string | null;
+  text: string; due: number; repeat: "" | "daily" | "weekdays" | "weekly"; created: number; fired: number | null; seen: number | null; done: boolean;
+};
+/** It went off and waits for this person. */
+export const reminderUp = (r: Reminder, meId: string | undefined) => r.target.kind === "user" && r.target.id === meId && !!r.fired && (!r.seen || r.seen < r.fired);
 /** A file on a message: what the server knows of it, and a link (15 minutes) to show or download it. */
 export type Attachment = { path: string; name: string; mime: string; size: number; url?: string };
 export type Session = { url: string; session: string };
@@ -247,6 +254,8 @@ export function createTeam(s: Session) {
   const inbox = signal<string[]>([]);
   /** Tasks waiting for an outside result: shown, never notified. */
   const waiting = signal<string[]>([]);
+  /** The reminders that concern this person: scheduled ones they set or get, and the ones that went off for them. */
+  const reminders = signal<Reminder[]>([]);
   /** New top-level messages from others since a channel was last looked at. */
   const unread = signal<Record<string, number>>({});
   let viewing: string | null = null;
@@ -310,6 +319,9 @@ export function createTeam(s: Session) {
       case "machine":
         if (f.machine) machines.update((ms) => upsert(ms, f.machine as Machine));
         break;
+      case "reminder":
+        if (f.reminder) putReminder(f.reminder as Reminder);
+        break;
       case "task":
         if (f.task) {
           putTasks([f.task as Task]);
@@ -344,6 +356,35 @@ export function createTeam(s: Session) {
     waiting.set((w.data.tasks as Task[]).map((t) => t.id));
   }
 
+  async function loadReminders() {
+    const r = await api("GET", "/api/v1/reminders");
+    if (r.ok) reminders.set(r.data.reminders as Reminder[]);
+  }
+  function putReminder(r: Reminder) {
+    const meId = untracked(me)?.id;
+    const keep = !r.done || reminderUp(r, meId);
+    reminders.update((rs) => {
+      const rest = rs.filter((x) => x.id !== r.id);
+      return keep ? [...rest, r].sort((a, b) => a.due - b.due) : rest;
+    });
+  }
+  /** Set one: {command} as typed after /remind, or {message_id, when}. Returns an error to show, or null. */
+  async function remind(body: { command?: string; when?: string; message_id?: string; channel_id?: string; thread_id?: string | null }): Promise<string | null> {
+    const r = await api("POST", "/api/v1/reminders", body);
+    if (!r.ok) return String(r.data?.error ?? L("Couldn’t set the reminder", "提醒没设上"));
+    putReminder(r.data as Reminder);
+    return null;
+  }
+  /** Done with one that went off; with `when`, again then. */
+  async function reminderSeen(id: string, when?: string) {
+    const r = await api("POST", `/api/v1/reminders/${id}/seen`, when ? { when } : {});
+    if (r.ok) await loadReminders();
+  }
+  async function cancelReminder(id: string) {
+    const r = await api("DELETE", `/api/v1/reminders/${id}`);
+    if (r.ok) reminders.update((rs) => rs.filter((x) => x.id !== id));
+  }
+
   async function load() {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
@@ -358,7 +399,7 @@ export function createTeam(s: Session) {
       for (const ch of cs) if (ch.last_seq > after) after = ch.last_seq;
     }
     loaded.set(true);
-    if (m.ok) void loadInbox();
+    if (m.ok) { void loadInbox(); void loadReminders(); }
     return m.ok;
   }
 
@@ -612,7 +653,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
