@@ -59,7 +59,7 @@ REMI_GIT_WEBHOOK_SECRET=一串随机字符 ./remi-server -addr :8080 -data /var/
 
 ### 2. 客户端
 
-不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（用 commit `c4c4bf5cec60886b3308034a51eef9c3fbb58c50`）。
+不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（用 commit `36b91689c1e7c38379179a56381de7ddab16c6a5`）。
 
 ```sh
 cd app
@@ -67,7 +67,13 @@ nsh package --target macos -o dist/macos        # 桌面 App
 ./build-web.sh                                   # 或者构建 Web 版，到 dist/web/noop
 ```
 
-客户端的自动更新（`app/nsh.json` 的 `updater`）已经指向本仓库。本仓库还没有发布 Release，所以现在不会自动更新，更新时重新构建即可。
+发过版本之后，用一行命令安装，之后 App 会自己更新（侧栏出现「重启以更新」，用户菜单里也能「检查更新」）：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sailfishc/noop/main/install-client.sh | bash
+```
+
+自己构建的 App 不会自动更新。怎么发版、密钥怎么准备，见 [docs/app-updates.md](docs/app-updates.md)。
 
 Web 版可以直接让服务端托管：启动时加 `-static ../app/dist/web/noop`，大家用浏览器打开服务端地址就行。
 

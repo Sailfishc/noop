@@ -37,3 +37,23 @@ describe("system notifications", () => {
     expect(mentionAlert({ ...m, created: NOW - FRESH_MS - 1 }, "u_1", "acha", "支付后端", NOW)).toBe(null);
   });
 });
+
+describe("reminders said in words", () => {
+  test("relative times in Chinese and English become /remind commands", async () => {
+    const { naturalRemind } = await import("./team/reminders");
+    expect(naturalRemind("2分钟后提醒我。")).toBe("2分钟 2分钟后提醒我。");
+    expect(naturalRemind("2分钟之后提醒我一下，看下构建")).toBe("2分钟 看下构建");
+    expect(naturalRemind("半小时后提醒我 交周报")).toBe("30分钟 交周报");
+    expect(naturalRemind("两个小时后提醒 @acha 发版")).toBe("2小时 @acha 发版");
+    expect(naturalRemind("提醒我10分钟后 开会")).toBe("10分钟 开会");
+    expect(naturalRemind("remind me in 5 minutes to call Bob")).toBe("5m call Bob");
+    expect(naturalRemind("Remind me in an hour")).toBe("1h Remind me in an hour");
+  });
+  test("anything else stays a message", async () => {
+    const { naturalRemind } = await import("./team/reminders");
+    expect(naturalRemind("@cindy 2分钟之后提醒我一下")).toBe(null); // the agent's work
+    expect(naturalRemind("2分钟后提醒我 叫 @cindy 看看")).toBe(null);
+    expect(naturalRemind("我2分钟后提醒你")).toBe(null);
+    expect(naturalRemind("明天提醒我")).toBe(null);
+  });
+});

@@ -43,6 +43,8 @@ export type PR = { provider: "github" | "gitlab"; url: string; number: number; t
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
+  /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
+  handler?: string;
   /** The run's state (the machines go by it); people see statusOf(state): five statuses and a "needs you" mark. */
   state: TaskState;
   step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; claimed_by: string | null; confirmed_by: string | null;
@@ -694,4 +696,7 @@ export function createTeam(s: Session) {
 export type Team = ReturnType<typeof createTeam>;
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
-export const isParty = (t: Task, me: User | null, agent: Agent | undefined) => !!me && (me.id === t.created_by || me.id === agent?.owner_id || me.role === "admin");
+export const isParty = (t: Task, me: User | null, agent: Agent | undefined) =>
+  !!me && (me.id === t.created_by || me.id === t.handler || me.id === agent?.owner_id || me.role === "admin");
+/** Who takes a task that stopped for people (accepts it, decides): the person named, else its creator. */
+export const takerOf = (t: Task) => t.handler || t.created_by;

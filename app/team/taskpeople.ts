@@ -1,7 +1,7 @@
 // The people around a task (as in the design "Remi 任务视图 v2"): who asked for it, which agent does it and whose
 // agent that is, and whom it waits for right now. The task lives in its channel; these decide whose views it shows in.
 import { L } from "../i18n";
-import type { Task, Team } from "./api";
+import { takerOf, type Task, type Team } from "./api";
 import type { Tone } from "./status";
 
 /** Whom the task waits for now, in a few words ("waits for your acceptance", "waits for zc to confirm"), and
@@ -10,7 +10,7 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
   const me = t.me();
   const agent = t.agents().find((a) => a.id === task.agent_id);
   const owner = t.users().find((u) => u.id === agent?.owner_id);
-  const creator = t.users().find((u) => u.id === task.created_by);
+  const taker = t.users().find((u) => u.id === takerOf(task));
   const isMe = (id?: string) => !!me && id === me.id;
   const by = (id: string | undefined, name: string | undefined, mine: [string, string], other: (n: string) => [string, string], tone: Tone) =>
     isMe(id) ? { label: L(...mine), mine: true, tone } : { label: L(...other(name ?? "?")), mine: false, tone };
@@ -18,9 +18,9 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
     case "pending":
       return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "warn");
     case "needs_decision":
-      return by(task.created_by, creator?.name, ["Waits for your decision", "等你决定"], (n) => [`Waits for ${n} to decide`, `等 ${n} 决定`], "warn");
+      return by(takerOf(task), taker?.name, ["Waits for your decision", "等你决定"], (n) => [`Waits for ${n} to decide`, `等 ${n} 决定`], "warn");
     case "review":
-      return by(task.created_by, creator?.name, ["Waits for your acceptance", "等你验收"], (n) => [`Waits for ${n} to accept`, `等 ${n} 验收`], "accent");
+      return by(takerOf(task), taker?.name, ["Waits for your acceptance", "等你验收"], (n) => [`Waits for ${n} to accept`, `等 ${n} 验收`], "accent");
     case "blocked":
     case "failed": {
       const mine = isMe(task.created_by) || isMe(agent?.owner_id);

@@ -89,7 +89,7 @@ async function main() {
     case "install": return install();
     case "daemon": return daemon(cfg);
     case "doctor": return void console.log((await doctor(cfg)).join("\n"));
-    case "update": return void console.log((await selfUpdate()) ? "updated" : "up to date");
+    case "update": return void console.log((await selfUpdate({ force: true })) ? "updated" : "up to date"); // asked by a person: retry even a release this machine rejected
     default:
       console.log(HELP);
       if (cmd && cmd !== "help" && cmd !== "--help" && cmd !== "-h") process.exitCode = 2;

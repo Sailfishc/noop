@@ -13,6 +13,39 @@ export const REPEAT: Record<string, () => string> = {
   weekly: () => L("every week", "每周"),
 };
 
+const CN_NUM: Record<string, number> = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+const ZH_UNIT: Record<string, string> = { 分钟: "分钟", 分: "分钟", 小时: "小时", 个小时: "小时", 个钟头: "小时", 钟头: "小时", 天: "天" };
+const EN_UNIT: Record<string, string> = { m: "m", min: "m", mins: "m", minute: "m", minutes: "m", h: "h", hr: "h", hrs: "h", hour: "h", hours: "h", d: "d", day: "d", days: "d" };
+const ZH_NUM = String.raw`(\d+|[一两二三四五六七八九十]|半)`;
+const ZH_UNITS = String.raw`(分钟|分|个小时|小时|个钟头|钟头|天)`;
+const ZH_AFTER = new RegExp(String.raw`^${ZH_NUM}\s*${ZH_UNITS}\s*[之以]?后\s*提醒\s*(我|@\S+)\s*(?:一下)?\s*[，,。.:：!！]?\s*([\s\S]*)$`);
+const ZH_BEFORE = new RegExp(String.raw`^提醒\s*(我|@\S+)\s*${ZH_NUM}\s*${ZH_UNITS}\s*[之以]?后\s*[，,。.:：!！]?\s*([\s\S]*)$`);
+const EN = /^remind\s+(me|@\S+)\s+in\s+(\d+|an?)\s*(m|mins?|minutes?|h|hrs?|hours?|d|days?)\b[\s,.:]*(?:to\s+)?([\s\S]*)$/i;
+
+/** "2分钟后提醒我…", "提醒我半小时后…", "remind me in 5 minutes to …": the /remind command it means, or null. Only the
+ * relative times; a message that @s anyone else stays a message (an agent's work goes through dispatch). */
+export function naturalRemind(text: string): string | null {
+  const v = text.trim();
+  let n: number, unit: string, who: string, rest: string;
+  let m = ZH_AFTER.exec(v);
+  if (m) [n, unit, who, rest] = zhTime(m[1], m[2]).concat([m[3], m[4]]) as [number, string, string, string];
+  else if ((m = ZH_BEFORE.exec(v))) [n, unit, who, rest] = zhTime(m[2], m[3]).concat([m[1], m[4]]) as [number, string, string, string];
+  else if ((m = EN.exec(v))) {
+    n = /^an?$/i.test(m[2]) ? 1 : Number(m[2]);
+    unit = EN_UNIT[m[3].toLowerCase()] ?? "m";
+    who = m[1];
+    rest = m[4];
+  } else return null;
+  if (!(n > 0) || rest.includes("@")) return null;
+  const target = who.startsWith("@") ? `${who} ` : "";
+  const what = rest.replace(/[。.!！\s]+$/, "") || v;
+  return `${n}${unit} ${target}${what}`;
+}
+function zhTime(num: string, unit: string): [number, string] {
+  if (num === "半") return unit.includes("时") || unit.includes("钟头") ? [30, "分钟"] : unit === "天" ? [12, "小时"] : [0, ""];
+  return [/^\d+$/.test(num) ? Number(num) : CN_NUM[num], ZH_UNIT[unit]];
+}
+
 /** When it fires next, and how often. */
 export function dueText(r: Reminder): string {
   const when = time(r.due);
