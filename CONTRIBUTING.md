@@ -41,4 +41,4 @@ Keys, tokens, IP addresses and intranet names are refused at commit time and in 
 
 ## Releasing the client apps
 
-There is no release CI for now: the packaging workflow was removed until the apps are released again. Build the client locally with `nsh` at commit `c4c4bf5cec60886b3308034a51eef9c3fbb58c50`.
+There is no release CI for now: the packaging workflow was removed until the apps are released again. Build the client locally with `nsh` at commit `36b91689c1e7c38379179a56381de7ddab16c6a5`.

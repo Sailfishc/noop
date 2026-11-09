@@ -59,7 +59,7 @@ REMI_GIT_WEBHOOK_SECRET=一串随机字符 ./remi-server -addr :8080 -data /var/
 
 ### 2. 客户端
 
-不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（用 commit `c4c4bf5cec60886b3308034a51eef9c3fbb58c50`）。
+不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（用 commit `36b91689c1e7c38379179a56381de7ddab16c6a5`）。
 
 ```sh
 cd app
