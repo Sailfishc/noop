@@ -428,16 +428,31 @@ export function gateEnv(wd: Workdir): Record<string, string> {
 /** The agent's own read-only command for the team chat (as in Raft, where agents read and search with a CLI): it
  * asks the server with the run's read token, which works only while the task runs and only in the agent's channels. */
 export const REMI_CLI = `#!/bin/sh
-# remi (also installed as teamagent): look things up in the team chat (read-only).
+# remi (also installed as teamagent): the team chat, from inside your task.
 #   remi read [--channel NAME] [--limit N] [--before SEQ]   a channel's latest messages (default: this task's)
 #   remi read --thread MSG                                 a whole thread
 #   remi search WORDS [--channel NAME]                     messages with all the words, newest first
 #   remi tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
 #   remi task T-0001                                       one task: acceptance, summary, PR
+#   remi channel [NAME]                                    what a channel is for, who is in it
+#   remi who @HANDLE                                       who a person or an agent is
+#   remi file /media/... > FILE                            a file attached to a message (as remi read shows it)
+#   remi memory                                            your memory.md as it is now
+#   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
+#   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
+api="$REMI_URL/api/v1/agent"
+auth="Authorization: Bearer $REMI_TOKEN"
+usage() { sed -n '2,14p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
-  task) path="tasks/$2"; shift ;;
-  *) sed -n '2,8p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2 ;;
+  task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
+  channel) [ -n "$2" ] && set -- "$1" --channel "$2"; path=channel ;;
+  who) [ -n "$2" ] || usage; exec curl -sS -G "$api/who" -H "$auth" --data-urlencode "handle=$2" ;;
+  file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
+  memory) exec curl -sS "$api/memory" -H "$auth" ;;
+  say) shift; [ -n "$*" ] || usage; exec curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
+  *) usage ;;
 esac
 shift
 q=""
@@ -452,7 +467,7 @@ while [ "$n" -gt 0 ]; do
   esac
 done
 [ -n "$q" ] && set -- "$@" --data-urlencode "q=$q"
-exec curl -sS -G "$REMI_URL/api/v1/agent/$path" -H "Authorization: Bearer $REMI_TOKEN" "$@"
+exec curl -sS -G "$api/$path" -H "$auth" "$@"
 `;
 
 /** The command on the runtime's PATH, and what it needs. */
@@ -467,14 +482,18 @@ export function cliEnv(root: string, server: string, token: string): Record<stri
   return { REMI_URL: server.replace(/\/$/, ""), REMI_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
 }
 
-const LOOKUP = `# Looking things up
-You see only the request, its thread and a few recent messages here. When you need more of the team's context (what
-was said before, a related thread, other tasks), look it up with the \`remi\` command in your shell:
+const LOOKUP = `# The remi command
+You see only the request, its thread and a few recent messages here. When you need more of the team's context, look it
+up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi read                      this channel's latest messages (--channel NAME for another, --before SEQ for older)
 - remi read --thread MSG         a whole thread (the msg=… of a message)
 - remi search WORDS              messages with all the words, newest first
 - remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
-Look up only what the request needs.`;
+- remi channel / remi who @HANDLE     what a channel is for and who is in it; who someone is
+- remi file /media/…  > FILE     a file someone attached (remi read shows them)
+Look up only what the request needs. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
+most every 5 minutes, only when people would want to know), and hand over a file before you stop with
+\`remi upload FILE\`. Your result still goes in the result block at the end.`;
 
 /** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
 export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {
