@@ -422,6 +422,8 @@ func (h *Hub) message(id string) (messageView, bool) {
 	return ms[0], true
 }
 
+var channelSlugRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
+
 var mentionRE = regexp.MustCompile(`(?:^|[^\w@])@([a-z][a-z0-9_-]{1,31})`)
 
 // mentions resolves @handles to the people and agents they name (unknown handles are plain text).

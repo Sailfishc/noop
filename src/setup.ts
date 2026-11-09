@@ -1,100 +1,13 @@
-// hub init / install / update — out-of-the-box setup and self-update.
+// noop install / update: the daemon as a service, and following this repo's origin.
 import { $ } from "bun";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { CODE, DATA, P } from "./core";
-
-const STATE_DIRS = [
-  "tasks/proposed", "tasks/rejected", "tasks/waiting", "tasks/inbox", "tasks/active", "tasks/blocked", "tasks/failed", "tasks/done",
-  "decisions/open", "decisions/closed", "journal", "fleet/hosts", "reports/daily", "evolution", "reviews",
-];
-
-/** Copy template files that don't exist yet (never overwrite user-evolved agents/memory/policies). */
-function seedTemplates() {
-  const walk = (rel: string) => {
-    for (const e of readdirSync(join(CODE, "templates", rel), { withFileTypes: true })) {
-      const r = join(rel, e.name);
-      if (e.isDirectory()) { mkdirSync(P(r), { recursive: true }); walk(r); }
-      else if (!existsSync(P(r))) cpSync(join(CODE, "templates", r), P(r));
-    }
-  };
-  walk("");
-  for (const d of STATE_DIRS) { mkdirSync(P(d), { recursive: true }); if (!readdirSync(P(d)).length) writeFileSync(P(d, ".gitkeep"), ""); }
-}
-
-/** Worker host: owner email login → POST /api/host/join → this machine's token. */
-async function joinViaLogin(url: string, host: string): Promise<string | null> {
-  const post = async (path: string, body: unknown, auth?: string) => {
-    const r = await fetch(url + path, { method: "POST", body: JSON.stringify(body), signal: AbortSignal.timeout(30_000),
-      headers: { "Content-Type": "application/json", ...(auth ? { Authorization: `Bearer ${auth}` } : {}) } }).catch(() => null);
-    return { ok: !!r?.ok, status: r?.status ?? 0, json: (await r?.json().catch(() => ({}))) as any };
-  };
-  const email = (prompt("owner email:") ?? "").trim();
-  if (!email) return null;
-  const s = await post("/api/auth/start", { email });
-  if (!s.ok) { console.error(`login failed (${s.status}): ${s.json?.error ?? ""}`); return null; }
-  const code = (prompt("code from the email:") ?? "").trim();
-  const v = await post("/api/auth/verify", { email, code });
-  if (!v.ok || !v.json?.session) { console.error(`verification failed (${v.status}): ${v.json?.error ?? ""}`); return null; }
-  const j = await post("/api/host/join", { host }, v.json.session);
-  await post("/api/auth/logout", {}, v.json.session); // the session was only needed to mint the machine token
-  if (!j.ok || !j.json?.token) { console.error(`join failed (${j.status}): ${j.json?.error ?? ""}; or use: noop init ${url} --token <machine-token>`); return null; }
-  return String(j.json.token);
-}
-
-/** `hub init [<hub-url>] [--token <machine-token>]` (the default): join an existing hub as a worker and mirror its data.
- *  `hub init --primary`: the fleet's one primary: deploy your own Worker, seed templates, push them.
- *  A host already set up as the primary (or already joined) keeps its role when init runs again. */
-export async function init(opts: { worker?: string; token?: string; primary?: boolean } = {}) {
-  const { commitPush, pull, loadConfig, hostName } = await import("./core");
-  const { readHubToml, syncMode, writeHubToml } = await import("./sync");
-  mkdirSync(DATA, { recursive: true });
-  const me = hostname().split(".")[0];
-  const joined = readHubToml().cloud?.url;
-  const primaryHere = existsSync(P("config.toml")) && new RegExp(`^\\s*primary\\s*=\\s*"${me}"`, "m").test(readFileSync(P("config.toml"), "utf8"));
-  if (!opts.primary && !primaryHere) {
-    const url = (opts.worker || joined || (prompt("your noop URL (e.g. https://noop.example.com; set up the first machine with --primary):") ?? "")).trim().replace(/\/$/, "");
-    if (!url) { console.error("no noop URL: run init <noop-url>, or init --primary on the machine that hosts it"); process.exitCode = 1; return; }
-    const token = opts.token ?? (url === joined ? readHubToml().server?.token : undefined) ?? await joinViaLogin(url, me);
-    if (!token) return;
-    writeHubToml({ cloud: { url }, server: { token } });
-    if (!(await pull())) { console.error(`could not sync from ${url} (check the URL / token)`); process.exitCode = 1; return; }
-    writeLocalConfig(me);
-    console.log(`✔ joined ${url}; data mirrored to ${DATA}\n  next: hub install   (runs the daemon as a service)`);
-    return;
-  }
-  if (await syncMode() === "remote") await pull(); // re-running init: start from what the Worker has
-  seedTemplates();
-  const cfgPath = P("config.toml");
-  let cfg = readFileSync(cfgPath, "utf8");
-  if (cfg.includes('primary = "__PRIMARY__"')) {
-    cfg = cfg.replace('primary = "__PRIMARY__"', `primary = "${me}"`)
-      .replace('# url = "__URL__"', `url = "http://${me}:8787"`);
-    writeFileSync(cfgPath, cfg);
-    console.log(`this host (${me}) is the fleet primary`);
-  }
-  // the machine token is the Worker's HUB_TOKEN; it stays machine-local (noop.toml), not in the shared data
-  if (!readHubToml().server?.token && !loadConfig().server?.token) writeHubToml({ server: { token: crypto.randomUUID().replace(/-/g, "") } });
-  writeLocalConfig(me);
-  const c = loadConfig();
-  if ((c.fleet?.primary ?? "") === hostName(c) && !c.cloud?.url && !process.env.HUB_SYNC && !process.env.HUB_SYNC_FAKE) {
-    const { cloudDeploy } = await import("./cloud"); // the owner's own fixed endpoint on Cloudflare (free)
-    await cloudDeploy(c);
-    if (!readHubToml().cloud?.url) console.log("Worker not deployed yet; data stays local until you run: hub cloud deploy");
-  }
-  if (await syncMode() === "remote" && !(await commitPush(`[${me}] init`))) console.error("could not push the initial data; it will sync on the next daemon tick");
-  console.log(`✔ data: ${DATA}\n  next: hub install   (runs the daemon as a service)`);
-}
-
-function writeLocalConfig(me: string) {
-  if (!existsSync(P("config.local.toml")))
-    writeFileSync(P("config.local.toml"), `# per-machine overrides & secrets (never synced)\n[host]\n# name = "${me}"\n# caps = []\n# max_parallel = 3\n\n[notify]\n# slack_bot_token = ""\n# discord_bot_token = ""\n`);
-}
+import { CODE, DATA } from "./config";
 
 // ------------------------------------------------------------------ self-update
 /** Fast-forward framework code if origin has new commits that pass tests. Returns true if updated. */
-export async function selfUpdate(opts: { busy?: number; force?: boolean; deploy?: boolean } = {}): Promise<boolean> {
+export async function selfUpdate(opts: { busy?: number; force?: boolean } = {}): Promise<boolean> {
   // never swap code (and then restart) under running work: defer until this host is idle
   if ((opts.busy ?? 0) > 0 && !opts.force) return false;
   const g = (...a: string[]) => $`git ${a}`.cwd(CODE).quiet().nothrow();
@@ -116,22 +29,8 @@ export async function selfUpdate(opts: { busy?: number; force?: boolean; deploy?
   if (deps.exitCode !== 0 || test.exitCode !== 0) {
     await g("reset", "--hard", "-q", head); // roll back a bad release
     await $`bun install --frozen-lockfile`.cwd(CODE).quiet().nothrow();
-    console.error(`self-update to ${up.slice(0, 7)} failed tests → rolled back to ${head.slice(0, 7)}`);
-    const { medic } = await import("./medic");
-    const { loadConfig } = await import("./core");
-    void medic(`self-update ${head.slice(0, 7)} → ${up.slice(0, 7)} failed (deps exit ${deps.exitCode}, tests exit ${test.exitCode}); rolled back.\n${test.stdout.toString().slice(-3000)}${test.stderr.toString().slice(-3000)}`,
-      loadConfig(), { auto: true, kind: "update" });
+    console.error(`self-update to ${up.slice(0, 7)} failed tests → rolled back to ${head.slice(0, 7)}\n${test.stdout.toString().slice(-3000)}${test.stderr.toString().slice(-3000)}`);
     return false;
-  }
-  seedTemplates(); // new template agents/policies appear; existing ones untouched
-  { // primary keeps its own Cloudflare hub in step with the code (Worker or app changed)
-    const { loadConfig, hostName } = await import("./core");
-    const c = loadConfig();
-    const changed = (await g("diff", "--name-only", head, up)).stdout.toString();
-    if (c.cloud?.url && c.fleet?.primary === hostName(c) && (opts.deploy || /^(cloud|app)\//m.test(changed))) {
-      const { cloudDeploy } = await import("./cloud");
-      await cloudDeploy(c);
-    }
   }
   console.log(`self-updated ${head.slice(0, 7)} → ${up.slice(0, 7)}`);
   return true;
@@ -150,7 +49,7 @@ export async function install() {
     const unit = join(homedir(), `.config/systemd/user/${SERVICE}.service`);
     mkdirSync(join(unit, ".."), { recursive: true });
     writeFileSync(unit, `[Unit]
-Description=Noop fleet daemon
+Description=Remi machine daemon
 After=network-online.target
 Wants=network-online.target
 
@@ -166,7 +65,7 @@ TimeoutStopSec=90min
 Environment=PATH=${path}
 Environment=HUB_DATA=${DATA}
 Nice=5
-# keep the box awake while the fleet runs
+# keep the box awake while tasks run
 ExecStartPre=-/usr/bin/true
 
 [Install]
@@ -197,7 +96,7 @@ WantedBy=default.target
     mkdirSync(join(DATA, "logs"), { recursive: true });
     await $`launchctl bootout gui/${process.getuid!()} ${plist}`.quiet().nothrow();
     await $`launchctl bootstrap gui/${process.getuid!()} ${plist}`.nothrow();
-    console.log(`✔ launchd agent installed: ${plist} (caffeinate -i keeps it awake while plugged in; when the lid closes the fleet simply continues without this Mac)`);
+    console.log(`✔ launchd agent installed: ${plist} (caffeinate -i keeps it awake while plugged in; when the lid closes, its tasks wait until it is back)`);
   } else if (process.platform === "win32") {
     const cmd = `"${bun}" "${cli}" daemon`;
     await $`schtasks /Create /F /SC ONLOGON /RL LIMITED /TN ${SERVICE} /TR ${cmd}`.nothrow();

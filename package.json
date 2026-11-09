@@ -8,8 +8,7 @@
   },
   "scripts": {
     "daemon": "bun src/cli.ts daemon",
-    "tick": "bun src/cli.ts tick",
-    "status": "bun src/cli.ts status",
+    "doctor": "bun src/cli.ts doctor",
     "check": "bunx tsc --noEmit",
     "test": "bun test"
   },

@@ -5,7 +5,7 @@
 //
 //   [git.github]            token = "…"                       (optional when gh is logged in)
 //   [[git.gitlab]]          host = "code.example.com"  token = "…"  api = "https://code.example.com/api/v4" (optional)
-import type { Cfg } from "./core";
+import type { Cfg } from "./config";
 import type { AfterRun, Claim, PR, TaskResult, Workdir } from "./teamwork";
 
 export type Remote = { host: string; path: string };

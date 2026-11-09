@@ -496,7 +496,7 @@ func (h *Hub) v1Machines(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, obj{"machines": h.scanMachines(h.db.Query("SELECT " + machineCols + " FROM machines ORDER BY created"))})
 }
 
-// v1MachineCreate: a person adds a machine and gets its token once ([server] token in that machine's noop.toml).
+// v1MachineCreate: a person adds a machine and gets its token once ([server] token in that machine's config.local.toml).
 func (h *Hub) v1MachineCreate(w http.ResponseWriter, q *request) {
 	var b struct{ Name string }
 	_ = q.json(&b)
