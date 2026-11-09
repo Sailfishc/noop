@@ -1,9 +1,11 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, Spinner } from "../ui";
+import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import { errorOf, isParty, type Output, type Task, type Team } from "./api";
-import { NEEDS, STATUS, statusOf, type Needs } from "./status";
+import { STATUS, statusOf } from "./status";
+import { taskRef, waitsOn } from "./taskpeople";
 import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 
@@ -168,7 +170,19 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const error = signal("");
   const st = () => statusOf(task().state);
   const label = () => STATUS[st().status];
-  const needs = () => (st().needs ? NEEDS[st().needs as Exclude<Needs, "">] : null);
+  const needs = () => waitsOn(t, task());
+  const renaming = signal(false);
+  const draft = signal("");
+  async function rename() {
+    const title = draft().trim();
+    if (!title || title === task().title) return renaming.set(false);
+    busy.set("rename");
+    error.set("");
+    const r = await t.setTaskTitle(task().id, title);
+    busy.set("");
+    if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    renaming.set(false);
+  }
   async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
     busy.set(action);
     error.set("");
@@ -187,32 +201,65 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   };
   return (
     <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 560 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-        <Text style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{task().title}</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-          <If when={task().state === "running"}>
-            <Spinner size={11} tint={colors.accent} />
-          </If>
-          <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
+      <If when={props.detail} else={
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
+          <Text style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{task().title}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+            <If when={task().state === "running"}>
+              <Spinner size={11} tint={colors.accent} />
+            </If>
+            <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
+          </View>
         </View>
-      </View>
+      }>
+        <Text testID={`task-${task().id}-ref`} style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{taskRef(t, task())}</Text>
+        <If when={renaming()} else={
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+            <Text testID={`task-${task().id}-title`} style={{ flex: 1, fontSize: 16, lineHeight: 22, fontWeight: "600", color: colors.text, numberOfLines: 3 }}>{task().title}</Text>
+            <If when={party()}>
+              <Btn small kind="ghost" testID={`task-${task().id}-rename`} label={L("Rename", "改标题")} onPress={() => { draft.set(task().title); renaming.set(true); }} />
+            </If>
+          </View>
+        }>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Input
+              testID={`task-${task().id}-title-input`}
+              value={draft()}
+              autoFocus
+              onChange={({ value }) => draft.set(value)}
+              onSubmit={() => void rename()}
+              style={{ flex: 1, height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14.5, color: colors.text }}
+            />
+            <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => renaming.set(false)} />
+            <Btn small kind="primary" testID={`task-${task().id}-title-save`} label={L("Save", "保存")} busy={busy() === "rename"} disabled={!draft().trim()} onPress={() => void rename()} />
+          </View>
+        </If>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View testID={`task-${task().id}-state`} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneOf(label().tone), 0.12) }}>
+            <If when={task().state === "running"}><Spinner size={10} tint={colors.accent} /></If>
+            <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
+          </View>
+          <If when={!needs() && waiting()}>
+            <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{waiting()}</Text>
+          </If>
+        </View>
+      </If>
       <If when={needs()}>
         {(n) => (
           <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
             <StateDot tone={n().tone} />
-            <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label()}</Text>
+            <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label}</Text>
           </View>
         )}
       </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-        <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
-          {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
-        </Text>
-      </View>
-      <If when={props.detail}>
-        <TaskFacts team={t} task={task()} />
+      <If when={!props.detail}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
+          <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
+            {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
+          </Text>
+        </View>
       </If>
       <If when={props.detail ? "" : conclusion(task())}>
         {(line) => <Text testID={`task-${task().id}-summary`} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text, numberOfLines: 2 }}>{line()}</Text>}
@@ -272,6 +319,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         </If>
       </View>
       <ErrorNote text={error()} testID={`task-${task().id}-error`} />
+      <If when={props.detail}>
+        <TaskFacts team={t} task={task()} />
+      </If>
     </View>
   );
 }

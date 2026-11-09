@@ -725,11 +725,13 @@ describe("channel v2", () => {
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
     await app.waitFor("id:task-T-0001-facts");
-    expect(app.shows("text:/^T-0001 · running for/")).toBe(true);
+    expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001" above its title
+    expect(app.shows("text:/^\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
     expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
-    await app.press("id:task-T-0001-runlog");
+    expect(app.shows("id:task-T-0001-runlog")).toBe(false); // folded
+    await app.press("id:task-T-0001-fold-log");
     await app.waitFor("text:Now: 运行 bun test");
   });
 
@@ -740,8 +742,12 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-mandate");
+    await app.press("id:task-T-0001-fold-mandate");
     await app.waitFor("id:task-T-0001-mandate");
     expect(app.shows("text:asked by 王磊 · rule: Members of its channels · confirmed by 张伟 · autonomy: Assist · may only push agent/T-0001 and open a PR")).toBe(true);
+    await app.press("id:task-T-0001-fold-acceptance");
+    await app.waitFor("id:task-T-0001-acceptance");
     expect(app.shows("text:/^None yet: the agent proposes/")).toBe(true);
     await app.press("id:task-T-0001-acceptance-edit");
     await app.type("id:task-T-0001-acceptance-input", "P99 < 200ms");
@@ -755,6 +761,8 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({ created_by: "u_1", state: "pending" })]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-repo");
+    await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
     expect(app.shows("text:none: a general task in an empty folder")).toBe(true);
     expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
@@ -810,8 +818,8 @@ describe("channel v2", () => {
     expect(app.shows("text:3D 云渲染底座模型 · checked now and then")).toBe(true);
     expect(app.shows("text:/^checked 2×/")).toBe(true);
     expect(app.shows("text:排队第 3 位")).toBe(true);
-    expect(app.shows("text:Submitted, result not confirmed")).toBe(true);
-    expect(app.shows("text:1/3")).toBe(true);
+    expect(app.shows("text:submitted, result not confirmed")).toBe(true);
+    expect(app.shows("text:outside 1/3")).toBe(true);
     await app.press("id:open-inbox");
     await app.waitFor("id:inbox-waiting");
     expect(app.shows("id:inbox-empty")).toBe(true); // nothing for you to do
@@ -822,6 +830,8 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-repo");
+    await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
     expect(app.shows("text:acme/pay")).toBe(true);
     expect(app.shows("id:task-T-0001-repo-edit")).toBe(false);
@@ -850,7 +860,7 @@ describe("tasks", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({})]) });
     await app.waitFor("id:task-T-0001");
     expect(app.shows("text:To do")).toBe(true);
-    expect(app.shows("text:Needs its owner’s OK")).toBe(true);
+    expect(app.shows("text:Waits for your OK")).toBe(true); // I own @acha
     await app.press("id:task-T-0001-confirm");
     await app.waitFor("text:In progress");
     expect(app.shows("id:task-T-0001-needs")).toBe(false);
@@ -864,7 +874,7 @@ describe("tasks", () => {
     const t = task({ created_by: "u_1", state: "needs_decision", decision: { question: "现在上线吗？", options: ["A: 现在上", "B: 夜里再上"], recommendation: "B" } });
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
     await app.waitFor("text:现在上线吗？");
-    expect(app.shows("text:Needs a decision")).toBe(true);
+    expect(app.shows("text:Waits for your decision")).toBe(true);
     await app.press("id:task-T-0001-option-1");
     await app.waitFor("text:In progress");
     expect(log.acts).toEqual(["T-0001 decide B: 夜里再上"]);
@@ -935,7 +945,7 @@ describe("tasks", () => {
     await app.waitFor("id:close-thread");
   });
 
-  test("the Tasks page lists every tracked task; filters narrow it to mine or my agents'", async () => {
+  test("the Tasks page shows what concerns me first; views and filters narrow it", async () => {
     const ts = [
       task({ id: "T-0001", state: "running", tracked: true, created_by: "u_1" }),
       task({ id: "T-0002", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9" }),
@@ -943,8 +953,12 @@ describe("tasks", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
     await app.waitFor("id:open-tasks");
     await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0001");
+    expect(app.shows("id:taskrow-T-0002")).toBe(false); // someone else's, for someone else's agent
+    expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001"
+    await app.press("id:tasks-filter-all");
     await app.waitFor("id:taskrow-T-0002");
-    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    expect(app.shows("text:Waits for 王磊 to accept")).toBe(true);
     await app.press("id:tasks-filter-mine");
     await app.waitUntil(() => !app.shows("id:taskrow-T-0002"));
     expect(app.shows("id:taskrow-T-0001")).toBe(true);
