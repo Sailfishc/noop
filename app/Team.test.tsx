@@ -1,4 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
+import { formatText } from "./team/format";
 
 const URL = "http://hub.test:8080";
 const SESSION = { "team.url": URL, "team.session": "sess", "team.email": "zw@corp.com" };
@@ -185,11 +186,72 @@ describe("team channels", () => {
     expect(app.shows("text:/@acha/")).toBe(true);
     await app.type("id:team-composer", "@acha 顺便看下索引");
     await app.press("id:team-composer-send");
-    await app.waitFor("text:@acha 顺便看下索引");
+    await app.waitFor("text:/顺便看下索引/");
     expect(log.posts.length).toBe(1);
     expect(log.posts[0].text).toBe("@acha 顺便看下索引");
     expect(typeof log.posts[0].client_id).toBe("string");
     expect(app.value("id:team-composer")).toBe("");
+  });
+
+  test("the formatting buttons write Markdown; messages show it", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:team-composer");
+    await app.press("id:team-composer-bold");
+    expect(app.value("id:team-composer")).toBe("****");
+    await app.clear("id:team-composer");
+    await app.press("id:team-composer-list");
+    await app.type("id:team-composer", "第一条");
+    expect(app.value("id:team-composer")).toBe("- 第一条");
+    await app.press("id:team-composer-send");
+    await app.waitFor("text:/第一条/");
+    expect(log.posts[0].text).toBe("- 第一条");
+  });
+
+  test("formatting wraps the selection or marks its lines", () => {
+    expect(formatText("改这里", { start: 1, end: 3 }, "bold")).toEqual({ text: "改**这里**", start: 3, end: 5 });
+    expect(formatText("ab", { start: 2, end: 2 }, "code")).toEqual({ text: "ab``", start: 3, end: 3 });
+    expect(formatText("一\n二", { start: 0, end: 3 }, "numbered").text).toBe("1. 一\n2. 二");
+    expect(formatText("x\n看这段", { start: 3, end: 3 }, "quote").text).toBe("x\n> 看这段");
+    expect(formatText("文档", { start: 0, end: 2 }, "link")).toEqual({ text: "[文档](https://)", start: 13, end: 13 });
+    expect(formatText("说明", { start: 2, end: 2 }, "codeblock").text).toBe("说明\n```\n\n```\n");
+  });
+
+  test("files: pasted, picked or dropped, shown before sending, uploaded with the message, shown on it", async () => {
+    const log = newLog();
+    const uploads: string[] = [];
+    const withFiles = msg({ id: "msg_1", seq: 1, text: "@acha 看下这个", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }], attachments: ["/media/1-a-shot.png", "/media/1-b-spec.pdf"] });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {
+      [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [withFiles], more: false } },
+      [`GET ${URL}/api/v1/messages/msg_1/attachments`]: { body: { attachments: [
+        { path: "/media/1-a-shot.png", name: "截图.png", mime: "image/png", size: 2048, url: "/api/v1/media/1-a-shot.png/signed?x" },
+        { path: "/media/1-b-spec.pdf", name: "需求.pdf", mime: "application/pdf", size: 3 << 20, url: "/api/v1/media/1-b-spec.pdf/signed?x" },
+      ] } },
+      [`GET ${URL}/api/v1/media/*`]: { body: "" },
+      [`POST ${URL}/api/v1/uploads?*`]: (r: { url: string }) => {
+        const name = decodeURIComponent(r.url.split("name=")[1]);
+        uploads.push(name);
+        return { body: { path: `/media/9-x-${uploads.length}`, name, mime: "", size: 1 } };
+      },
+    }) });
+    await app.waitFor("id:message-file");
+    expect(app.shows("text:需求.pdf")).toBe(true);
+    expect(app.shows("text:3.0 MB")).toBe(true);
+    expect(app.shows("id:message-picture")).toBe(true);
+
+    app.onPick(() => [{ name: "notes.md", type: "text/markdown", data: new TextEncoder().encode("# hi") }]);
+    await app.press("id:team-composer-attach");
+    await app.waitFor("id:team-composer-file");
+    expect(app.shows("text:notes.md")).toBe(true);
+    await app.press("id:team-composer-unattach");
+    expect(app.shows("id:team-composer-file")).toBe(false);
+    await app.press("id:team-composer-attach");
+    await app.waitFor("id:team-composer-file");
+    await app.press("id:team-composer-send"); // files alone are a message
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(uploads).toEqual(["notes.md"]);
+    expect(log.posts[0].attachments).toEqual(["/media/9-x-1"]);
+    expect(app.shows("id:team-composer-file")).toBe(false);
   });
 
   test("a thread opens beside the channel; a reply goes into it and counts on the root", async () => {

@@ -2,6 +2,7 @@
 // (people, agents, machines, channels, messages, threads), kept live by the server's socket and, without it, by
 // polling /api/v1/updates.
 import { signal, untracked } from "nsh";
+import { L } from "../i18n";
 
 export type Member = { kind: "user" | "agent"; id: string };
 export type Mention = Member & { handle: string };
@@ -87,6 +88,8 @@ export type Message = {
   /** Who put which emoji on it, oldest first (an agent's 👀: it took the message up). */
   reactions?: { emoji: string; author: Member }[];
 };
+/** A file on a message: what the server knows of it, and a link (15 minutes) to show or download it. */
+export type Attachment = { path: string; name: string; mime: string; size: number; url?: string };
 export type Session = { url: string; session: string };
 export type Conn = "connecting" | "live" | "offline" | "unauthorized";
 export type Reply = { ok: boolean; status: number; data: any };
@@ -426,9 +429,27 @@ export function createTeam(s: Session) {
   }
 
   let counter = 0;
-  async function send(channelId: string, text: string, threadId: string | null = null): Promise<string | null> {
+  /** Puts a file on the server for a message: its "/media/…" path, or the reason it failed. */
+  async function upload(file: Blob, name: string): Promise<{ path: string } | { error: string }> {
+    try {
+      const headers: Record<string, string> = { Authorization: `Bearer ${s.session}` };
+      if (file.type) headers["Content-Type"] = file.type;
+      const r = await fetch(`${s.url}/api/v1/uploads?name=${encodeURIComponent(name)}`, { method: "POST", headers, body: file });
+      if (r.status === 401) conn.set("unauthorized");
+      const data: any = await r.json().catch(() => ({}));
+      return r.ok && data.path ? { path: String(data.path) } : { error: data.error || L(`Couldn’t upload ${name} (${r.status})`, `${name} 上传失败（${r.status}）`) };
+    } catch {
+      return { error: L(`Couldn’t upload ${name}: the server is unreachable`, `${name} 上传失败：连不上服务器`) };
+    }
+  }
+  /** A message's files, each with a short-lived link to show or download it. */
+  async function attachments(messageId: string): Promise<Attachment[]> {
+    const r = await api("GET", `/api/v1/messages/${messageId}/attachments`);
+    return r.ok ? (r.data.attachments as Attachment[]).map((a) => ({ ...a, url: a.url ? s.url.replace(/\/$/, "") + a.url : undefined })) : [];
+  }
+  async function send(channelId: string, text: string, threadId: string | null = null, files: string[] = []): Promise<string | null> {
     const client_id = `c${Date.now().toString(36)}${(counter++).toString(36)}`;
-    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}) });
+    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}), ...(files.length ? { attachments: files } : {}) });
     if (!r.ok) return errorOf(r, `发送失败（${r.status || "连不上服务器"}）`);
     applyMessage(r.data as Message, false);
     return null;
@@ -566,7 +587,7 @@ export function createTeam(s: Session) {
 
   return {
     url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
-    openChannel, leaveView, loadOlder, openThread, send, createChannel, join, addMember, removeMember, patchChannel, repos,
+    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
