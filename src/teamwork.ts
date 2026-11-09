@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
+import { addUsage, classify, FAILURE_TEXT, type Failure, planFor, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 
 export type Decision = { question: string; options: string[]; recommendation?: string; answer?: string };
@@ -286,6 +287,13 @@ export type WorkerOptions = {
   logDir?: string;
   /** How often a step reaches the card, at most (ms). */
   stepEveryMs?: number;
+  /** Stop a run that printed nothing for this long (ms; default 20 minutes), or ran this long in all (default 60). */
+  stallMs?: number;
+  timeoutMs?: number;
+  /** Why a runtime cannot run here right now (not logged in), as far as the machine knows; null: it can. */
+  runtimeReady?: (name: string) => string | null | Promise<string | null>;
+  /** How long a pause before a retry really is (tests shorten it). */
+  pauseMs?: (ms: number) => number;
 };
 
 const expand = (p: string) => (p.startsWith("~") ? join(homedir(), p.slice(1)) : resolve(p));
@@ -465,6 +473,30 @@ was said before, a related thread, other tasks), look it up with the \`remi\` co
 - remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
 Look up only what the request needs.`;
 
+/** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
+export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {
+  return `The machine stopped your last turn: ${why === "stall" ? `it printed nothing for ${minutes} minutes` : `it ran for ${minutes} minutes, the limit of one turn`}.
+Continue from where you got to. Run anything slow (a long build, a test suite, a deployment) in the background and
+return "waiting" with a way to check it, instead of waiting in place.
+
+${RESULT_SPEC}`;
+}
+
+/** The provider failed or was busy; the same session goes on after a pause. */
+export function retryPrompt(error: string): string {
+  return `Your last turn was cut off by an error from the model service (${error.slice(0, 200)}). Continue from where you got to; do not redo steps that already took effect.
+
+${RESULT_SPEC}`;
+}
+
+/** The agent worked but ended without the result block: it is asked for the block alone, once. */
+export const RESULT_ONLY = `Your last message did not end with the result block. Do not redo or change anything: reply with only the
+\`\`\`json result block for the work you already did, in the format below.
+
+${RESULT_SPEC}`;
+
+const hasResultBlock = (text: string) => /```json\s*\{[\s\S]*?"status"[\s\S]*?\}\s*```/.test(text);
+
 export function createWorker(o: WorkerOptions) {
   const log = o.log ?? ((s: string) => console.log(`remi: ${s}`));
   const root = o.workRoot ?? join(homedir(), ".noop", "teamagent", "work");
@@ -480,7 +512,12 @@ export function createWorker(o: WorkerOptions) {
     const t = c.task;
     const rt = runtimes[c.agent.runtime || "codex"];
     if (!rt || !rt.available()) {
-      await report(t.id, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试` });
+      await report(t.id, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试`, failure: "not_installed" });
+      return;
+    }
+    const notReady = await o.runtimeReady?.(c.agent.runtime || "codex");
+    if (notReady) {
+      await report(t.id, { state: "blocked", summary: notReady, failure: "auth" });
       return;
     }
     let wd: Workdir;
@@ -513,21 +550,77 @@ export function createWorker(o: WorkerOptions) {
       if (Date.now() - lastStep >= every) flushStep();
       else stepTimer ??= setTimeout(flushStep, every - (Date.now() - lastStep));
     };
-    const start = (resumeId: string, text: string) => rt.start({
-      cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined,
-      env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
+    const stallMs = o.stallMs ?? 20 * 60_000, timeoutMs = o.timeoutMs ?? 60 * 60_000;
+    let usage: Usage | undefined, cancelled = false, wakeUp = () => {};
+    const go = async (resumeId: string, text: string): Promise<RunResult> => {
+      const h = rt.start({
+        cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined, stallMs, timeoutMs,
+        env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
+      });
+      kills.set(t.id, () => { cancelled = true; h.kill(); });
+      const res = await h.done;
+      if (res.usage) usage = addUsage(usage, res.usage);
+      return res;
+    };
+    // a pause before trying again, cut short when the task is cancelled
+    const pause = (ms: number) => new Promise<void>((res) => {
+      const timer = setTimeout(res, o.pauseMs ? o.pauseMs(ms) : ms);
+      wakeUp = () => { clearTimeout(timer); res(); };
+      kills.set(t.id, () => { cancelled = true; wakeUp(); });
     });
     log(`${t.id} @${c.agent.handle} 开工：${t.title}${resume ? "（续）" : ""}`);
-    let h = start(resume, prompt);
-    kills.set(t.id, () => h.kill());
-    let r: RunResult = await h.done;
-    if (resume && !r.killed && r.exitCode !== 0 && !r.text) { // the session is gone (another machine, cleaned up): start over
-      h = start("", taskPrompt(c, wd));
-      kills.set(t.id, () => h.kill());
-      r = await h.done;
+    let r: RunResult = await go(resume, prompt), resumed = !!resume;
+    let failure: Failure | null = null, retries = 0, fresh = false, continued = false, emptyRetried = false;
+    for (;;) {
+      if (r.killed || cancelled) break;
+      // an empty completion (no text, no step, no error) is a flake of the tool chain: once more, as it was
+      if (!r.text && !r.error && !r.stopped && r.exitCode === 0 && !r.steps && !emptyRetried) { emptyRetried = true; r = await go(resume, prompt); continue; }
+      const f = classify({ ...r, resumed });
+      if (!f) break;
+      const plan = planFor(f, c.agent.runtime || "codex");
+      if (plan.act === "retry" && retries < plan.afterMs.length) {
+        const wait = plan.afterMs[retries++]!;
+        log(`${t.id} ${FAILURE_TEXT[f]}，${Math.round(wait / 60_000)} 分钟后重试（第 ${retries} 次）`);
+        void report(t.id, { step: `${FAILURE_TEXT[f]}，${Math.round(wait / 60_000)} 分钟后重试（第 ${retries} 次）` });
+        await pause(wait);
+        if (cancelled) break;
+        r = r.session ? await go(r.session, retryPrompt(r.error ?? f)) : await go(resume, prompt);
+        resumed = !!(r.session || resume);
+        continue;
+      }
+      if (plan.act === "fresh" && !fresh) {
+        fresh = true;
+        log(`${t.id} ${FAILURE_TEXT[f]}，换新会话重来`);
+        r = await go("", taskPrompt(c, wd));
+        resumed = false;
+        continue;
+      }
+      if (plan.act === "continue" && !continued && r.session) {
+        continued = true;
+        log(`${t.id} ${FAILURE_TEXT[f]}，在同一会话里续跑一次`);
+        r = await go(r.session, stoppedPrompt(r.stopped ?? "stall", Math.round((r.stopped === "timeout" ? timeoutMs : stallMs) / 60_000)));
+        resumed = true;
+        continue;
+      }
+      failure = f;
+      break;
+    }
+    // it worked but forgot the result block: ask for the block alone, once (a plain answer with no steps is fine as it is)
+    if (!failure && !r.killed && !cancelled && r.text && r.steps && r.session && !hasResultBlock(r.text)) {
+      const again = await go(r.session, RESULT_ONLY);
+      if (!again.killed && !cancelled && hasResultBlock(again.text)) r = { ...again, text: again.text };
+      else if (again.killed || cancelled) r = again;
     }
     clearTimeout(stepTimer);
-    if (r.killed) { log(`${t.id} 已停止`); return; }
+    if (r.killed || cancelled) { log(`${t.id} 已停止`); return; }
+    if (failure) {
+      const plan = planFor(failure, c.agent.runtime || "codex");
+      const detail = (r.error ?? r.stderr ?? "").trim().split("\n").slice(-3).join("\n").slice(0, 600);
+      const summary = plan.act === "block" ? `${plan.why}${detail ? `\n\n${detail}` : ""}` : `运行失败（${FAILURE_TEXT[failure]}）：${detail || `退出码 ${r.exitCode}`}`;
+      await report(t.id, { state: plan.act === "block" ? "blocked" : "failed", summary, session: r.session, failure, ...(usage ? { usage } : {}) });
+      log(`${t.id} → ${plan.act === "block" ? "blocked" : "failed"}（${failure}）`);
+      return;
+    }
     const result = r.text ? parseTaskResult(r.text) : { status: "failed" as const, summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
     let extra: { pr?: PR; note?: string } | null = null;
     if (o.afterRun && result.status === "review") {
@@ -546,7 +639,7 @@ export function createWorker(o: WorkerOptions) {
       }
     }
     const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? "", notes.join("；")].filter(Boolean).join("\n\n");
-    const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
+    const body: Record<string, unknown> = { state: result.status, summary, session: r.session, ...(usage ? { usage } : {}) };
     if (result.result === "confirmed" || result.result === "unconfirmed") body.result = result.result;
     if (result.status === "waiting" && result.wait) {
       const w = result.wait;

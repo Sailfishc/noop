@@ -4,9 +4,11 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { DEFAULT_GATES } from "./gates";
+import { addUsage, type Usage } from "./runfail";
 
 /** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). */
-export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "message"; text: string } | { kind: "error"; text: string };
+export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "message"; text: string } | { kind: "error"; text: string }
+  | { kind: "usage"; usage: Usage };
 
 export type RunOptions = {
   cwd: string;
@@ -19,6 +21,10 @@ export type RunOptions = {
   model?: string;
   logFile?: string;
   onEvent?: (e: RunEvent) => void;
+  /** Stop the run when it has printed nothing for this long (ms; 0: never). */
+  stallMs?: number;
+  /** Stop the run after this long in all (ms; 0: never). */
+  timeoutMs?: number;
 };
 
 export type RunResult = {
@@ -30,6 +36,14 @@ export type RunResult = {
   /** Stopped from outside (the task was cancelled). */
   killed: boolean;
   error?: string;
+  /** The watchdog stopped it: no output for stallMs, or past timeoutMs. */
+  stopped?: "stall" | "timeout";
+  /** The end of what it wrote to stderr. */
+  stderr?: string;
+  /** Tokens the run used, as far as the runtime said. */
+  usage?: Usage;
+  /** How many steps (tool calls) it took. */
+  steps?: number;
 };
 
 export type RunHandle = { done: Promise<RunResult>; kill: () => void };
@@ -54,6 +68,13 @@ export function codexEvent(line: string): RunEvent | null {
       return e.thread_id ? { kind: "session", id: String(e.thread_id) } : null;
     case "turn.failed":
       return { kind: "error", text: String(e.error?.message ?? "turn failed") };
+    case "turn.completed": {
+      // Codex counts cached input inside input_tokens: split it out
+      const u = e.usage ?? {};
+      if (typeof u.input_tokens !== "number") return null;
+      const cached = Number(u.cached_input_tokens) || 0;
+      return { kind: "usage", usage: { input: u.input_tokens - cached, cacheRead: cached, output: Number(u.output_tokens) || 0 } };
+    }
     case "error":
       return { kind: "error", text: String(e.message ?? "error") };
     case "item.started":
@@ -94,15 +115,30 @@ export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" |
 }
 
 /** Starts `command` with the prompt on stdin, turns each JSON line of its output into RunEvents with `parse`, and
- * collects the session, the last message and the error. Shared by the adapters below. */
-function jsonlRun(bin: string, command: (o: RunOptions) => string[], parse: (line: string) => RunEvent | RunEvent[] | null, o: RunOptions): RunHandle {
+ * collects the session, the last message and the error. Shared by the adapters below.
+ * The run gets its own process group, so stopping it also stops what it started (a test run, a dev server). A
+ * watchdog stops it when it prints nothing for `stallMs`, or runs past `timeoutMs`. */
+export function jsonlRun(bin: string, command: (o: RunOptions) => string[], parse: (line: string) => RunEvent | RunEvent[] | null, o: RunOptions): RunHandle {
   const cmd = command(o);
   const proc = Bun.spawn(cmd, {
-    cwd: o.cwd, stdin: new Blob([o.prompt]), stdout: "pipe", stderr: "pipe", env: { ...process.env, ...o.env },
-  });
-  let killed = false;
+    cwd: o.cwd, stdin: new Blob([o.prompt]), stdout: "pipe", stderr: "pipe", env: { ...process.env, ...o.env }, detached: true,
+  } as Parameters<typeof Bun.spawn>[1]);
+  let killed = false, stopped: RunResult["stopped"], lastOutput = Date.now();
+  const stop = () => {
+    const signal = (sig: NodeJS.Signals) => { try { process.kill(-proc.pid, sig); } catch { try { proc.kill(sig); } catch {} } };
+    signal("SIGTERM");
+    const hard = setTimeout(() => signal("SIGKILL"), 10_000);
+    void proc.exited.then(() => clearTimeout(hard));
+  };
+  const watch = o.stallMs || o.timeoutMs ? setInterval(() => {
+    const now = Date.now();
+    if (o.timeoutMs && now - started >= o.timeoutMs) stopped = "timeout";
+    else if (o.stallMs && now - lastOutput >= o.stallMs) stopped = "stall";
+    if (stopped) { clearInterval(watch); stop(); }
+  }, Math.max(50, Math.min(30_000, (o.stallMs || o.timeoutMs || 30_000) / 4))) : undefined;
+  const started = Date.now();
   const done = (async (): Promise<RunResult> => {
-    let session = o.resume ?? "", text = "", error: string | undefined, buf = "", log = "";
+    let session = o.resume ?? "", text = "", error: string | undefined, buf = "", log = "", usage: Usage | undefined, steps = 0;
     const dec = new TextDecoder();
     const onLine = (line: string) => {
       if (!line.trim()) return;
@@ -112,11 +148,18 @@ function jsonlRun(bin: string, command: (o: RunOptions) => string[], parse: (lin
         if (ev.kind === "session") session = ev.id;
         else if (ev.kind === "message") text = ev.text;
         else if (ev.kind === "error") error = ev.text;
+        else if (ev.kind === "usage") usage = addUsage(usage, ev.usage);
+        else if (ev.kind === "step") steps++;
         o.onEvent?.(ev);
       }
     };
-    const errText = new Response(proc.stderr).text();
-    for await (const chunk of proc.stdout) {
+    const errText = (async () => {
+      let all = "";
+      for await (const chunk of proc.stderr as ReadableStream<Uint8Array>) { lastOutput = Date.now(); all += dec.decode(chunk, { stream: true }); if (all.length > 64_000) all = all.slice(-32_000); }
+      return all;
+    })();
+    for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+      lastOutput = Date.now();
       buf += dec.decode(chunk, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop()!;
@@ -124,17 +167,18 @@ function jsonlRun(bin: string, command: (o: RunOptions) => string[], parse: (lin
     }
     onLine(buf);
     const exitCode = await proc.exited;
+    clearInterval(watch);
     const stderr = await errText;
     if (o.logFile) {
       try {
         if (!existsSync(dirname(o.logFile))) mkdirSync(dirname(o.logFile), { recursive: true });
-        writeFileSync(o.logFile, `$ ${cmd.join(" ")}\n(exit ${exitCode})\n\n${log}\n[stderr]\n${stderr}`);
+        writeFileSync(o.logFile, `$ ${cmd.join(" ")}\n(exit ${exitCode}${stopped ? `, stopped: ${stopped}` : ""})\n\n${log}\n[stderr]\n${stderr}`);
       } catch {}
     }
-    if (exitCode && !error) error = stderr.trim().split("\n").slice(-3).join("\n") || `${bin} exited ${exitCode}`;
-    return { session, text, exitCode, killed, error };
+    if (exitCode && !error && !killed && !stopped) error = stderr.trim().split("\n").slice(-3).join("\n") || `${bin} exited ${exitCode}`;
+    return { session, text, exitCode, killed, error, stopped, stderr: stderr.slice(-4000), usage, steps };
   })();
-  return { done, kill: () => { killed = true; proc.kill(); } };
+  return { done, kill: () => { killed = true; clearInterval(watch); stop(); } };
 }
 
 const onPath = (bin: string) => Bun.which(bin, { PATH: process.env.PATH ?? "" }) !== null;
@@ -189,6 +233,11 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
       if (e.session_id) out.push({ kind: "session", id: String(e.session_id) });
       if (typeof e.result === "string" && e.result) out.push({ kind: "message", text: e.result });
       if (e.is_error) out.push({ kind: "error", text: String(e.result || e.subtype || "error") });
+      const u = e.usage;
+      if (u && typeof u.input_tokens === "number") {
+        out.push({ kind: "usage", usage: { input: u.input_tokens, cacheRead: Number(u.cache_read_input_tokens) || 0,
+          cacheWrite: Number(u.cache_creation_input_tokens) || 0, output: Number(u.output_tokens) || 0 } });
+      }
       return out;
     }
   }
@@ -221,7 +270,7 @@ export const claude: Runtime = {
 const textOf = (m: any) => (Array.isArray(m?.content) ? m.content : []).filter((c: any) => c?.type === "text").map((c: any) => String(c.text ?? "")).join("");
 
 /** One line of `pi -p --mode json` → what it means for us. */
-export function piEvent(line: string): RunEvent | null {
+export function piEvent(line: string): RunEvent | RunEvent[] | null {
   let e: any;
   try { e = JSON.parse(line); } catch { return null; }
   switch (e?.type) {
@@ -234,9 +283,16 @@ export function piEvent(line: string): RunEvent | null {
     case "message_end": {
       const m = e.message ?? {};
       if (m.role !== "assistant") return null;
-      if (m.stopReason === "error" || m.stopReason === "aborted") return { kind: "error", text: String(m.errorMessage ?? m.stopReason) };
+      const u = m.usage;
+      const usage: RunEvent[] = u && typeof u.input === "number"
+        ? [{ kind: "usage", usage: { input: u.input, cacheRead: Number(u.cacheRead) || 0, cacheWrite: Number(u.cacheWrite) || 0, output: Number(u.output) || 0 } }] : [];
+      if (m.stopReason === "error" || m.stopReason === "aborted") {
+        const err: RunEvent = { kind: "error", text: String(m.errorMessage ?? m.stopReason) };
+        return usage.length ? [...usage, err] : err;
+      }
       const t = textOf(m);
-      return t.trim() ? { kind: "message", text: t } : null;
+      const out: RunEvent[] = [...usage, ...(t.trim() ? [{ kind: "message" as const, text: t }] : [])];
+      return out.length === 0 ? null : out.length === 1 ? out[0]! : out;
     }
     case "auto_retry_end":
       return e.success ? null : { kind: "error", text: String(e.finalError ?? "retry failed") };

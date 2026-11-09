@@ -171,7 +171,18 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     }
   };
 
+  const LOGIN: Record<string, string> = { codex: "codex login", claude: "claude auth login", pi: "pi（配好模型凭据，pi --list-models 能列出模型）" };
+  const minutes = (v: unknown, d: number) => (Number(v) > 0 ? Number(v) : d) * 60_000;
   const worker = createWorker({
+    stallMs: minutes(cfg.clis?.stall_minutes, 20), timeoutMs: minutes(cfg.clis?.timeout_minutes, 60),
+    // what the last look said; when it says not logged in, look again now (people log in, then reply in the thread)
+    runtimeReady: async (name) => {
+      const said = probe?.runtime_info.find((x) => x.name === name);
+      if (said?.logged_in !== false) return null;
+      const now = detectRuntimes().find((x) => x.name === name);
+      if (probe) probe = { ...probe, at: Date.now(), runtime_info: probe.runtime_info.map((x) => (x.name === name && now ? now : x)) };
+      return now?.logged_in === false ? `${name} 在这台机器上没有登录：运行 ${LOGIN[name] ?? `${name} 登录`} 后，在线程里回复一句即可重试` : null;
+    },
     api: (path, init) => api(path, init), server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
     resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
     files: {
