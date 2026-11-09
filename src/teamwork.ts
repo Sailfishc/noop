@@ -343,6 +343,20 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
   return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
 }
 
+/** Removes a task's folders: its worktree (the branch stays in the repository, so a task picked up again gets its
+ * work back) or its general-task directory, and the in/ and out/ beside it. */
+export async function removeWorkdir(root: string, id: string): Promise<void> {
+  const dir = join(root, id);
+  if (existsSync(dir)) {
+    const common = (await git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
+    const inRepo = existsSync(join(dir, ".git")) && !!common && existsSync(common);
+    if (inRepo) await git(dir, `--git-dir=${common}`, "worktree", "remove", "--force", dir);
+    rmSync(dir, { recursive: true, force: true });
+    if (inRepo) await git(root, `--git-dir=${common}`, "worktree", "prune");
+  }
+  rmSync(join(root, `${id}.files`), { recursive: true, force: true });
+}
+
 /** Whether the run left anything in the task's worktree: edits, or commits on its branch. */
 async function touched(wd: Workdir): Promise<boolean> {
   if (!wd.repo) return false;
@@ -798,8 +812,27 @@ export function createWorker(o: WorkerOptions) {
     }
   }
 
+  /** The folders of tasks that ended a week ago or more (the server says which; it keeps them that long in case
+   * someone picks the task up again) go, so worktrees do not pile up on the machine. */
+  async function sweep(): Promise<string[]> {
+    let ids: string[] = [];
+    try { ids = [...new Set(readdirSync(root).map((n) => n.replace(/\.files$/, "")).filter((n) => /^T-\d+$/.test(n)))].sort(); } catch { return []; }
+    ids = ids.filter((id) => !running.has(id) && !claiming.has(id) && !unsent(id));
+    const removed: string[] = [];
+    for (let i = 0; i < ids.length; i += 100) {
+      const r = await o.api(`/api/v1/machine/tasks?ended=${ids.slice(i, i + 100).join(",")}`).catch(() => null);
+      for (const t of (r?.tasks ?? []) as { id: string }[]) {
+        if (!ids.includes(t.id) || running.has(t.id)) continue;
+        await removeWorkdir(root, t.id).catch((e) => log(`清理 ${t.id} 的目录失败：${e instanceof Error ? e.message : e}`));
+        removed.push(t.id);
+      }
+    }
+    if (removed.length) log(`清理了已结束一周以上的任务目录：${removed.join(" ")}`);
+    return removed;
+  }
+
   return {
-    onTask, poll, checkWaits, flush,
+    onTask, poll, checkWaits, flush, sweep,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },

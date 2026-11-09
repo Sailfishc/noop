@@ -3,6 +3,7 @@ package hub
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 type taskEnv struct {
@@ -213,6 +214,14 @@ func TestTaskPRsAndGitlabHook(t *testing.T) {
 	check(t, "merged on Ant Code → done", r.status == 200 && tk["state"] == "done" && tk["pr"].(map[string]any)["state"] == "merged", resp{raw: []byte(fmt.Sprint(tk))})
 	r = hook("s3cret", map[string]any{"object_kind": "merge_request", "object_attributes": map[string]any{"source_branch": "feature/x", "state": "merged"}})
 	check(t, "other branches are not tasks", r.body["ignored"] == "not a task branch", r)
+
+	ended := func(token string) int {
+		return len(e.do("GET", "/api/v1/machine/tasks?ended=T-0001,T-0099", token, nil).body["tasks"].([]any))
+	}
+	check(t, "an ended task's folder is kept for a week", ended(e.token) == 0)
+	e.advance(endedKeep + time.Minute)
+	check(t, "then the machine may remove it", ended(e.token) == 1)
+	check(t, "not another machine's", ended(e.otherToken) == 0)
 }
 
 func TestTaskTeamScopeAndAcceptance(t *testing.T) {

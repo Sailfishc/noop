@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -612,6 +613,9 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 }
 
 // v1MachineTasks: the work waiting for this machine, and what it was running (to pick up after a restart).
+// endedKeep: how long a machine keeps an ended task's worktree, in case someone picks the task up again.
+const endedKeep = 7 * 24 * time.Hour
+
 func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("waiting") == "1" { // its tasks that wait on a check command it runs
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'waiting' AND json_extract(wait, '$.how') = 'poll'
@@ -622,6 +626,21 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
 		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
 			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
+		return
+	}
+	if ids := q.query("ended"); ids != "" { // of the task folders it keeps, the ones whose task ended a week ago or more
+		list := strings.Split(ids, ",")
+		if len(list) > 200 {
+			list = list[:200]
+		}
+		args := []any{q.who.machineID, h.nowMs() - endedKeep.Milliseconds()}
+		for _, id := range list {
+			args = append(args, id)
+		}
+		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('done', 'closed')
+			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) AND updated < ?
+			AND id IN (?`+strings.Repeat(", ?", len(list)-1)+`) ORDER BY num`, args...))
+		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')

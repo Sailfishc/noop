@@ -240,6 +240,8 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     const r = await api("/api/v1/machine/tasks?prs=1");
     if (r?.tasks) await refreshPRs(cfg, r.tasks, (id, pr) => api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify({ pr }) }));
   }, 120_000);
+  // the folders of tasks that ended a week ago or more, hourly
+  const sweepTick = setInterval(() => void worker.sweep(), 3_600_000);
   void report().then((r) => {
     if (r) log(`已接入 ${base}：${r.machine?.name ?? "?"}，Agent ${agents.map((a) => `@${a.handle}`).join(" ") || "（还没有）"}`);
   });
@@ -247,6 +249,6 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   return {
     agents: () => agents,
     worker,
-    stop: () => { stopped = true; clearInterval(tick); clearInterval(prTick); worker.stop(); ws?.close(); },
+    stop: () => { stopped = true; clearInterval(tick); clearInterval(prTick); clearInterval(sweepTick); worker.stop(); ws?.close(); },
   };
 }
