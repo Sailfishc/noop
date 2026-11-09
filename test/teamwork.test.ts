@@ -76,6 +76,9 @@ test("the agent's first word is an emoji for how it read the request; it goes to
   expect(reactionOf("没有")).toBe("");
   expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).toContain("react: <one emoji>");
   expect(followUpPrompt(claim())).toContain("react: <one emoji>");
+  const withFile = claim();
+  withFile.thread[0]!.attachments = ["/media/1730000000-ab12cd34-spec.pdf"];
+  expect(taskPrompt(withFile, { cwd: "/w", writable: [] })).toContain("[attached, in your in/ folder: 1730000000-ab12cd34-spec.pdf]");
 
   const W = mkdtempSync(join(tmpdir(), "teamwork-"));
   const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];

@@ -94,6 +94,10 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/hooks/wait/{token}", public, h.v1WaitHook)
 	r("POST /api/v1/tasks/{id}/wait", machine, h.v1WaitCheck)
 	r("GET /api/v1/outputs/{id}/content", public, h.v1OutputContent)
+	m.HandleFunc("POST /api/v1/uploads", h.v1Handler(person, h.v1Upload, maxAttachment+1))
+	r("GET /api/v1/messages/{id}/attachments", person, h.v1MessageAttachments)
+	r("GET /api/v1/media/{id}", anyone, h.v1Media)
+	r("GET /api/v1/media/{id}/signed", public, h.v1MediaSigned)
 
 	m.HandleFunc("GET /api/v1/stream", h.v1Stream)
 	m.HandleFunc("/api/v1/", func(w http.ResponseWriter, r *http.Request) { errJSON(w, 404, "not found") })
