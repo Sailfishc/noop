@@ -183,7 +183,13 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
       if (probe) probe = { ...probe, at: Date.now(), runtime_info: probe.runtime_info.map((x) => (x.name === name && now ? now : x)) };
       return now?.logged_in === false ? `${name} 在这台机器上没有登录：运行 ${LOGIN[name] ?? `${name} 登录`} 后，在线程里回复一句即可重试` : null;
     },
-    api: (path, init) => api(path, init), server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
+    api: (path, init) => api(path, init),
+    send: async (path, body) => {
+      const r = await fetch(base + path, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null);
+      if (!r) return "retry";
+      if (r.ok) return "ok";
+      return r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429 ? "drop" : "retry";
+    }, server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
     resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
     files: {
       async upload(taskId, name, data) {

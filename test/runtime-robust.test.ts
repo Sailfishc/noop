@@ -164,7 +164,7 @@ test("a runtime the machine knows is logged out is not started at all", async ()
   const run = await work([{ text: DONE }], { runtimeReady: async () => "codex 在这台机器上没有登录" });
   await run.done();
   expect(run.seen.length).toBe(0);
-  expect(run.reports().at(-1)).toEqual({ state: "blocked", summary: "codex 在这台机器上没有登录", failure: "auth" });
+  expect(run.reports().at(-1)).toEqual({ state: "blocked", summary: "codex 在这台机器上没有登录", failure: "auth", run: 1 });
 });
 
 test("a stalled run goes on once in its session, told why", async () => {
@@ -209,4 +209,51 @@ test("an empty completion is run once more; a task cancelled while it pauses rep
   await run.done();
   expect(run.seen.length).toBe(1);
   expect(run.reports().some((b) => b.state)).toBe(false);
+});
+
+test("a result the server did not take waits in the outbox; it is sent first, and the task is not run again", async () => {
+  const W = mkdtempSync(join(tmpdir(), "robust-"));
+  const seen: RunOptions[] = [], sent: any[] = [];
+  let up = false, claims: Claim | null = claim();
+  const running = { ...claim().task, state: "running" };
+  const api = async (path: string) => {
+    if (path.endsWith("/claim")) { const c = claims; claims = null; return c; }
+    if (path === "/api/v1/machine/tasks") return { tasks: [running] }; // the server still thinks it runs
+    return {};
+  };
+  const send = async (_path: string, body: any) => { if (!up) return "retry" as const; sent.push(body); return "ok" as const; };
+  const w = createWorker({ api, send, maxParallel: 1, workRoot: W, runtimes: { codex: scripted([{ text: DONE }], seen) }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(sent.length).toBe(0); // the server was away
+
+  // a restarted daemon (a new worker on the same directory) sends it before it looks at the tasks
+  claims = claim();
+  const w2 = createWorker({ api, send, maxParallel: 1, workRoot: W, runtimes: { codex: scripted([{ text: DONE }], seen) }, stepEveryMs: 0, log: () => {} });
+  await w2.poll(); // still away: the task is not claimed again
+  await w2.idle();
+  expect(seen.length).toBe(1);
+  up = true;
+  running.state = "review";
+  await w2.poll();
+  await w2.idle();
+  expect(sent).toEqual([{ state: "review", summary: "修好了", session: "thr_1", run: 1, answer: true }]);
+  expect(seen.length).toBe(1);
+  await w2.flush();
+  expect(sent.length).toBe(1); // once
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("a report refused for good (a stale run) is dropped, not sent forever", async () => {
+  const W = mkdtempSync(join(tmpdir(), "robust-"));
+  let tries = 0;
+  const api = async (path: string) => (path.endsWith("/claim") ? claim() : path === "/api/v1/machine/tasks" ? { tasks: [] } : {});
+  const w = createWorker({ api, send: async () => { tries++; return "drop"; }, maxParallel: 1, workRoot: W, runtimes: { codex: scripted([{ text: DONE }], []) }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  await w.flush();
+  expect(tries).toBe(1);
+  rmSync(W, { recursive: true, force: true });
 });

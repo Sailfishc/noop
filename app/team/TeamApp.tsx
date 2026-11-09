@@ -1640,6 +1640,7 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
   const waiting = () => {
     const s = task().state;
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
+    if (s === "queued" && agent()?.paused) return L(`Waiting: the agent is paused (${agent()!.paused!.text}); reply here once it is fixed`, `排队中：Agent 已暂停（${agent()!.paused!.text}），处理好后在这里回复一句`);
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
     if (s === "running") return task().step || L("Working…", "干活中…");
     if (s === "waiting") return waitShort(task());
