@@ -125,6 +125,7 @@ type taskView struct {
 	ThreadID    string        `json:"thread_id"`
 	AgentID     string        `json:"agent_id"`
 	CreatedBy   string        `json:"created_by"`
+	Handler     string        `json:"handler"` // the person named to take it ("由 @x 验收"): accept, decide; "" = its creator
 	Title       string        `json:"title"`
 	Body        string        `json:"body"`
 	Acceptance  string        `json:"acceptance"` // what "done" means; people write it, the agent may propose it
@@ -158,7 +159,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled`
+	failures, last_failure, COALESCE(usage, ''), titled, handler`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -171,7 +172,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait, usage string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -344,6 +345,34 @@ func splitAcceptance(text string) (string, string) {
 	return strings.TrimSpace(text[:loc[0]]), strings.TrimSpace(text[loc[1]:])
 }
 
+// handlerRE: who takes the task when it stops for people, as the request names them: "处理人：@x" / "验收人：@x" /
+// "Reviewer: @x" on a line of its own, or "由 @x 验收" (处理、确认、决定、审、看) anywhere.
+var handlerRE = []*regexp.Regexp{
+	regexp.MustCompile(`(?im)^\s*(?:处理人|验收人|审核人|reviewer|handler)\s*[:：]\s*@([a-z][a-z0-9_-]{1,31})`),
+	regexp.MustCompile(`由\s*@([a-z][a-z0-9_-]{1,31})\s*(?:来\s*)?(?:处理|验收|确认|决定|审|看|review)`),
+}
+
+// taskHandler: the person a request names to take the task, "" for none (then it is its creator). Agents don't count.
+func (h *Hub) taskHandler(text string) string {
+	for _, re := range handlerRE {
+		if m := re.FindStringSubmatch(text); m != nil {
+			var id string
+			if h.db.QueryRow("SELECT id FROM users WHERE handle = ? AND disabled = 0", m[1]).Scan(&id) == nil {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// takerOf: who takes a task that stopped for people (accepts it, decides): the person named, else its creator.
+func takerOf(t taskView) string {
+	if t.Handler != "" {
+		return t.Handler
+	}
+	return t.CreatedBy
+}
+
 func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bool) {
 	a, ok := h.agent(agentID)
 	if !ok {
@@ -372,8 +401,8 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bo
 	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
 		Branch: branch, Runtime: a.Runtime, Model: a.Model}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, tracked, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
-		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), now, now))
+		branch, repo, tracked, handler, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now))
 	h.noteStatus(id, state)
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
@@ -457,15 +486,15 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 	me := q.who.userID
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 t WHERE
 		(t.state = 'pending' AND t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?))
-		OR (t.state = 'needs_decision' AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
-		OR (t.state = 'review' AND t.created_by = ?)
+		OR (t.state = 'needs_decision' AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me))
 	writeJSON(w, 200, obj{"tasks": h.withOutputs(ts)})
 }
 
 // taskFor: the task in the path, if this person may act on it as `who` ("owner": the agent's owner; "party": its
-// creator or the agent's owner; admins count as both).
+// creator, the person it names to take it, or the agent's owner; admins count as both).
 func (h *Hub) taskFor(w http.ResponseWriter, q *request, who string, states ...string) (taskView, agentView, bool) {
 	t, ok := h.task(q.r.PathValue("id"))
 	if !ok {
@@ -474,12 +503,12 @@ func (h *Hub) taskFor(w http.ResponseWriter, q *request, who string, states ...s
 	}
 	a, _ := h.agent(t.AgentID)
 	me := q.who.userID
-	allowed := me == a.OwnerID || h.isAdmin(me) || (who == "party" && me == t.CreatedBy)
+	allowed := me == a.OwnerID || h.isAdmin(me) || (who == "party" && (me == t.CreatedBy || me == t.Handler))
 	if !allowed {
 		if who == "owner" {
 			errJSON(w, 403, "只有 Agent 的主人能做这个决定")
 		} else {
-			errJSON(w, 403, "只有发起人或 Agent 的主人能操作")
+			errJSON(w, 403, "只有发起人、处理人或 Agent 的主人能操作")
 		}
 		return t, a, false
 	}
@@ -917,10 +946,11 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		if state == taskNeedsDecision {
 			text = strings.TrimSpace(summary + "\n\n" + b.Decision.Question)
 		}
+		text = h.callHandler(t, state, text)
 		if text != "" {
 			h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, text)
 		}
-		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil {
+		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" {
 			state = taskDone
 		} else if state == taskReview || state == taskWaiting {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
@@ -938,6 +968,31 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)
+}
+
+// callHandler: when a task the request named someone to take stops for them (to accept, to decide), its message
+// @-s them, so they hear of it whether or not the agent thought to. Their 待你处理 has it too (v1Inbox).
+func (h *Hub) callHandler(t taskView, state, text string) string {
+	if t.Handler == "" || (state != taskReview && state != taskNeedsDecision) {
+		return text
+	}
+	u, ok := h.user(t.Handler)
+	if !ok {
+		return text
+	}
+	at := "@" + u.Handle
+	for _, m := range h.mentions(text) {
+		if m.Kind == "user" && m.ID == u.ID {
+			return text // the agent already did
+		}
+	}
+	if text == "" {
+		if state == taskReview {
+			return at + " 请你验收"
+		}
+		return at + " 请你决定"
+	}
+	return at + " " + text
 }
 
 // insertMessage posts a message (no checks) and sends it out.
