@@ -33,7 +33,9 @@ export type Agent = { id: string; owner_id: string; machine_id: string | null; h
   /** Work from people other than the owner waits for the owner's yes. */
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
-  memory?: string };
+  memory?: string;
+  /** Why it takes no work now (its runtime logged out, out of credit); its tasks wait in the queue. */
+  paused?: { reason: string; text: string; at: number } | null };
 export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
@@ -174,6 +176,8 @@ export function runtimeOn(m: Machine | undefined, name: string): RuntimeInfo | u
 }
 
 /** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing or logged out. */
+const PAUSE_EN: Record<string, string> = { auth: "its runtime is not logged in", billing: "its runtime is out of credit", not_installed: "its runtime is not installed" };
+
 export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): string {
   const rt = runtimeLabel(a.runtime);
   if (!a.machine_id || !m) return en ? "no machine" : "没有机器";
@@ -181,6 +185,7 @@ export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): st
   const r = runtimeOn(m, a.runtime);
   if (!r || !r.installed) return en ? `${rt} isn’t installed on ${m.name}` : `${m.name} 上没装 ${rt}`;
   if (r.logged_in === false) return en ? `${rt} isn’t logged in on ${m.name}` : `${m.name} 上的 ${rt} 没登录`;
+  if (a.paused) return en ? `paused: ${PAUSE_EN[a.paused.reason] ?? a.paused.text}` : `已暂停：${a.paused.text}`;
   return "";
 }
 

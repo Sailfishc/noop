@@ -157,9 +157,11 @@ type agentView struct {
 	// Memory: its memory.md, what it keeps between tasks. Its owner edits it; the agent rewrites it when it learns
 	// something lasting.
 	Memory string `json:"memory"`
+	// Paused: why it takes no work now (its runtime is logged out, out of credit); nil = it does (teamhealth.go)
+	Paused *pauseView `json:"paused"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory"
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory, paused"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -169,8 +171,13 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory); err != nil {
+		var paused string
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory, &paused); err != nil {
 			panic(err)
+		}
+		if paused != "" {
+			a.Paused = &pauseView{}
+			_ = json.Unmarshal([]byte(paused), a.Paused)
 		}
 		out = append(out, a)
 	}
@@ -570,6 +577,7 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 		trimmed(b.OS, 40), trimmed(b.Arch, 40), string(rt), maxS, h.nowMs(), string(infoJSON), q.who.machineID))
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
 	h.broadcastPeople(obj{"type": "machine", "machine": m})
+	h.resumeAgents(q.who.machineID, info.RuntimeInfo)
 	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))})
 }
 

@@ -294,7 +294,7 @@ test("the worker claims a queued task, shows its steps, and reports the result o
   const reports = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report").map((c) => c.body);
   expect(reports).toContainEqual({ session: "thr_9", branch: "" });
   expect(reports).toContainEqual({ step: "运行 bun test" });
-  expect(reports.at(-1)).toEqual({ state: "needs_decision", summary: "要锁表 30 秒", session: "thr_9",
+  expect(reports.at(-1)).toEqual({ state: "needs_decision", summary: "要锁表 30 秒", session: "thr_9", run: 1,
     decision: { question: "现在上吗？", options: ["A: 现在", "B: 夜里"], recommendation: "B" } });
   rmSync(W, { recursive: true, force: true });
 });

@@ -144,14 +144,18 @@ type taskView struct {
 	ClaimedBy   *string       `json:"claimed_by"`
 	ConfirmedBy *string       `json:"confirmed_by"`
 	Runs        int64         `json:"runs"`
-	Tracked     bool          `json:"tracked"` // a task people track (on the board); false: a conversation turn (an answer)
+	Tracked     bool          `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
+	Failures    int64         `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
+	LastFailure string        `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
+	Usage       *usageView    `json:"usage"`        // tokens its runs used, added up
 	Created     int64         `json:"created"`
 	Updated     int64         `json:"updated"`
 	seenSeq     int64
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
+	failures, last_failure, COALESCE(usage, '')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -161,16 +165,20 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait string
+		var decision, pr, mandate, wait, usage string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
+		}
+		if usage != "" {
+			t.Usage = &usageView{}
+			_ = json.Unmarshal([]byte(usage), t.Usage)
 		}
 		if mandate != "" {
 			t.Mandate = &mandateView{}
@@ -651,6 +659,9 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		errJSON(w, 409, "任务现在是 "+t.State+"，不能认领")
 		return
 	}
+	if !h.mayRun(w, t, a, mine) {
+		return
+	}
 	fresh := h.unseen(t)
 	thread := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.id = ? OR m.thread_id = ? ORDER BY m.seq", t.ThreadID, t.ThreadID))
 	var seen int64
@@ -731,6 +742,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Title string `json:"title"`
 		// Reaction: the emoji the agent chose for the request as it read it; it takes the place of the 👀 put there at claim
 		Reaction string `json:"reaction"`
+		// Run: which run of the task this is (its runs when claimed). A final report of an earlier run is refused, so a
+		// report the machine sends again (it kept it until the server took it) never lands twice.
+		Run int64 `json:"run"`
+		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go)
+		Failure string `json:"failure"`
+		// Usage: tokens this run used
+		Usage *usageView `json:"usage"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -776,6 +794,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			errJSON(w, 409, "任务现在是 "+t.State+"，这次运行已经无效")
 			return
 		}
+		if b.Run > 0 && b.Run != t.Runs {
+			errJSON(w, 409, "这是任务的旧一次运行，已经无效")
+			return
+		}
+	}
+	if b.Usage != nil {
+		cols["usage"] = jsonOrNil(t.Usage.add(*b.Usage))
 	}
 	if b.Step != nil {
 		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
@@ -796,6 +821,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		if b.Result == "confirmed" || b.Result == "unconfirmed" {
 			cols["result"] = b.Result
 		}
+		h.runEnded(t, a, b.State, b.Failure, cols)
 		state := b.State
 		summary := trimmed(b.Summary, 8000)
 		cols["summary"], cols["step"] = summary, ""

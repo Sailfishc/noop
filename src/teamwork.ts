@@ -292,6 +292,9 @@ export type WorkerOptions = {
   timeoutMs?: number;
   /** Why a runtime cannot run here right now (not logged in), as far as the machine knows; null: it can. */
   runtimeReady?: (name: string) => string | null | Promise<string | null>;
+  /** Sends a final report: "ok" (taken), "drop" (refused for good: a stale run) or "retry" (could not reach the
+   * server). Default: through api, where no answer means retry. */
+  send?: (path: string, body: Record<string, unknown>) => Promise<"ok" | "drop" | "retry">;
   /** How long a pause before a retry really is (tests shorten it). */
   pauseMs?: (ms: number) => number;
 };
@@ -508,23 +511,62 @@ export function createWorker(o: WorkerOptions) {
 
   const report = (id: string, body: Record<string, unknown>) => o.api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify(body) });
 
+  // A run's final report is written to the outbox first and deleted once the server took it (or refused it for good),
+  // so a report lost to a network blip or a restart is sent again instead of the task being run again. It names its
+  // run: the server takes one final report per run, so sending it twice never posts twice.
+  const outbox = join(root, ".outbox");
+  const send = o.send ?? (async (path: string, body: Record<string, unknown>) =>
+    ((await o.api(path, { method: "POST", body: JSON.stringify(body) }).catch(() => null)) ? "ok" as const : "retry" as const));
+  const sending = new Set<string>();
+  async function sendOut(file: string): Promise<boolean> {
+    if (sending.has(file)) return false;
+    sending.add(file);
+    try {
+      const { id, body } = JSON.parse(readFileSync(join(outbox, file), "utf8"));
+      const res = await send(`/api/v1/tasks/${id}/report`, body);
+      if (res === "retry") return false;
+      if (res === "drop") log(`${id} 的结果服务端不再接收（这次运行已经无效），丢弃`);
+      rmSync(join(outbox, file), { force: true });
+      return true;
+    } catch {
+      rmSync(join(outbox, file), { force: true }); // unreadable: nothing to send
+      return true;
+    } finally {
+      sending.delete(file);
+    }
+  }
+  async function finish(t: TeamTask, body: Record<string, unknown>) {
+    mkdirSync(outbox, { recursive: true });
+    const file = `${t.id}-${t.runs || 0}.json`;
+    writeFileSync(join(outbox, file), JSON.stringify({ id: t.id, body: { ...body, ...(t.runs ? { run: t.runs } : {}) } }));
+    if (!(await sendOut(file))) log(`${t.id} 的结果暂时发不出去，连上后重发`);
+  }
+  /** Sends what is waiting in the outbox, oldest first. */
+  async function flush() {
+    let files: string[] = [];
+    try { files = readdirSync(outbox).filter((f) => f.endsWith(".json")).sort((a, b) => statSync(join(outbox, a)).mtimeMs - statSync(join(outbox, b)).mtimeMs); } catch { return; }
+    for (const f of files) if (!(await sendOut(f))) return; // the server is not there: try again later
+  }
+  /** The tasks whose final report has not reached the server yet: they are not to be run again. */
+  const unsent = (id: string) => { try { return readdirSync(outbox).some((f) => f.startsWith(`${id}-`)); } catch { return false; } };
+
   async function run(c: Claim) {
     const t = c.task;
     const rt = runtimes[c.agent.runtime || "codex"];
     if (!rt || !rt.available()) {
-      await report(t.id, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试`, failure: "not_installed" });
+      await finish(t, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试`, failure: "not_installed" });
       return;
     }
     const notReady = await o.runtimeReady?.(c.agent.runtime || "codex");
     if (notReady) {
-      await report(t.id, { state: "blocked", summary: notReady, failure: "auth" });
+      await finish(t, { state: "blocked", summary: notReady, failure: "auth" });
       return;
     }
     let wd: Workdir;
     try {
       wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo)))(c, root);
     } catch (e) {
-      await report(t.id, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
+      await finish(t, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
       return;
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
@@ -617,7 +659,7 @@ export function createWorker(o: WorkerOptions) {
       const plan = planFor(failure, c.agent.runtime || "codex");
       const detail = (r.error ?? r.stderr ?? "").trim().split("\n").slice(-3).join("\n").slice(0, 600);
       const summary = plan.act === "block" ? `${plan.why}${detail ? `\n\n${detail}` : ""}` : `运行失败（${FAILURE_TEXT[failure]}）：${detail || `退出码 ${r.exitCode}`}`;
-      await report(t.id, { state: plan.act === "block" ? "blocked" : "failed", summary, session: r.session, failure, ...(usage ? { usage } : {}) });
+      await finish(t, { state: plan.act === "block" ? "blocked" : "failed", summary, session: r.session, failure, ...(usage ? { usage } : {}) });
       log(`${t.id} → ${plan.act === "block" ? "blocked" : "failed"}（${failure}）`);
       return;
     }
@@ -654,7 +696,7 @@ export function createWorker(o: WorkerOptions) {
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
-    await report(t.id, body);
+    await finish(t, body);
     log(`${t.id} → ${result.status}`);
   }
 
@@ -666,7 +708,7 @@ export function createWorker(o: WorkerOptions) {
       if (!c?.task) return;
       const p = run(c).catch(async (e) => {
         log(`${t.id} 出错：${e instanceof Error ? e.message : e}`);
-        await report(t.id, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
+        await finish(c.task, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
       }).finally(() => { running.delete(t.id); kills.delete(t.id); void poll(); });
       running.set(t.id, p);
     } finally {
@@ -725,14 +767,15 @@ export function createWorker(o: WorkerOptions) {
   /** The tasks waiting for this machine (also the ones it ran before a restart). */
   async function poll() {
     if (stopped) return;
+    await flush(); // results from before a restart or a lost connection go first: those tasks must not run again
     const r = await o.api("/api/v1/machine/tasks");
     for (const t of (r?.tasks ?? []) as TeamTask[]) {
-      if (t.state === "queued" || (t.state === "running" && !running.has(t.id))) void claim(t);
+      if (t.state === "queued" || (t.state === "running" && !running.has(t.id) && !unsent(t.id))) void claim(t);
     }
   }
 
   return {
-    onTask, poll, checkWaits,
+    onTask, poll, checkWaits, flush,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },

@@ -119,6 +119,10 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN result TEXT NOT NULL DEFAULT ''",     // confirmed | unconfirmed: did the agent see the result
 		"ALTER TABLE tasks_v1 ADD COLUMN tracked INTEGER NOT NULL DEFAULT 1",  // a task people track; 0: a conversation turn (an answer)
 		"ALTER TABLE tasks_v1 ADD COLUMN read_token TEXT NOT NULL DEFAULT ''", // what its runs read the chat with (teamcontext.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                    // tokens its runs used, added up
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''", // why it takes no work now (teamhealth.go); "" = it does
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
