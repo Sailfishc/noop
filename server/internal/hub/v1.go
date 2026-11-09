@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// /api/v1: TeamAgent's own API. Several people, each with their own machines and agents, in channels with threads.
-// The legacy noop routes (/api/files, /api/host/…) keep serving the daemons' data sync.
+// /api/v1: Remi's API. Several people, each with their own machines and agents, in channels with threads.
 
 type access int
 

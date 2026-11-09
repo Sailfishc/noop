@@ -9,9 +9,8 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Sockets. Owner clients (/api/stream) get every new event; ?v=2 clients also get {"$status": …} frames.
-// The primary daemon keeps one socket (/api/host/stream) and gets {"type":"inbox"} nudges and watcher counts.
-// "ping" is answered with "pong" on both, as the Worker's auto-response did.
+// Sockets (/api/v1/stream): each is tagged with who it serves ("people", "u:<user>", "m:<machine>"), and frames go
+// to a tag. "ping" is answered with "pong".
 
 type sock struct {
 	out  chan []byte
@@ -58,34 +57,6 @@ func (s *sockets) send(tag string, msg []byte) {
 		default:
 		}
 	}
-}
-
-func (h *Hub) ownerStream(w http.ResponseWriter, r *http.Request) {
-	var who *principal
-	h.locked(func() { who = h.who(r) })
-	if who == nil {
-		errJSON(w, 401, "unauthorized")
-		return
-	}
-	tags := []string{"owner"}
-	if r.URL.Query().Get("v") == "2" {
-		tags = append(tags, "v2")
-	}
-	h.serveSocket(w, r, tags, func() { h.locked(h.tellWatchers) }, func() { h.locked(h.tellWatchers) })
-}
-
-func (h *Hub) hostStream(w http.ResponseWriter, r *http.Request) {
-	var who *principal
-	h.locked(func() { who = h.who(r) })
-	if who == nil {
-		errJSON(w, 401, "unauthorized")
-		return
-	}
-	if !who.machine {
-		errJSON(w, 403, "forbidden")
-		return
-	}
-	h.serveSocket(w, r, []string{"host"}, func() { h.locked(func() { h.touchHost(); h.pushStatus(); h.tellWatchers() }) }, func() { h.locked(func() { h.touchHost(); h.pushStatus() }) })
 }
 
 func (h *Hub) serveSocket(w http.ResponseWriter, r *http.Request, tags []string, opened, closed func()) {
