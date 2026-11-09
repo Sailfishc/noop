@@ -96,6 +96,14 @@ describe("team channels", () => {
     expect(app.value("id:team-composer")).toBe("");
   });
 
+  test("a message's copy button puts its text on the clipboard", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.press("id:copy-msg_1");
+    expect(app.clipboard()).toBe(m1.text);
+    await app.waitFor("label:/Copied|已复制/");
+  });
+
   test("search finds messages and tasks in every channel, and a result opens its thread", async () => {
     const asked: string[] = [];
     const app = await open("./App.tsx", {
