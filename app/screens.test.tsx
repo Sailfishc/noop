@@ -23,11 +23,11 @@ async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
 
 const tasks = [
   task({ id: "T-0001", state: "running", tracked: true, title: "看下慢查询", step: "在读 slow log" }),
-  task({ id: "T-0002", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
-  task({ id: "T-0003", state: "review", tracked: true, title: "写周报", created_by: "u_1",
+  task({ id: "T-0002", thread_id: "msg_t2", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
+  task({ id: "T-0003", thread_id: "msg_t3", state: "review", tracked: true, title: "写周报", created_by: "u_1",
     pr: { provider: "github", url: "https://github.com/acme/pay/pull/3", number: 3, state: "open", checks: "success" } }),
-  task({ id: "T-0004", state: "pending", tracked: true, title: "升级 Go 版本" }),
-  task({ id: "T-0005", state: "done", tracked: true, title: "清理旧分支" }),
+  task({ id: "T-0004", thread_id: "msg_t4", state: "pending", tracked: true, title: "升级 Go 版本" }),
+  task({ id: "T-0005", thread_id: "msg_t5", state: "done", tracked: true, title: "清理旧分支" }),
 ];
 const messages = [
   m1,
@@ -52,6 +52,7 @@ describe("screens", () => {
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
     await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看"); // the reply, not the spinner
     await shot(app, "thread");
   });
 

@@ -2,7 +2,8 @@
 // buttons but has no way to ask where a view is, so a board whose columns stack
 // instead of standing side by side passes every test (#41). `nsh test --trace`
 // prints every native view operation, frames included; this reads that trace,
-// works out where each view with a testID sits, and applies the rules below.
+// works out where each view with a testID sits (within its native pane: the
+// sidebar and the channel each start at x 0), and applies the rules below.
 //
 //   cd app && nsh test screens.test.tsx --trace > ../.layout-trace.txt 2>&1
 //   bun scripts/check-layout.ts .layout-trace.txt
