@@ -695,7 +695,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	creator, _ := h.user(t.CreatedBy)
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic},
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
-		"wake": woke, "callback_url": callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID)})
+		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID)})
 }
 
 // v1TaskReport: the machine says how the run goes. {step, session, branch} while it runs; {state, summary, decision}

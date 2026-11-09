@@ -4,6 +4,8 @@
 //
 //	teamagent-server invite -data /var/lib/teamagent -email you@company.com -role admin
 //
+//	teamagent-server -addr :8080 -public-url http://teamagent.corp:8080   # the address others use
+//
 // The invite prints a link: the first admin opens it in the app, which signs them in, and invites everyone else
 // from the app. Each person adds their machines there and puts each machine's token in its config.local.toml
 // ([cloud] url = "http://<host>:8080", [server] token = "tam_…"). TEAMAGENT_TOKEN, a token shared by every machine,
@@ -40,7 +42,7 @@ func invite(args []string) {
 	data := fs.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
 	email := fs.String("email", "", "the person's email")
 	role := fs.String("role", "admin", "admin or member")
-	base := fs.String("url", env("TEAMAGENT_URL", ""), "the server's address, to print a full link")
+	base := fs.String("url", env("TEAMAGENT_PUBLIC_URL", env("TEAMAGENT_URL", "")), "the server's public address, to print a full link")
 	_ = fs.Parse(args)
 	if err := os.MkdirAll(*data, 0o700); err != nil {
 		log.Fatal(err)
@@ -66,6 +68,7 @@ func main() {
 	data := flag.String("data", env("TEAMAGENT_DATA", "./data"), "directory for the SQLite database")
 	static := flag.String("static", env("TEAMAGENT_STATIC", ""), "web client directory (app/dist/web/noop); empty: API only")
 	owners := flag.String("owners", env("TEAMAGENT_OWNER_EMAIL", ""), "owner emails allowed to sign in, comma-separated")
+	public := flag.String("public-url", env("TEAMAGENT_PUBLIC_URL", ""), "the address others reach this server at (http://teamagent.corp:8080), used in invite links, login links and machine install commands; empty: each app uses the address it connected to")
 	hookSecret := flag.String("git-webhook-secret", env("TEAMAGENT_GIT_WEBHOOK_SECRET", ""), "secret of the Ant Code / GitLab webhook (POST /api/v1/hooks/gitlab); empty: off")
 	flag.Parse()
 
@@ -95,7 +98,11 @@ func main() {
 			emails = append(emails, e)
 		}
 	}
-	h := hub.New(hub.Config{Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
+	pub := strings.TrimRight(strings.TrimSpace(*public), "/")
+	if pub != "" && !strings.HasPrefix(pub, "http://") && !strings.HasPrefix(pub, "https://") {
+		log.Fatal("-public-url must start with http:// or https://")
+	}
+	h := hub.New(hub.Config{PublicURL: pub, Token: token, OwnerEmails: emails, SMTP: smtp, StaticDir: *static, GitWebhookSecret: *hookSecret}, db)
 
 	srv := &http.Server{Addr: *addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() { // waiting tasks: timers and deadlines
@@ -104,7 +111,7 @@ func main() {
 		}
 	}()
 	go func() {
-		log.Printf("teamagent-server listening on %s (data %s)", *addr, *data)
+		log.Printf("teamagent-server listening on %s (data %s, public url %q)", *addr, *data, pub)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal(err)
 		}

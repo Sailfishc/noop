@@ -233,7 +233,11 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 4 }}>
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={{ fontSize: 13, color: colors.muted }}>{L("Server", "服务器")}</Text>
-          <Text testID="server-url" style={{ fontSize: 13.5, color: colors.text, ...mono }}>{t.url}</Text>
+          <Text testID="server-url" style={{ fontSize: 13.5, color: colors.text, ...mono }}>{t.shareUrl()}</Text>
+          <If when={t.shareUrl() !== t.url}>
+            <Text testID="server-connected" style={{ fontSize: 12.5, color: colors.faint }}>{L(`This device connects through ${t.url}`, `这台设备通过 ${t.url} 连接`)}</Text>
+          </If>
+          <LoopbackNote team={t} testID="server-loopback" />
         </View>
         <Btn testID="sign-out" kind="danger" label={L("Sign out", "退出登录")} onPress={props.onSignOut} />
       </View>
@@ -254,7 +258,7 @@ function LoginCodePanel(props: { team: Team }) {
     const r = await t.loginCode();
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
-    code.set({ code: r.data.code, link: `${t.url}${r.data.path}` });
+    code.set({ code: r.data.code, link: `${t.shareUrl()}${r.data.path}` });
   }
   return (
     <Panel title={L("Sign in on another device", "在其他设备登录")}>
@@ -267,6 +271,7 @@ function LoginCodePanel(props: { team: Team }) {
             <Text testID="login-code" style={{ fontSize: 24, letterSpacing: 3, color: colors.text, ...mono }}>{c().code}</Text>
             <Text testID="login-code-url" style={{ fontSize: 12.5, color: colors.muted, ...mono }}>{c().link}</Text>
             <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次。")}</Text>
+            <LoopbackNote team={t} testID="login-code-loopback" />
             <View style={{ flexDirection: "row", gap: 8 }}>
               <Btn small icon="copy" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
             </View>
@@ -779,7 +784,7 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
     name.set("");
   }
   const close = () => { code.set(""); manual.set(false); error.set(""); };
-  const snippet = (token: string) => `[cloud]\nurl = "${t.url}"\n\n[server]\ntoken = "${token}"`;
+  const snippet = (token: string) => `[cloud]\nurl = "${t.shareUrl()}"\n\n[server]\ntoken = "${token}"`;
   return (
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -837,20 +842,28 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
   );
 }
 
+/** When links and commands would carry an address only the server's own computer (or this one) can reach: how to set the real one. */
+function LoopbackNote(props: { team: Team; testID: string }) {
+  return (
+    <If when={isLoopback(props.team.shareUrl())}>
+      <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: colors.warn }}>
+        {L(`${props.team.shareUrl()} only works on this computer, so links and install commands for others won’t reach the server. Start the server with -public-url http://<its address>:<port> (or TEAMAGENT_PUBLIC_URL), or sign in here with that address.`,
+          `${props.team.shareUrl()} 只在本机能用，发给别人的链接和安装命令会连不上。启动服务端时加上 -public-url http://<服务器地址>:<端口>（或设环境变量 TEAMAGENT_PUBLIC_URL），或者在这里用那个地址重新登录。`)}
+      </Text>
+    </If>
+  );
+}
+
 /** The one line to run on the computer, with a copy button, and a warning when the address only works on the server itself. */
 function InstallCommand(props: { team: Team; name: string; code: string }) {
-  const cmd = () => installCommand(props.team.url, props.code);
+  const cmd = () => installCommand(props.team.shareUrl(), props.code);
   return (
     <View style={{ gap: 8 }}>
       <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
         {L(`Run this in a terminal on ${props.name}. It installs the daemon, connects it and keeps it running in the background. The code works once, within an hour.`, `在 ${props.name} 的终端里运行这一行：它会装好守护进程、接入并在后台常驻。接入码一小时内有效，只能用一次。`)}
       </Text>
       <Text testID="machine-command" style={{ fontSize: 13, lineHeight: 19, color: colors.text, ...mono }}>{cmd()}</Text>
-      <If when={isLoopback(props.team.url)}>
-        <Text testID="machine-loopback" style={{ fontSize: 12.5, lineHeight: 18, color: colors.warn }}>
-          {L(`${props.team.url} only works on the server’s own computer. For another computer, sign in with the server’s LAN address.`, `${props.team.url} 只在服务端那台电脑上能用。要接入别的电脑，客户端得用服务端的内网地址登录。`)}
-        </Text>
-      </If>
+      <LoopbackNote team={props.team} testID="machine-loopback" />
       <View style={{ flexDirection: "row" }}>
         <Btn small icon="copy" testID="machine-command-copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(cmd())} />
       </View>
@@ -1012,7 +1025,7 @@ function PeopleSection(props: { team: Team }) {
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
     note.set(L("Send this link to them (valid for 7 days, works once):", "把这个链接发给对方（7 天内有效，只能用一次）："));
-    link.set(`${t.url}${r.data.path}`);
+    link.set(`${t.shareUrl()}${r.data.path}`);
     email.set("");
   }
   /** For a member who lost their device or signed out everywhere. */
@@ -1021,7 +1034,7 @@ function PeopleSection(props: { team: Team }) {
     const r = await t.loginCode(id);
     if (!r.ok) return error.set(failed(r));
     note.set(L(`Login link for ${who} (valid for a day, works once):`, `${who} 的登录链接（一天内有效，只能用一次）：`));
-    link.set(`${t.url}${r.data.path}`);
+    link.set(`${t.shareUrl()}${r.data.path}`);
   }
   const agentsOf = (id: string) => t.agents().filter((a) => a.owner_id === id);
   return (
@@ -1057,6 +1070,7 @@ function PeopleSection(props: { team: Team }) {
         <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
           <Text style={{ fontSize: 13.5, color: colors.text }}>{note()}</Text>
           <Text testID="invite-url" style={{ fontSize: 13, color: colors.text, ...mono }}>{link()}</Text>
+          <LoopbackNote team={t} testID="invite-loopback" />
           <View style={{ flexDirection: "row" }}>
             <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(link())} />
           </View>
@@ -1103,7 +1117,7 @@ function GitSection(props: { team: Team }) {
     data.update((d) => (d ? { ...d, platforms: r.data.platforms } : d));
     editing.set(null);
   }
-  const hookUrl = () => `${t.url}${data()?.webhook.path ?? "/api/v1/hooks/gitlab"}`;
+  const hookUrl = () => `${t.shareUrl()}${data()?.webhook.path ?? "/api/v1/hooks/gitlab"}`;
   return (
     <If when={data()} else={<View style={{ gap: 8 }}><ErrorNote text={error()} /><If when={!error()}><Spinner size={16} tint={colors.muted} /></If></View>}>
       {(d) => (

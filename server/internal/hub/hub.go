@@ -32,6 +32,9 @@ type Config struct {
 	OwnerEmails []string    // owner allow-list for email-code sign-in (lower case)
 	SMTP        *SMTPConfig // nil: sign-in codes are shown on the owner's machine (`noop login`)
 	StaticDir   string      // the web client (app/dist/web/noop); empty: API only
+	// PublicURL: the address others reach the server at ("http://teamagent.corp:8080"), for the links and commands
+	// the apps hand out and the callbacks agents give; empty: each app uses the address it connected to.
+	PublicURL string
 	// GitWebhookSecret: the secret a GitLab-based platform (Ant Code) sends with its webhooks (X-Gitlab-Token);
 	// empty: /api/v1/hooks/gitlab is off.
 	GitWebhookSecret string

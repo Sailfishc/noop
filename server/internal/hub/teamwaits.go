@@ -73,7 +73,10 @@ func (h *Hub) callbackToken(id string) string {
 	return tok
 }
 
-func callbackURL(r *http.Request, token string) string {
+func (h *Hub) callbackURL(r *http.Request, token string) string {
+	if h.cfg.PublicURL != "" {
+		return h.cfg.PublicURL + "/api/v1/hooks/wait/" + token
+	}
 	scheme := "http"
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		scheme = "https"

@@ -495,6 +495,40 @@ describe("settings", () => {
     expect(made).toEqual([{}, { user_id: "u_2" }]);
   });
 
+  test("links and install commands use the server's public address, not the one this device connects through", async () => {
+    const PUB = "http://teamagent.corp:8080";
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], public_url: `${PUB}/` } },
+        [`POST ${URL}/api/v1/login-codes`]: { body: { code: "ABCD-EFGH", path: "/login/ABCD-EFGH", expires: Date.now() + 900_000 } },
+      },
+    });
+    await app.press("id:user-menu");
+    await app.press("id:menu-login-code");
+    await app.waitFor("id:server-url");
+    expect(app.shows(`text:${PUB}`)).toBe(true);
+    expect(app.shows("id:server-connected")).toBe(true);
+    expect(app.shows("id:server-loopback")).toBe(false);
+    await app.press("id:login-code-create");
+    await app.waitFor(`text:${PUB}/login/ABCD-EFGH`);
+    await app.press("id:settings-nav-machines");
+    await app.press("id:machine-add");
+    await app.waitFor(`text:curl -fsSL ${PUB}/api/v1/install.sh | bash -s -- ${PUB} te_first`);
+  });
+
+  test("a loopback address in links warns how to set the public one", async () => {
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: { ...server(newLog()), [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], public_url: "http://127.0.0.1:18080" } } },
+    });
+    await app.press("id:user-menu");
+    await app.press("id:menu-login-code");
+    await app.waitFor("id:server-loopback");
+    expect(app.shows("text:/-public-url/")).toBe(true);
+  });
+
   test("Git platforms: an admin adds a GitLab-based platform; its webhook and each machine's credentials show, never a token", async () => {
     const saved: any[] = [];
     const reported = { ...mac, git: [{ provider: "github", host: "github.com", configured: true, user: "zw", via: "gh" }, { provider: "gitlab", host: "code.corp.com", configured: false, user: "", via: "" }] };

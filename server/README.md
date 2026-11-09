@@ -11,13 +11,15 @@
 ```sh
 cd server
 go build -o teamagent-server ./cmd/teamagent-server
-./teamagent-server invite -data /var/lib/teamagent -email 你@公司.com -role admin -url http://teamagent.内网域名:8080   # 第一个管理员
+export TEAMAGENT_PUBLIC_URL=http://teamagent.内网域名:8080   # 别人访问这台服务器用的地址
+./teamagent-server invite -data /var/lib/teamagent -email 你@公司.com -role admin   # 第一个管理员
 ./teamagent-server -addr :8080 -data /var/lib/teamagent
 ```
 
 | 参数 / 环境变量 | 说明 |
 | --- | --- |
 | `-addr` / `TEAMAGENT_ADDR` | 监听地址，默认 `:8080` |
+| `-public-url` / `TEAMAGENT_PUBLIC_URL` | 别人访问服务器用的地址（如 `http://teamagent.内网域名:8080`）。App 生成的邀请链接、登录链接、机器安装命令，以及 Agent 等待外部结果用的回调地址都用它。不设置时，App 用自己连接服务器的地址；如果那个地址是 `127.0.0.1`（比如走 SSH 隧道），发出去的链接别人就连不上 |
 | `-data` / `TEAMAGENT_DATA` | 数据目录，数据库文件是 `hub.db` |
 | `-git-webhook-secret` / `TEAMAGENT_GIT_WEBHOOK_SECRET` | Ant Code（GitLab）webhook 的密钥。为空时不收 webhook |
 | `TEAMAGENT_TOKEN` | 可选，只给老的 noop 单人模式用（至少 16 个字符） |
