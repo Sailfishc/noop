@@ -12,7 +12,7 @@ import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
-import { agentState, Avatar, chrome, Dot, StateDot, WIDE } from "./ui";
+import { agentState, Avatar, chrome, Dot, FOOTER, StateDot, WIDE } from "./ui";
 import { ChannelView, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
@@ -251,7 +251,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           </Each>
         </If>
       </Scroll>
-      <View style={{ padding: 8, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+      <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
         <UpdateRow />
         <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
       </View>
