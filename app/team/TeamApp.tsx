@@ -2,7 +2,7 @@
 // sign in, then the workspace (sidebar, the page in the middle, a thread or the members beside it). Wide windows show
 // them side by side; narrow ones one pane at a time. The screens live next to it: signin, channel (with taskfacts),
 // composer, messages, taskcard, inbox, tasks, search, reminders, settings.
-import { cleanup, computed, effect, keymap, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
+import { cleanup, computed, effect, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { L } from "../i18n";
@@ -22,6 +22,8 @@ import { SignIn } from "./signin";
 
 type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search" } | { kind: "home" };
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
+/** Narrow windows (phones): the tabs along the bottom. */
+type Tab = "chat" | "inbox" | "tasks" | "me";
 
 const SIDE_WIDTH = 380, SIDE_MIN = 320, MAIN_MIN = 360, SIDE_WIDTH_KEY = "team.sideWidth";
 
@@ -76,6 +78,21 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     showList.set(false);
   }
   const openSettings = (tab: SettingsTab | null = untracked(wide) ? "account" : null, agent?: string) => settings.set({ tab, agent });
+  /** Narrow windows: the tab shown, or none when a page above the tabs is open (a channel, a thread, a setting). */
+  const tab = (): Tab | null => {
+    if (wide()) return null;
+    const s = settings(), p = page();
+    if (s) return s.tab ? null : "me";
+    if (showList() || p.kind === "home") return "chat";
+    return p.kind === "inbox" || p.kind === "tasks" ? p.kind : null;
+  };
+  function openTab(x: Tab) {
+    if (x === "me") return settings.set({ tab: null });
+    settings.set(null);
+    if (x !== "chat") return open({ kind: x });
+    if (untracked(page).kind === "channel") t.leaveView();
+    showList.set(true);
+  }
   // system notifications: a press opens what it is about
   watchNotifications(t, (channelId, threadId) => { settings.set(null); open({ kind: "channel", id: channelId }, threadId); });
   keymap.bind("mod+,", () => openSettings(), { when: "always" });
@@ -95,9 +112,9 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       );
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
-    if (p.kind === "tasks") return <TasksPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
+    if (p.kind === "tasks") return <TasksPage team={t} back={false} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     if (p.kind === "search") return <SearchPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(id, threadId) => open({ kind: "channel", id }, threadId)} />;
-    if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
+    if (p.kind === "inbox") return <Inbox team={t} back={false} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
         <If when={t.loaded()} else={<Spinner size={20} tint={colors.muted} />}>
@@ -114,6 +131,8 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   };
 
   return (
+    // phones: the keyboard pushes the page up; pages above the tabs keep clear of the home indicator
+    <View style={{ flex: 1, paddingBottom: wide() ? 0 : keyboardFrame().height || (tab() ? 0 : safeArea().bottom) }}>
     <If
       when={settings()}
       else={
@@ -126,7 +145,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
                 <If when={chrome().left}>
                   <View desktop={{ windowDrag: true }} style={{ height: chrome().height }} />
                 </If>
-                <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={main()}>{(pane) => pane()}</If>}>
+                <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={<View style={{ flex: 1 }}>{main()}</View>}>{(pane) => pane()}</If>}>
                   {sidebar()}
                 </If>
               </View>
@@ -155,6 +174,42 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
         />
       )}
     </If>
+    <If when={keyboardFrame().height ? null : tab()}>
+      {(x) => <TabBar team={t} active={x()} onTab={openTab} />}
+    </If>
+    </View>
+  );
+}
+
+/** Phones: messages, what waits for me, tasks, me. */
+function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
+  const t = props.team;
+  const waiting = () => t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length;
+  const unread = () => Object.values(t.unread()).reduce((n, x) => n + (x || 0), 0);
+  const Item = (p: { tab: Tab; icon: IconName; label: string; badge: number }) => {
+    const on = () => props.active === p.tab;
+    return (
+      <View role="tab" testID={`tab-${p.tab}`} accessibilityLabel={p.label} accessibilityState={{ selected: on() }} onPress={() => props.onTab(p.tab)}
+        style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 3 }}>
+        <View style={{ width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: on() ? alpha(colors.text, 0.08) : "transparent" }}>
+          <Icon name={p.icon} size={22} tint={on() ? colors.text : colors.muted} weight={on() ? 1.8 : 1.5} />
+          <If when={p.badge}>
+            <View style={{ position: "absolute", top: -3, left: 33, minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, borderWidth: 2, borderColor: colors.background, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
+              <Text testID={`tab-${p.tab}-badge`} style={{ fontSize: 10.5, fontWeight: "600", color: colors.onAccent }}>{String(p.badge)}</Text>
+            </View>
+          </If>
+        </View>
+        <Text style={{ fontSize: 11, fontWeight: on() ? "600" : "400", color: on() ? colors.text : colors.muted }}>{p.label}</Text>
+      </View>
+    );
+  };
+  return (
+    <View testID="tabbar" style={{ flexDirection: "row", paddingTop: 6, paddingBottom: Math.max(6, safeArea().bottom), borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.background }}>
+      <Item tab="chat" icon="bubble" label={L("Messages", "消息")} badge={unread()} />
+      <Item tab="inbox" icon="bell" label={L("Waiting", "待你决定")} badge={waiting()} />
+      <Item tab="tasks" icon="task" label={L("Tasks", "任务")} badge={0} />
+      <Item tab="me" icon="user" label={L("Me", "我")} badge={0} />
+    </View>
   );
 }
 
@@ -191,12 +246,24 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
   return (
     <View style={{ flex: 1 }}>
       <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), flexDirection: "row", alignItems: "center", gap: 9, paddingLeft: props.inset && chrome().left ? chrome().left + 4 : 16, paddingRight: 16 }}>
-        {/* no logo or name for now: the bar stays as the window's drag area and the traffic lights' room */}
+        {/* wide: no logo or name for now, the bar stays as the window's drag area and the traffic lights' room */}
+        <If when={!props.inset}>
+          <View style={{ flex: 1, gap: 1 }}>
+            <Text style={{ fontSize: 22, fontWeight: "700", color: colors.text }}>{L("Messages", "消息")}</Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <Dot on={t.conn() === "live"} />
+              <Text testID="conn-top" style={{ fontSize: 12, color: colors.muted }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
+            </View>
+          </View>
+        </If>
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
         <Row testID="open-search" icon="search" label={L("Search", "搜索")} active={props.page.kind === "search"} onPress={() => props.onOpen({ kind: "search" })} />
-        <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
-        <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
+        {/* phones have these as tabs */}
+        <If when={props.inset}>
+          <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+          <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
+        </If>
         <Section
           label={L("CHANNELS", "频道")}
           right={
@@ -251,10 +318,13 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           </Each>
         </If>
       </Scroll>
-      <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
-        <UpdateRow />
-        <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
-      </View>
+      {/* phones: me and settings are the Me tab */}
+      <If when={props.inset} else={<UpdateRow />}>
+        <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+          <UpdateRow />
+          <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
+        </View>
+      </If>
     </View>
   );
 }

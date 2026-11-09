@@ -126,16 +126,21 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
   const mineCount = (tab: SettingsTab) =>
     tab === "agents" ? t.agents().filter((a) => a.owner_id === me()?.id).length : tab === "machines" ? t.machines().filter((m) => m.owner_id === me()?.id).length : 0;
   // a New agent dialog asked from elsewhere (a machine's "New agent on this machine")
+  /** Narrow windows: the agent whose own page is open (list, then one agent). */
+  const openAgent = () => (!wide() && props.tab === "agents" && props.agent ? t.agents().find((a) => a.handle === props.agent && a.owner_id === me()?.id) : undefined);
   const creating = signal<{ machine?: string } | null>(null);
 
   const nav = () => (
     <View style={{ flex: 1 }}>
       {/* the back button shares the title bar's row, right of the window's controls */}
       <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), justifyContent: "center", paddingLeft: wide() && chrome().left ? chrome().left : 10, paddingRight: 10 }}>
-        <View role="button" testID="settings-back" onPress={props.onClose} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 32, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, borderRadius: 8 }}>
-          <Icon name="back" size={15} tint={colors.muted} />
-          <Text style={{ fontSize: 14, color: colors.muted }}>{L("Back to workspace", "返回工作区")}</Text>
-        </View>
+        {/* phones: this is the Me tab, the tab bar leads back */}
+        <If when={wide()} else={<Text style={{ paddingHorizontal: 6, fontSize: 22, fontWeight: "700", color: colors.text }}>{L("Me", "我")}</Text>}>
+          <View role="button" testID="settings-back" onPress={props.onClose} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 32, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, borderRadius: 8 }}>
+            <Icon name="back" size={15} tint={colors.muted} />
+            <Text style={{ fontSize: 14, color: colors.muted }}>{L("Back to workspace", "返回工作区")}</Text>
+          </View>
+        </If>
       </View>
     <Scroll testID="settings-nav" style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 10, paddingBottom: 10, gap: 2 }}>
       <Each of={NAV}>
@@ -188,10 +193,11 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
             {(tab) => (
               <View style={{ flex: 1, paddingTop: chrome().left ? chrome().height : 0 }}>
                 <View style={{ height: 52, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-                  <View role="button" testID="back" accessibilityLabel={L("Back", "返回")} onPress={() => props.onTab(null)} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
+                  {/* an agent's page goes back to the list of agents, a section to the Me tab */}
+                  <View role="button" testID="back" accessibilityLabel={L("Back", "返回")} onPress={() => props.onTab(openAgent() ? "agents" : null)} hoverStyle={hovered()} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
                     <Icon name="back" size={18} tint={colors.text} />
                   </View>
-                  <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.text }}>{TITLES[tab()]()}</Text>
+                  <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{openAgent()?.name ?? TITLES[tab()]()}</Text>
                 </View>
                 <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 16 }}>{content(tab())}</Scroll>
               </View>
@@ -398,6 +404,8 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
   const mine = () => t.agents().filter((a) => a.owner_id === t.me()?.id);
   const current = () => mine().find((a) => a.handle === props.selected) ?? mine()[0];
   const split = () => windowSize().width >= 1080;
+  /** Phones: the list, or one agent's page (never both). */
+  const narrow = () => windowSize().width < WIDE;
   const machineOf = (a: Agent) => t.machines().find((m) => m.id === a.machine_id);
   const list = () => (
     <View style={{ gap: 4, ...(split() ? { width: 280 } : {}) }}>
@@ -428,13 +436,16 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
                   <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
                 </View>
               </View>
+              <If when={narrow()}><Icon name="chevron" size={13} tint={colors.faint} /></If>
             </View>
           );
         }}
       </Each>
     </View>
   );
+  const picked = () => mine().find((a) => a.handle === props.selected);
   return (
+    <If when={narrow() ? picked() : undefined} else={
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
@@ -447,14 +458,19 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
           <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("Create one: pick the machine it runs on, then the runtime there.", "新建一个：先选它跑在哪台机器上，再选那台机器上的 Runtime。")}</Text>
         </Panel>
       }>
+        <If when={!narrow()} else={list()}>
         <View style={{ flexDirection: split() ? "row" : "column", alignItems: "flex-start", gap: 16 }}>
           {list()}
           <If when={current()}>
             {(a) => <AgentDetail team={t} agent={a()} onMachines={props.onMachines} />}
           </If>
         </View>
+        </If>
       </If>
     </>
+    }>
+      {(a) => <AgentDetail team={t} agent={a()} onMachines={props.onMachines} />}
+    </If>
   );
 }
 
