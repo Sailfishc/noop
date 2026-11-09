@@ -17,6 +17,11 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+        with: { bun-version-file: package.json }
+      - if: steps.bun.outcome == 'failure'
+        run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
       - name: Scan the commits this change adds
         env:
           # Optional repository secret: intranet domains and other names that must not
