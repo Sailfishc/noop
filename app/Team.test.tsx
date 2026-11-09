@@ -39,6 +39,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
     [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
+    [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
     [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
@@ -213,6 +214,47 @@ describe("team channels", () => {
     expect(app.shows("id:search-task-T-0001")).toBe(true);
     await app.press("id:search-msg-msg_1");
     await app.waitFor("text:收到，在看");
+  });
+
+  test("reminders: a message's bell, /remind in the box, and the ones that went off in 待你决定", async () => {
+    const made: any[] = [];
+    const seen: string[] = [];
+    const rem = (over: Record<string, unknown>) => ({ id: "rem_1", by: "u_1", target: { kind: "user", id: "u_1" }, channel_id: "c_1", thread_id: "msg_1",
+      message_id: "msg_1", text: "@acha 看下慢查询", due: Date.now() + 3600_000, repeat: "", created: Date.now(), fired: null, seen: null, done: false, ...over });
+    let list = [rem({ id: "rem_0", due: Date.now() - 60_000, fired: Date.now() - 60_000, done: true })];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/reminders`]: () => ({ body: { reminders: list } }),
+        [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          made.push(b);
+          return { body: rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" }) };
+        },
+        [`POST ${URL}/api/v1/reminders/*/seen`]: (r: { url: string }) => {
+          seen.push(r.url.match(/reminders\/([^/]+)\//)![1]);
+          list = [];
+          return { body: {} };
+        },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.waitFor("id:open-inbox-unread"); // the one that went off
+    await app.press("id:remind-msg_1");
+    await app.press("id:remind-msg_1-1h");
+    expect(made[0]).toEqual({ message_id: "msg_1", when: "1h" });
+
+    await app.type("id:team-composer", "/remind 每天 9:00 @acha 汇总告警");
+    await app.submit("id:team-composer");
+    await app.waitFor("id:team-composer-sent");
+    expect(made[1]).toEqual({ command: "每天 9:00 @acha 汇总告警", channel_id: "c_1", thread_id: null });
+
+    await app.press("id:open-inbox");
+    await app.waitFor("id:reminder-rem_0");
+    expect(app.shows("id:reminders-later")).toBe(true);
+    await app.press("id:reminder-rem_0-done");
+    expect(seen).toEqual(["rem_0"]);
   });
 
   test("\"as task\" shows once the message @s an agent, and sends it as a task", async () => {

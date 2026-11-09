@@ -34,6 +34,7 @@ test("remi turns each command into the right request", async () => {
   await remi("memory");
   await remi("say", "改到一半，", "还差测试");
   await remi("upload", join(W, "报告 1.md"));
+  await remi("remind", "每天", "9:00", "@acha", "汇总告警");
   const usage = await remi("bogus");
   server.stop(true);
   rmSync(W, { recursive: true, force: true });
@@ -42,6 +43,7 @@ test("remi turns each command into the right request", async () => {
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     "GET /api/v1/agent/read", "GET /api/v1/agent/search", "GET /api/v1/agent/tasks/T-0001", "GET /api/v1/agent/channel",
     "GET /api/v1/agent/who", "GET /api/v1/agent/file", "GET /api/v1/agent/memory", "POST /api/v1/agent/say", "POST /api/v1/agent/upload",
+    "POST /api/v1/agent/remind",
   ]);
   expect(seen[0].query).toEqual({ channel: "支付后端", limit: "5" });
   expect(seen[1].query).toEqual({ q: "慢 查询" });
@@ -50,6 +52,8 @@ test("remi turns each command into the right request", async () => {
   expect(seen[5].query).toEqual({ path: "/media/123-spec.pdf" });
   expect(seen[7]).toMatchObject({ type: "text/plain; charset=utf-8", body: "改到一半， 还差测试" });
   expect(seen[8]).toMatchObject({ query: { name: "报告 1.md" }, type: "", body: "# 结果" });
+  expect(seen[9]).toMatchObject({ type: "text/plain; charset=utf-8", body: "每天 9:00 @acha 汇总告警" });
   expect(usage.exitCode).toBe(2);
   expect(usage.stdout).toContain("remi say TEXT");
+  expect(usage.stdout).toContain("tomorrow 9:00");
 });

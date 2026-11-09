@@ -10,13 +10,14 @@ import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
-  blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS,
+  reminderUp, blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS,
   EXTERNAL_TRIES, repoLabel, type Agent, type Attachment, type Member, type Mention, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { NEEDS, STATUS, statusOf, type Needs } from "./status";
 import { LayoutSwitch, TaskBoard, TasksPage, trackedTasks, type TaskLayout } from "./tasks";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
+import { ReminderSections, RemindMenu } from "./reminders";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
@@ -209,7 +210,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
     if (p.kind === "tasks") return <TasksPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     if (p.kind === "search") return <SearchPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(id, threadId) => open({ kind: "channel", id }, threadId)} />;
-    if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
+    if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
         <If when={t.loaded()} else={<Spinner size={20} tint={colors.muted} />}>
@@ -307,7 +308,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
         <Row testID="open-search" icon="search" label={L("Search", "搜索")} active={props.page.kind === "search"} onPress={() => props.onOpen({ kind: "search" })} />
-        <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+        <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
         <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         <Section
           label={L("CHANNELS", "频道")}
@@ -489,6 +490,7 @@ function reactionGroups(t: Team, m: Message): { emoji: string; names: string[] }
 function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTask?: boolean }) {
   const a = () => authorOf(props.team, props.m.author);
   const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
+  const note = signal("");
   return (
     <View testID={`msg-${props.m.id}`} style={{ flexDirection: "row", gap: 10, paddingHorizontal: 16, paddingVertical: 8 }}>
       <Avatar name={a().name} agent={a().agent} />
@@ -499,7 +501,12 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
             {(ag) => <RuntimeBadge runtime={ag().runtime} />}
           </If>
           <Text style={{ fontSize: 12, color: colors.faint }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
+          <View style={{ flex: 1 }} />
+          <RemindMenu team={props.team} messageId={props.m.id} onError={(e) => note.set(e)} />
         </View>
+        <If when={note()}>
+          <Text testID={`msg-${props.m.id}-note`} style={{ fontSize: 12.5, color: colors.danger }}>{note()}</Text>
+        </If>
         <If when={props.m.text.trim()}>
           <MessageText text={props.m.text} mentions={props.m.mentions} />
         </If>
@@ -658,12 +665,13 @@ const guessType = (name: string) => {
   return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" } as Record<string, string>)[ext] ?? "";
 };
 
-function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
+function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; hint?: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
   /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
   const asTask = signal(false);
   const error = signal("");
+  const sent = signal(""); // what /remind set
   const busy = signal(false);
   const pick = signal(0);
   const dismissed = signal<string | null>(null); // the text the picker was closed on
@@ -734,6 +742,21 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
     const v = untracked(text).trim();
     const drafts = untracked(files);
     if ((!v && !drafts.length) || untracked(busy)) return;
+    const cmd = /^\/remind(?:\s+([\s\S]*))?$/i.exec(v);
+    if (cmd) { // /remind WHEN [@who] WHAT: a reminder, not a message
+      busy.set(true);
+      const err = cmd[1]?.trim()
+        ? await t.remind({ command: cmd[1], channel_id: props.channelId, thread_id: props.threadId ?? null })
+        : L("/remind [every day|weekdays|every week] WHEN [@who] WHAT, e.g. /remind tomorrow 9:00 send the report", "/remind [每天|工作日|每周] 时间 [@谁] 内容，例如 /remind 明天 9:00 交周报");
+      busy.set(false);
+      error.set(err ?? "");
+      if (!err) {
+        const r = untracked(t.reminders).reduce<null | { due: number; created: number }>((a, b) => (!a || b.created > a.created ? b : a), null);
+        sent.set(r ? L(`Reminder set for ${time(r.due)}`, `已设好提醒：${time(r.due)}`) : "");
+        text.set("");
+      }
+      return;
+    }
     busy.set(true);
     const paths: string[] = [];
     for (const f of drafts) {
@@ -774,6 +797,9 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
       onFileDrop={({ uris }) => { dropping.set(false); void attachUris(uris); }}
     >
       <ErrorNote text={error()} testID={`${props.testID}-error`} />
+      <If when={sent() && !text()}>
+        <Text testID={`${props.testID}-sent`} style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.muted }}>{sent()}</Text>
+      </If>
       <If when={open()}>
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
@@ -1404,7 +1430,7 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
               </Each>
             </Scroll>
             <If when={member()}>
-              <Composer team={t} channelId={r().channel_id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
+              <Composer team={t} channelId={r().channel_id} threadId={r().id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
             </If>
           </>
         )}
@@ -1741,26 +1767,28 @@ function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?
   );
 }
 
-function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (t: Task) => void }) {
+function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void }) {
   const t = props.team;
   const items = () => t.inbox().map((id) => t.tasks()[id]).filter(Boolean);
   const waits = () => t.waiting().map((id) => t.tasks()[id]).filter((x) => x?.state === "waiting");
-  effect(() => void t.loadInbox());
+  effect(() => { void t.loadInbox(); void t.loadReminders(); });
+  const up = () => t.reminders().some((r) => reminderUp(r, t.me()?.id));
   return (
     <View style={{ flex: 1 }}>
       <Header title={L("Waiting for you", "待你决定")} subtitle={L("Tasks to confirm, decisions to make, results to accept", "要你确认的活、要你做的决定、要你验收的结果")} back={props.back} onBack={props.onBack} />
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 10, maxWidth: 640 }}>
-        <If when={items().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
+        <If when={items().length || up()} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
           <Each of={items()} key={(x) => x.id}>
-            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x())} />}
+            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x().channel_id, x().thread_id)} />}
           </Each>
         </If>
+        <ReminderSections team={t} onOpen={(r) => props.onOpen(r.channel_id, r.thread_id)} />
         <If when={waits().length}>
           <Text testID="inbox-waiting" style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>
             {L("Waiting for outside results (the agent is woken, not you)", "等外部结果（到时叫醒 Agent，不打扰你）")}
           </Text>
           <Each of={waits()} key={(x) => x.id}>
-            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x())} />}
+            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x().channel_id, x().thread_id)} />}
           </Each>
         </If>
       </Scroll>

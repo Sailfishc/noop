@@ -137,5 +137,8 @@ func initSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	if _, err := db.Exec(remindersSchema); err != nil {
+		return err
+	}
 	return initSearch(db)
 }

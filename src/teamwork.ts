@@ -440,9 +440,11 @@ export const REMI_CLI = `#!/bin/sh
 #   remi memory                                            your memory.md as it is now
 #   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
+#   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
+#                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,14p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,16p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -451,6 +453,7 @@ case "$1" in
   file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
   memory) exec curl -sS "$api/memory" -H "$auth" ;;
   say) shift; [ -n "$*" ] || usage; exec curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  remind) shift; [ -n "$*" ] || usage; exec curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
   upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
   *) usage ;;
 esac
@@ -493,7 +496,9 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi file /media/…  > FILE     a file someone attached (remi read shows them)
 Look up only what the request needs. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
 most every 5 minutes, only when people would want to know), and hand over a file before you stop with
-\`remi upload FILE\`. Your result still goes in the result block at the end.`;
+\`remi upload FILE\`. When someone wants something done later or again and again ("every morning…", "remind me on
+Friday…"), set it with \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` instead of waiting for it. Your result
+still goes in the result block at the end.`;
 
 /** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
 export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {
