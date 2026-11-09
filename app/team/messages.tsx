@@ -1,5 +1,5 @@
 // A message: its text with @mentions, its files (thumbnails, text previews), reactions and task card.
-import { Image, openUrl, signal, Text, View } from "nsh";
+import { Clipboard, Image, openUrl, signal, Text, View } from "nsh";
 import { TextView, type MarkdownExtension } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon } from "../ui";
@@ -121,6 +121,25 @@ function reactionGroups(t: Team, m: Message): { emoji: string; names: string[] }
   return out;
 }
 
+/** Copies a message's text (as written, Markdown and all); a check for a moment once it is on the clipboard. */
+function CopyButton(props: { id: string; text: string }) {
+  const done = signal(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const copy = async () => {
+    await Clipboard.writeText(props.text);
+    done.set(true);
+    clearTimeout(timer);
+    timer = setTimeout(() => done.set(false), 1500);
+  };
+  const label = () => (done() ? L("Copied", "已复制") : L("Copy text", "复制文本"));
+  return (
+    <View role="button" testID={`copy-${props.id}`} accessibilityLabel={label()} tooltip={<Text>{label()}</Text>}
+      onPress={() => void copy().catch(() => {})} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
+      <Icon name={done() ? "check" : "copy"} size={13} tint={done() ? colors.accent : colors.faint} />
+    </View>
+  );
+}
+
 export function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTask?: boolean }) {
   const a = () => authorOf(props.team, props.m.author);
   const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
@@ -136,6 +155,9 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           </If>
           <Text style={{ fontSize: 12, color: colors.faint }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
           <View style={{ flex: 1 }} />
+          <If when={props.m.text.trim()}>
+            <CopyButton id={props.m.id} text={props.m.text} />
+          </If>
           <RemindMenu team={props.team} messageId={props.m.id} onError={(e) => note.set(e)} />
         </View>
         <If when={note()}>
