@@ -99,6 +99,11 @@ func (h *Hub) v1OutputUpload(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
+	h.storeOutput(w, q, t)
+}
+
+// storeOutput: the request's body as a file output of the task (?name=, ?title=), a new version if the name is known.
+func (h *Hub) storeOutput(w http.ResponseWriter, q *request, t taskView) {
 	name := strings.TrimSpace(q.query("name"))
 	clean := path.Clean("/" + name)[1:]
 	if name == "" || clean != name || strings.HasPrefix(clean, "..") || utf8.RuneCountInString(name) > 200 {
