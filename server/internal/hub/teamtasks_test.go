@@ -361,3 +361,47 @@ func TestTaskTitleAndStatusEvents(t *testing.T) {
 	}
 	check(t, "its status as it went: in progress (queued), in review, done", fmt.Sprint(got) == "[in_progress<nil> in_review<nil> done<nil>]", resp{raw: []byte(fmt.Sprint(got))})
 }
+
+// A request can name who takes the task when it stops for people: they get it in 待你处理, may accept or decide, and
+// the agent's message @-s them. Without a name it stays with the creator.
+func TestTaskHandler(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	thread := func(id string) []any {
+		return e.do("GET", "/api/v1/messages/"+id+"/thread", e.zw.session, nil).body["replies"].([]any)
+	}
+	m := e.post(e.zw.session, "@acha 写一版方案\n验收：列出三种做法\n处理人：@liuli", "")
+	tk := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
+	id := tk["id"].(string)
+	check(t, "the request names 刘丽", tk["handler"] == e.ll.id, resp{raw: []byte(fmt.Sprint(tk))})
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	check(t, "not hers before it stops", e.do("POST", "/api/v1/tasks/"+id+"/accept", e.ll.session, nil).status == 409)
+	r := e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "方案写好了", "answer": true})
+	check(t, "named someone: it waits for them even when nothing changed", r.body["state"] == "review", r)
+	th := thread(m["id"].(string))
+	last := th[len(th)-1].(map[string]any)
+	check(t, "the agent's message @-s her", last["text"] == "@liuli 方案写好了" && len(last["mentions"].([]any)) == 1, resp{raw: []byte(fmt.Sprint(last))})
+	check(t, "her 待你处理 has it", len(e.inbox(e.ll.session)) == 1)
+	check(t, "the creator's does not", len(e.inbox(e.zw.session)) == 0)
+	check(t, "she accepts", e.do("POST", "/api/v1/tasks/"+id+"/accept", e.ll.session, nil).body["state"] == "done")
+
+	// "由 @x 决定" in the text; the agent already @-ed her: no second @
+	m = e.post(e.zw.session, "@acha 定一下上线时间，由 @liuli 决定", "")
+	id = e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "needs_decision", "summary": "@liuli 两个时间都行",
+		"decision": map[string]any{"question": "今晚还是周五？", "options": []any{"今晚", "周五"}}})
+	th = thread(m["id"].(string))
+	check(t, "one @ only", th[len(th)-1].(map[string]any)["text"] == "@liuli 两个时间都行\n\n今晚还是周五？", resp{raw: []byte(fmt.Sprint(th[len(th)-1]))})
+	check(t, "she decides", e.do("POST", "/api/v1/tasks/"+id+"/decide", e.ll.session, map[string]any{"choice": "周五"}).body["state"] == "queued")
+
+	// no name, or an agent's: the creator, as before
+	m = e.post(e.zw.session, "@acha 看下日志，由 @acha 处理", "")
+	tk = e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
+	check(t, "agents are not handlers", tk["handler"] == "", resp{raw: []byte(fmt.Sprint(tk))})
+	id = tk["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "改好了"})
+	th = thread(m["id"].(string))
+	check(t, "no @ added", th[len(th)-1].(map[string]any)["text"] == "改好了")
+	check(t, "刘丽 cannot accept someone else's task", e.do("POST", "/api/v1/tasks/"+id+"/accept", e.ll.session, nil).status == 403)
+}

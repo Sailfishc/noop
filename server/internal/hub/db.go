@@ -112,6 +112,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                        // tokens its runs used, added up
 		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",     // why it takes no work now (teamhealth.go); "" = it does
 		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0", // its title was given (by the agent or a person), not cut from the request
+		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",  // who takes it when it stops for people ("" = its creator)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

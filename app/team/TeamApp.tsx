@@ -11,8 +11,8 @@ import { reminderUp, createTeam, isMember, runtimeLabel, TEAM_KEYS, type Session
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
-import { UpdateRow } from "./updates";
-import { agentState, Avatar, chrome, Dot, StateDot, WIDE } from "./ui";
+import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
+import { agentState, Avatar, chrome, Dot, FOOTER, StateDot, WIDE } from "./ui";
 import { ChannelView, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
@@ -251,7 +251,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           </Each>
         </If>
       </Scroll>
-      <View style={{ padding: 8, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+      <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
         <UpdateRow />
         <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
       </View>
@@ -304,6 +304,9 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
       {item("menu-settings", "settings", L("Settings", "设置"), () => props.onSettings(), keymap.label("mod+,"))}
       {item("menu-agents", "spark", L("My agents & machines", "我的 Agent 与机器"), () => props.onSettings("agents"))}
       {item("menu-login-code", "mobile", L("Sign in on another device", "在其他设备登录"), () => props.onSettings("account"))}
+      <If when={canCheckUpdates}>
+        {item("menu-check-updates", "download", L("Check for updates", "检查更新"), () => void checkNow())}
+      </If>
       {sep()}
       {item("menu-sign-out", "external", L("Sign out", "退出登录"), props.onSignOut, undefined, true)}
       <Text testID="menu-version" style={{ paddingHorizontal: 8, paddingTop: 6, paddingBottom: 3, fontSize: 11.5, color: colors.faint }}>Remi {CLIENT_VERSION}</Text>

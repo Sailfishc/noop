@@ -647,7 +647,8 @@ describe("channel v2", () => {
     expect(app.shows("text:/^(\\d+ h )?\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
-    expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
+    expect(app.shows("text:/^Goes straight to/")).toBe(false); // no standing hint under the box
+    expect(app.shows("text:/new line/")).toBe(false);
     expect(app.shows("id:task-T-0001-runlog")).toBe(false); // folded
     await app.press("id:task-T-0001-fold-log");
     await app.waitFor("text:Now: 运行 bun test");
@@ -884,6 +885,15 @@ describe("tasks", () => {
     expect(app.shows("id:taskrow-T-0001")).toBe(true);
     await app.press("id:tasks-filter-agents");
     await app.waitUntil(() => app.shows("id:taskrow-T-0001") && !app.shows("id:taskrow-T-0002"));
+  });
+
+  test("a task whose request named me to take it waits for me, not for its creator", async () => {
+    const ts = [task({ id: "T-0003", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9", handler: "u_1" })];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:open-tasks");
+    await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0003"); // it concerns me: it waits for me
+    expect(app.shows("text:Waits for your acceptance")).toBe(true);
   });
 
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {
