@@ -449,29 +449,71 @@ function MessageFiles(props: { team: Team; messageId: string }) {
   const list = signal<Attachment[]>([]);
   void props.team.attachments(props.messageId).then((a) => list.set(a));
   const pictures = () => list().filter((a) => a.mime.startsWith("image/") && a.url);
-  const others = () => list().filter((a) => !a.mime.startsWith("image/") || !a.url);
+  const texts = () => list().filter((a) => !a.mime.startsWith("image/") && a.preview);
+  const others = () => list().filter((a) => (!a.mime.startsWith("image/") || !a.url) && !a.preview);
+  const open = (a: Attachment) => { if (a.url) void openUrl(a.url).catch(() => {}); };
+  /** A picture's box: its shape, at most 360×240 (one alone) or 240×160 (several). */
+  const box = (a: Attachment) => {
+    const [mw, mh] = pictures().length === 1 ? [360, 240] : [240, 160];
+    if (!a.width || !a.height) return { width: mw, height: mh, fit: "cover" as const };
+    const k = Math.min(mw / a.width, mh / a.height, 1);
+    return { width: Math.max(48, Math.round(a.width * k)), height: Math.max(48, Math.round(a.height * k)), fit: "contain" as const };
+  };
   return (
     <View testID={`files-${props.messageId}`} style={{ gap: 6, marginTop: 2 }}>
       <If when={pictures().length}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={pictures()} key={(a) => a.path}>
             {(a) => (
-              <View role="link" testID="message-picture" accessibilityLabel={a().name} onPress={() => void openUrl(a().url!).catch(() => {})} style={{ borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
-                <Image src={a().url!} accessibilityLabel={a().name} style={{ width: 240, height: 160, objectFit: "cover" }} />
+              <View role="link" testID="message-picture" accessibilityLabel={a().name} onPress={() => open(a())} style={{ borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+                <Image src={a().thumb ?? a().url!} accessibilityLabel={a().name} style={{ width: box(a()).width, height: box(a()).height, objectFit: box(a()).fit }} />
               </View>
             )}
           </Each>
         </View>
       </If>
+      <Each of={texts()} key={(a) => a.path}>
+        {(a) => <TextFile a={a()} onOpen={() => open(a())} />}
+      </Each>
       <Each of={others()} key={(a) => a.path}>
         {(a) => (
-          <View role="link" testID="message-file" accessibilityLabel={a().name} onPress={() => { if (a().url) void openUrl(a().url!).catch(() => {}); }} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 360 }}>
+          <View role="link" testID="message-file" accessibilityLabel={a().name} onPress={() => open(a())} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 360 }}>
             <Icon name="file" size={16} tint={colors.muted} />
             <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
+            <Text style={{ fontSize: 11, fontWeight: "600", color: colors.muted }}>{fileKind(a())}</Text>
             <Text style={{ fontSize: 12, color: colors.faint }}>{fileSize(a().size)}</Text>
           </View>
         )}
       </Each>
+    </View>
+  );
+}
+
+/** "PDF", "ZIP", …: what kind of file, from its name (or type). */
+function fileKind(a: Attachment): string {
+  const ext = /\.([a-z0-9]{1,6})$/i.exec(a.name)?.[1];
+  return (ext ?? a.mime.split("/").pop() ?? "").toUpperCase();
+}
+
+/** A text file on a message: its first lines (8 until expanded, the server sends up to 40), and open for the rest. */
+function TextFile(props: { a: Attachment; onOpen: () => void }) {
+  const wide = signal(false);
+  const lines = () => props.a.preview!.split("\n");
+  const shown = () => (wide() ? lines() : lines().slice(0, 8)).join("\n");
+  const cut = () => !wide() && lines().length > 8;
+  return (
+    <View testID="message-text-file" style={{ maxWidth: 560, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, overflow: "hidden" }}>
+      <View role="link" accessibilityLabel={props.a.name} onPress={props.onOpen} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+        <Icon name="document" size={15} tint={colors.muted} />
+        <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{props.a.name}</Text>
+        <Text style={{ fontSize: 12, color: colors.faint }}>{fileSize(props.a.size)}</Text>
+      </View>
+      <Text testID="message-text-preview" style={{ paddingHorizontal: 10, paddingVertical: 8, fontFamily: "monospace", fontSize: 12.5, lineHeight: 18, color: colors.text }}>{shown()}</Text>
+      <If when={cut() || props.a.more}>
+        <View role="button" testID="message-text-more" onPress={() => (cut() ? wide.set(true) : props.onOpen())} hoverStyle={hovered()} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
+          <Text style={{ fontSize: 12.5, color: colors.accent }}>{cut() ? L(`Show ${lines().length} lines`, `展开 ${lines().length} 行`) : L("Open the whole file", "打开完整文件")}</Text>
+        </View>
+      </If>
     </View>
   );
 }
