@@ -222,6 +222,10 @@ const POLL_MS = 10_000;
 export function createTeam(s: Session) {
   const conn = signal<Conn>("connecting");
   const me = signal<User | null>(null);
+  /** The address others reach the server at, as the server is set up (-public-url); "" when it isn't. */
+  const publicUrl = signal("");
+  /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
+  const shareUrl = () => publicUrl() || s.url;
   const users = signal<User[]>([]);
   const agents = signal<Agent[]>([]);
   const machines = signal<Machine[]>([]);
@@ -339,7 +343,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) me.set(m.data.user as User);
+    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -595,7 +599,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, loadOlder, openThread, send, upload, attachments, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
