@@ -162,6 +162,12 @@ describe("team channels", () => {
     await app.waitFor("id:team-composer-sent");
     expect(made[1]).toEqual({ command: "每天 9:00 @acha 汇总告警", channel_id: "c_1", thread_id: null });
 
+    // said in words, it is a reminder too (not a message)
+    await app.type("id:team-composer", "2分钟后提醒我 看下构建");
+    await app.submit("id:team-composer");
+    await app.waitUntil(() => made.length === 3);
+    expect(made[2]).toEqual({ command: "2分钟 看下构建", channel_id: "c_1", thread_id: null });
+
     await app.press("id:open-inbox");
     await app.waitFor("id:reminder-rem_0");
     expect(app.shows("id:reminders-later")).toBe(true);
