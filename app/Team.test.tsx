@@ -103,7 +103,7 @@ describe("team channels", () => {
       network: {
         ...server(newLog()),
         [`GET ${URL}/api/v1/search?*`]: (r: { url: string }) => {
-          asked.push(new globalThis.URL(r.url).searchParams.get("q") ?? "");
+          asked.push(decodeURIComponent((r.url.match(/[?&]q=([^&]*)/)?.[1] ?? "").replace(/\+/g, " ")));
           return { body: { messages: [m1], tasks: [task({ state: "review", title: "看下慢查询" })] } };
         },
       },
@@ -132,7 +132,9 @@ describe("team channels", () => {
         [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => {
           const b = JSON.parse(r.body!);
           made.push(b);
-          return { body: rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" }) };
+          const made1 = rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" });
+          list = [...list, made1]; // the server lists what it made
+          return { body: made1 };
         },
         [`POST ${URL}/api/v1/reminders/*/seen`]: (r: { url: string }) => {
           seen.push(r.url.match(/reminders\/([^/]+)\//)![1]);
@@ -628,7 +630,7 @@ describe("channel v2", () => {
     await app.press("id:thread-msg_1");
     await app.waitFor("id:task-T-0001-facts");
     expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001" above its title
-    expect(app.shows("text:/^\\d+ min$/")).toBe(true); // how long it has run
+    expect(app.shows("text:/^(\\d+ h )?\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
     expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
@@ -698,6 +700,8 @@ describe("channel v2", () => {
     expect(app.shows("text:orders: 加索引")).toBe(true);
     expect(app.shows("text:checks passed")).toBe(true);
     expect(app.shows("text:v2 · 2.0 KB")).toBe(true);
+    expect(app.shows("text:/3D 云/")).toBe(false); // two show; the rest behind "All 3 outputs"
+    await app.press("id:task-T-0001-outputs-all");
     expect(app.shows("text:3D 云 · in progress · 排队中")).toBe(true);
     expect(app.shows("id:output-o_2-preview")).toBe(false); // no preview picture yet
     await app.press("id:output-o_1-preview");
