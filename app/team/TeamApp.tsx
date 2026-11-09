@@ -135,6 +135,29 @@ type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: 
 type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
 
+const SIDE_WIDTH = 380, SIDE_MIN = 320, MAIN_MIN = 360, SIDE_WIDTH_KEY = "team.sideWidth";
+
+/** The grip on the right column's left edge: drag it to widen or narrow the column, double-click it to reset. */
+function ResizeHandle(props: { width: () => number; onResize: (w: number) => void; onDone: () => void; onReset: () => void }) {
+  let from = 0, x0 = 0;
+  const active = signal(false);
+  return (
+    <View
+      testID="side-resize"
+      accessibilityLabel={L("Drag to resize, double-click to reset", "拖动调整宽度，双击复位")}
+      onStartShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={(e) => { from = props.width(); x0 = e.pageX; active.set(true); }}
+      onResponderMove={(e) => props.onResize(from - (e.pageX - x0))}
+      onResponderRelease={() => { active.set(false); props.onDone(); }}
+      onResponderTerminate={() => { active.set(false); props.onDone(); }}
+      onPress={(e) => { if (e.clickCount === 2) props.onReset(); }}
+      hoverStyle={{ backgroundColor: alpha(colors.accent, 0.35) }}
+      style={{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, cursor: "col-resize", backgroundColor: active() ? alpha(colors.accent, 0.5) : "transparent" }}
+    />
+  );
+}
+
 function Workspace(props: { team: Team; onSignOut: () => void }) {
   const t = props.team;
   const wide = computed(() => windowSize().width >= WIDE);
@@ -144,6 +167,11 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   /** Narrow windows: the list shows until a page is picked. */
   const showList = signal(true);
   const thread = () => { const s = side(); return s?.kind === "thread" ? s.id : null; };
+  /** The right column's width: dragged at its left edge, remembered, reset by a double click. */
+  const sideWidth = signal(SIDE_WIDTH);
+  void Storage.getItem(SIDE_WIDTH_KEY).then((v) => { const n = Number(v); if (v && n > 0) sideWidth.set(n); });
+  const fitSide = (w: number) => Math.round(Math.max(SIDE_MIN, Math.min(w, windowSize().width - 248 - MAIN_MIN)));
+  const setSide = (w: number) => { sideWidth.set(w); void Storage.setItem(SIDE_WIDTH_KEY, String(w)); };
 
   // the first channel this person is in opens by itself on a wide window
   effect(() => {
@@ -216,7 +244,12 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
             <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
             <View style={{ flex: 1 }}>{main()}</View>
             <If when={sidePane(false)}>
-              {(pane) => <View style={{ width: 380, borderLeftWidth: 1, borderLeftColor: colors.border }}>{pane()}</View>}
+              {(pane) => (
+                <View testID="side-pane" style={{ width: fitSide(sideWidth()), borderLeftWidth: 1, borderLeftColor: colors.border }}>
+                  {pane()}
+                  <ResizeHandle width={() => fitSide(untracked(sideWidth))} onResize={(w) => sideWidth.set(fitSide(w))} onDone={() => setSide(fitSide(untracked(sideWidth)))} onReset={() => setSide(SIDE_WIDTH)} />
+                </View>
+              )}
             </If>
           </If>
         </View>
