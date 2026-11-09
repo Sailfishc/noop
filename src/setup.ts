@@ -1,11 +1,19 @@
 // noop install / update: the daemon as a service, and following this repo's origin.
 import { $ } from "bun";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CODE, DATA } from "./config";
+import { CODE, DATA, HOME_DIR } from "./config";
 
 // ------------------------------------------------------------------ self-update
+const REJECTED = () => join(HOME_DIR, "update-rejected"); // machine-local: a release this machine already refused
+
+/** A release whose tests failed here is not tried again until origin moves on; otherwise every check re-installs
+ *  the same bad code and runs the whole suite again. A person's `remi update` still retries. */
+export function updateRejected(up: string, file = REJECTED()): boolean {
+  try { return readFileSync(file, "utf8").trim() === up; } catch { return false; }
+}
+
 /** Fast-forward framework code if origin has new commits that pass tests. Returns true if updated. */
 export async function selfUpdate(opts: { busy?: number; force?: boolean } = {}): Promise<boolean> {
   // never swap code (and then restart) under running work: defer until this host is idle
@@ -17,6 +25,7 @@ export async function selfUpdate(opts: { busy?: number; force?: boolean } = {}):
   const head = (await g("rev-parse", "HEAD")).stdout.toString().trim();
   const up = (await g("rev-parse", "@{u}")).stdout.toString().trim();
   if (!up || head === up) return false;
+  if (!opts.force && updateRejected(up)) return false; // already failed its tests here; wait for the next release
   // upstream history may have been rewritten (e.g. scrubbed); with no local edits, follow it — tests below still guard the switch
   if ((await g("merge-base", "--is-ancestor", "HEAD", "@{u}")).exitCode !== 0) {
     // diverged: follow upstream only when it already has every local commit's change (a rewrite); unpushed work stays
@@ -29,6 +38,7 @@ export async function selfUpdate(opts: { busy?: number; force?: boolean } = {}):
   if (deps.exitCode !== 0 || test.exitCode !== 0) {
     await g("reset", "--hard", "-q", head); // roll back a bad release
     await $`bun install --frozen-lockfile`.cwd(CODE).quiet().nothrow();
+    try { mkdirSync(HOME_DIR, { recursive: true }); writeFileSync(REJECTED(), up); } catch {}
     console.error(`self-update to ${up.slice(0, 7)} failed tests → rolled back to ${head.slice(0, 7)}\n${test.stdout.toString().slice(-3000)}${test.stderr.toString().slice(-3000)}`);
     return false;
   }
