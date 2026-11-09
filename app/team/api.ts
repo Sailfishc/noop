@@ -101,7 +101,11 @@ export type Reminder = {
 /** It went off and waits for this person. */
 export const reminderUp = (r: Reminder, meId: string | undefined) => r.target.kind === "user" && r.target.id === meId && !!r.fired && (!r.seen || r.seen < r.fired);
 /** A file on a message: what the server knows of it, and a link (15 minutes) to show or download it. */
-export type Attachment = { path: string; name: string; mime: string; size: number; url?: string };
+export type Attachment = { path: string; name: string; mime: string; size: number; url?: string;
+  /** A picture: its own size, and a link to a version at most 480px on a side. */
+  width?: number; height?: number; thumb?: string;
+  /** A text file: its first 40 lines, and whether there is more. */
+  preview?: string; more?: boolean };
 export type Session = { url: string; session: string };
 export type Conn = "connecting" | "live" | "offline" | "unauthorized";
 export type Reply = { ok: boolean; status: number; data: any };

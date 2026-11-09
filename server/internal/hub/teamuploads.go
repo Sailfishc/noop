@@ -82,7 +82,19 @@ func (h *Hub) v1MessageAttachments(w http.ResponseWriter, q *request) {
 		}
 		exp := h.nowMs()/1000 + outputLinkTTL
 		link := fmt.Sprintf("/api/v1/media/%s/signed?exp=%d&sig=%s", url.PathEscape(id), exp, h.linkSig("media:"+id, 0, exp))
-		out = append(out, h.attachmentInfo(id, typ, size, link))
+		info := h.attachmentInfo(id, typ, size, link)
+		if th, ok := h.thumbOf(id, typ, size); ok {
+			info["width"], info["height"] = th.width, th.height
+			info["thumb"] = link
+			if th.data != nil {
+				info["thumb"] = link + "&thumb=1"
+			}
+		} else if textish(typ, info["name"].(string)) {
+			if text, more := textPreview(h.mediaHead(id, previewScanBytes), size); text != "" {
+				info["preview"], info["more"] = text, more
+			}
+		}
+		out = append(out, info)
 	}
 	writeJSON(w, 200, obj{"attachments": out})
 }
@@ -99,6 +111,17 @@ func (h *Hub) v1MediaSigned(w http.ResponseWriter, q *request) {
 	if exp < h.nowMs()/1000 || q.query("sig") != h.linkSig("media:"+id, 0, exp) {
 		errJSON(w, 403, "这个链接已经过期，请回到 Remi 重新打开")
 		return
+	}
+	if q.query("thumb") == "1" {
+		var typ string
+		var data []byte
+		if h.db.QueryRow("SELECT type, data FROM thumbs WHERE id = ? AND data IS NOT NULL", id).Scan(&typ, &data) == nil {
+			w.Header().Set("content-type", typ)
+			w.Header().Set("cache-control", "private, max-age=86400")
+			w.Header().Set("content-length", strconv.Itoa(len(data)))
+			_, _ = w.Write(data)
+			return
+		}
 	}
 	h.sendMedia(w, id)
 }

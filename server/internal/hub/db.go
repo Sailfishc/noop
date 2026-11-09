@@ -137,6 +137,9 @@ func initSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	if _, err := db.Exec(thumbsSchemaTable); err != nil {
+		return err
+	}
 	if _, err := db.Exec(remindersSchema); err != nil {
 		return err
 	}

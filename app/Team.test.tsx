@@ -293,6 +293,8 @@ describe("team channels", () => {
       [`GET ${URL}/api/v1/messages/msg_1/attachments`]: { body: { attachments: [
         { path: "/media/1-a-shot.png", name: "截图.png", mime: "image/png", size: 2048, url: "/api/v1/media/1-a-shot.png/signed?x" },
         { path: "/media/1-b-spec.pdf", name: "需求.pdf", mime: "application/pdf", size: 3 << 20, url: "/api/v1/media/1-b-spec.pdf/signed?x" },
+        { path: "/media/1-c-run.log", name: "run.log", mime: "text/plain", size: 9000, url: "/api/v1/media/1-c-run.log/signed?x",
+          preview: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"), more: true },
       ] } },
       [`GET ${URL}/api/v1/media/*`]: { body: "" },
       [`POST ${URL}/api/v1/uploads?*`]: (r: { url: string }) => {
@@ -305,6 +307,10 @@ describe("team channels", () => {
     expect(app.shows("text:需求.pdf")).toBe(true);
     expect(app.shows("text:3.0 MB")).toBe(true);
     expect(app.shows("id:message-picture")).toBe(true);
+    expect(app.shows("text:/line 8/")).toBe(true); // a text file shows its first lines
+    expect(app.shows("text:/line 9/")).toBe(false);
+    await app.press("id:message-text-more");
+    await app.waitFor("text:/Open the whole file|打开完整文件/");
 
     app.onPick(() => [{ name: "notes.md", type: "text/markdown", data: new TextEncoder().encode("# hi") }]);
     await app.press("id:team-composer-attach");
