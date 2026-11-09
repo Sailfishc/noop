@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// /api/v1: TeamAgent's own API. Several people, each with their own machines and agents, in channels with threads.
-// The legacy noop routes (/api/files, /api/host/…) keep serving the daemons' data sync.
+// /api/v1: Remi's API. Several people, each with their own machines and agents, in channels with threads.
 
 type access int
 
@@ -51,6 +50,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("PUT /api/v1/machine", machine, h.v1MachineReport)
 
 	r("GET /api/v1/repos", anyone, h.v1Repos)
+	r("GET /api/v1/search", person, h.v1Search)
 	r("GET /api/v1/agents", anyone, h.v1Agents)
 	r("POST /api/v1/agents", person, h.v1AgentCreate)
 	r("PATCH /api/v1/agents/{id}", person, h.v1AgentPatch)
@@ -71,6 +71,10 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("GET /api/v1/tasks", anyone, h.v1Tasks)
 	r("GET /api/v1/tasks/{id}", anyone, h.v1Task)
 	r("GET /api/v1/inbox", person, h.v1Inbox)
+	r("GET /api/v1/reminders", person, h.v1Reminders)
+	r("POST /api/v1/reminders", person, h.v1ReminderCreate)
+	r("DELETE /api/v1/reminders/{id}", person, h.v1ReminderDelete)
+	r("POST /api/v1/reminders/{id}/seen", person, h.v1ReminderSeen)
 	r("PATCH /api/v1/tasks/{id}", person, h.v1TaskPatch)
 	r("POST /api/v1/tasks/{id}/confirm", person, h.v1TaskConfirm)
 	r("POST /api/v1/tasks/{id}/decline", person, h.v1TaskDecline)
@@ -83,12 +87,19 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("GET /api/v1/agent/search", public, h.v1AgentSearch)
 	r("GET /api/v1/agent/tasks", public, h.v1AgentTasks)
 	r("GET /api/v1/agent/tasks/{id}", public, h.v1AgentTask)
+	r("GET /api/v1/agent/channel", public, h.v1AgentChannel)
+	r("GET /api/v1/agent/who", public, h.v1AgentWho)
+	r("GET /api/v1/agent/file", public, h.v1AgentFile)
+	r("GET /api/v1/agent/memory", public, h.v1AgentMemory)
+	r("POST /api/v1/agent/say", public, h.v1AgentSay)
+	r("POST /api/v1/agent/remind", public, h.v1AgentRemind)
 	r("POST /api/v1/tasks/{id}/decide", person, h.v1TaskDecide)
 	r("GET /api/v1/machine/tasks", machine, h.v1MachineTasks)
 	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)
 	r("POST /api/v1/tasks/{id}/report", machine, h.v1TaskReport)
 	r("POST /api/v1/hooks/gitlab", public, h.v1GitlabHook)
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/file", h.v1Handler(machine, h.v1OutputUpload, maxOutputFile+1))
+	m.HandleFunc("POST /api/v1/agent/upload", h.v1Handler(public, h.v1AgentUpload, maxOutputFile+1))
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/preview", h.v1Handler(machine, h.v1OutputPreview, maxUpload+1))
 	r("GET /api/v1/outputs/{id}/link", person, h.v1OutputLink)
 	r("POST /api/v1/hooks/wait/{token}", public, h.v1WaitHook)

@@ -1,0 +1,6 @@
+#!/bin/sh
+# Refuses keys, tokens and IP addresses in the staged change (docs/secret-scan.md).
+# Installed by `bun install` (package.json "prepare" sets core.hooksPath to .githooks).
+# Skip once with `git commit --no-verify`; CI runs the same scan and will still catch it.
+command -v bun >/dev/null 2>&1 || { echo "pre-commit: bun not found, secret scan skipped (CI will still run it)" >&2; exit 0; }
+exec bun "$(git rev-parse --show-toplevel)/scripts/check-secrets.ts" --staged

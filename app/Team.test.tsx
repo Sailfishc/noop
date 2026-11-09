@@ -39,6 +39,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
     [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
+    [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
     [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
@@ -193,6 +194,69 @@ describe("team channels", () => {
     expect(app.value("id:team-composer")).toBe("");
   });
 
+  test("search finds messages and tasks in every channel, and a result opens its thread", async () => {
+    const asked: string[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/search?*`]: (r: { url: string }) => {
+          asked.push(new globalThis.URL(r.url).searchParams.get("q") ?? "");
+          return { body: { messages: [m1], tasks: [task({ state: "review", title: "看下慢查询" })] } };
+        },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-search");
+    await app.type("id:search-input", "慢查询");
+    await app.waitFor("id:search-msg-msg_1");
+    expect(asked.at(-1)).toBe("慢查询");
+    expect(app.shows("id:search-task-T-0001")).toBe(true);
+    await app.press("id:search-msg-msg_1");
+    await app.waitFor("text:收到，在看");
+  });
+
+  test("reminders: a message's bell, /remind in the box, and the ones that went off in 待你决定", async () => {
+    const made: any[] = [];
+    const seen: string[] = [];
+    const rem = (over: Record<string, unknown>) => ({ id: "rem_1", by: "u_1", target: { kind: "user", id: "u_1" }, channel_id: "c_1", thread_id: "msg_1",
+      message_id: "msg_1", text: "@acha 看下慢查询", due: Date.now() + 3600_000, repeat: "", created: Date.now(), fired: null, seen: null, done: false, ...over });
+    let list = [rem({ id: "rem_0", due: Date.now() - 60_000, fired: Date.now() - 60_000, done: true })];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/reminders`]: () => ({ body: { reminders: list } }),
+        [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          made.push(b);
+          return { body: rem({ id: `rem_${made.length}`, repeat: b.command?.startsWith("每天") ? "daily" : "" }) };
+        },
+        [`POST ${URL}/api/v1/reminders/*/seen`]: (r: { url: string }) => {
+          seen.push(r.url.match(/reminders\/([^/]+)\//)![1]);
+          list = [];
+          return { body: {} };
+        },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.waitFor("id:open-inbox-unread"); // the one that went off
+    await app.press("id:remind-msg_1");
+    await app.press("id:remind-msg_1-1h");
+    expect(made[0]).toEqual({ message_id: "msg_1", when: "1h" });
+
+    await app.type("id:team-composer", "/remind 每天 9:00 @acha 汇总告警");
+    await app.submit("id:team-composer");
+    await app.waitFor("id:team-composer-sent");
+    expect(made[1]).toEqual({ command: "每天 9:00 @acha 汇总告警", channel_id: "c_1", thread_id: null });
+
+    await app.press("id:open-inbox");
+    await app.waitFor("id:reminder-rem_0");
+    expect(app.shows("id:reminders-later")).toBe(true);
+    await app.press("id:reminder-rem_0-done");
+    expect(seen).toEqual(["rem_0"]);
+  });
+
   test("\"as task\" shows once the message @s an agent, and sends it as a task", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
@@ -229,6 +293,8 @@ describe("team channels", () => {
       [`GET ${URL}/api/v1/messages/msg_1/attachments`]: { body: { attachments: [
         { path: "/media/1-a-shot.png", name: "截图.png", mime: "image/png", size: 2048, url: "/api/v1/media/1-a-shot.png/signed?x" },
         { path: "/media/1-b-spec.pdf", name: "需求.pdf", mime: "application/pdf", size: 3 << 20, url: "/api/v1/media/1-b-spec.pdf/signed?x" },
+        { path: "/media/1-c-run.log", name: "run.log", mime: "text/plain", size: 9000, url: "/api/v1/media/1-c-run.log/signed?x",
+          preview: Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n"), more: true },
       ] } },
       [`GET ${URL}/api/v1/media/*`]: { body: "" },
       [`POST ${URL}/api/v1/uploads?*`]: (r: { url: string }) => {
@@ -241,6 +307,10 @@ describe("team channels", () => {
     expect(app.shows("text:需求.pdf")).toBe(true);
     expect(app.shows("text:3.0 MB")).toBe(true);
     expect(app.shows("id:message-picture")).toBe(true);
+    expect(app.shows("text:/line 8/")).toBe(true); // a text file shows its first lines
+    expect(app.shows("text:/line 9/")).toBe(false);
+    await app.press("id:message-text-more");
+    await app.waitFor("text:/Open the whole file|打开完整文件/");
 
     app.onPick(() => [{ name: "notes.md", type: "text/markdown", data: new TextEncoder().encode("# hi") }]);
     await app.press("id:team-composer-attach");
@@ -655,11 +725,13 @@ describe("channel v2", () => {
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
     await app.waitFor("id:task-T-0001-facts");
-    expect(app.shows("text:/^T-0001 · running for/")).toBe(true);
+    expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001" above its title
+    expect(app.shows("text:/^\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
     expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
-    await app.press("id:task-T-0001-runlog");
+    expect(app.shows("id:task-T-0001-runlog")).toBe(false); // folded
+    await app.press("id:task-T-0001-fold-log");
     await app.waitFor("text:Now: 运行 bun test");
   });
 
@@ -670,8 +742,12 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-mandate");
+    await app.press("id:task-T-0001-fold-mandate");
     await app.waitFor("id:task-T-0001-mandate");
     expect(app.shows("text:asked by 王磊 · rule: Members of its channels · confirmed by 张伟 · autonomy: Assist · may only push agent/T-0001 and open a PR")).toBe(true);
+    await app.press("id:task-T-0001-fold-acceptance");
+    await app.waitFor("id:task-T-0001-acceptance");
     expect(app.shows("text:/^None yet: the agent proposes/")).toBe(true);
     await app.press("id:task-T-0001-acceptance-edit");
     await app.type("id:task-T-0001-acceptance-input", "P99 < 200ms");
@@ -685,6 +761,8 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({ created_by: "u_1", state: "pending" })]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-repo");
+    await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
     expect(app.shows("text:none: a general task in an empty folder")).toBe(true);
     expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
@@ -740,8 +818,8 @@ describe("channel v2", () => {
     expect(app.shows("text:3D 云渲染底座模型 · checked now and then")).toBe(true);
     expect(app.shows("text:/^checked 2×/")).toBe(true);
     expect(app.shows("text:排队第 3 位")).toBe(true);
-    expect(app.shows("text:Submitted, result not confirmed")).toBe(true);
-    expect(app.shows("text:1/3")).toBe(true);
+    expect(app.shows("text:submitted, result not confirmed")).toBe(true);
+    expect(app.shows("text:outside 1/3")).toBe(true);
     await app.press("id:open-inbox");
     await app.waitFor("id:inbox-waiting");
     expect(app.shows("id:inbox-empty")).toBe(true); // nothing for you to do
@@ -752,6 +830,8 @@ describe("channel v2", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-fold-repo");
+    await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
     expect(app.shows("text:acme/pay")).toBe(true);
     expect(app.shows("id:task-T-0001-repo-edit")).toBe(false);
@@ -780,7 +860,7 @@ describe("tasks", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [task({})]) });
     await app.waitFor("id:task-T-0001");
     expect(app.shows("text:To do")).toBe(true);
-    expect(app.shows("text:Needs its owner’s OK")).toBe(true);
+    expect(app.shows("text:Waits for your OK")).toBe(true); // I own @acha
     await app.press("id:task-T-0001-confirm");
     await app.waitFor("text:In progress");
     expect(app.shows("id:task-T-0001-needs")).toBe(false);
@@ -794,7 +874,7 @@ describe("tasks", () => {
     const t = task({ created_by: "u_1", state: "needs_decision", decision: { question: "现在上线吗？", options: ["A: 现在上", "B: 夜里再上"], recommendation: "B" } });
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
     await app.waitFor("text:现在上线吗？");
-    expect(app.shows("text:Needs a decision")).toBe(true);
+    expect(app.shows("text:Waits for your decision")).toBe(true);
     await app.press("id:task-T-0001-option-1");
     await app.waitFor("text:In progress");
     expect(log.acts).toEqual(["T-0001 decide B: 夜里再上"]);
@@ -865,7 +945,7 @@ describe("tasks", () => {
     await app.waitFor("id:close-thread");
   });
 
-  test("the Tasks page lists every tracked task; filters narrow it to mine or my agents'", async () => {
+  test("the Tasks page shows what concerns me first; views and filters narrow it", async () => {
     const ts = [
       task({ id: "T-0001", state: "running", tracked: true, created_by: "u_1" }),
       task({ id: "T-0002", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9" }),
@@ -873,8 +953,12 @@ describe("tasks", () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
     await app.waitFor("id:open-tasks");
     await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0001");
+    expect(app.shows("id:taskrow-T-0002")).toBe(false); // someone else's, for someone else's agent
+    expect(app.shows("text:/· T-0001$/")).toBe(true); // "#channel · T-0001"
+    await app.press("id:tasks-filter-all");
     await app.waitFor("id:taskrow-T-0002");
-    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    expect(app.shows("text:Waits for 王磊 to accept")).toBe(true);
     await app.press("id:tasks-filter-mine");
     await app.waitUntil(() => !app.shows("id:taskrow-T-0002"));
     expect(app.shows("id:taskrow-T-0001")).toBe(true);

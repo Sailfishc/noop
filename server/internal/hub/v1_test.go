@@ -117,7 +117,6 @@ func TestV1MachinesAndAgents(t *testing.T) {
 	m := r.body["machine"].(map[string]any)
 	check(t, "machine reports in", r.status == 200 && m["online"] == true && len(m["runtimes"].([]any)) == 1, r)
 	check(t, "a person cannot report as a machine", e.do("PUT", "/api/v1/machine", zw.session, map[string]any{}).status == 403)
-	check(t, "the machine token also syncs files", e.do("GET", "/api/files/changes?since=0", token, nil).status == 200)
 
 	r = e.do("POST", "/api/v1/agents", zw.session, map[string]any{"handle": "ama", "name": "阿码", "description": "结算页前端", "machine_id": mid, "dispatch": "channel", "confirm": true})
 	aid, _ := r.body["id"].(string)

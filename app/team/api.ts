@@ -33,7 +33,9 @@ export type Agent = { id: string; owner_id: string; machine_id: string | null; h
   /** Work from people other than the owner waits for the owner's yes. */
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
-  memory?: string };
+  memory?: string;
+  /** Why it takes no work now (its runtime logged out, out of credit); its tasks wait in the queue. */
+  paused?: { reason: string; text: string; at: number } | null };
 export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
@@ -56,7 +58,13 @@ export type Task = {
   tracked?: boolean;
   /** Whether the agent saw the outcome itself, or only handed the work over. */
   result?: "confirmed" | "unconfirmed" | "";
+  /** Its title was given (by the agent or a person), not cut from the request. */
+  titled?: boolean;
+  /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
+  events?: TaskEvent[] | null;
 };
+/** A task came to a status (and then needed this of a person). */
+export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
   how: "callback" | "poll" | "timer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
@@ -91,11 +99,23 @@ export type Message = {
   /** Who put which emoji on it, oldest first (an agent's 👀: it took the message up). */
   reactions?: { emoji: string; author: Member }[];
 };
+/** A reminder: set from a message ("remind me later"), by /remind, or by an agent (remi remind). */
+export type Reminder = {
+  id: string; by: string; by_agent?: string | null; target: Member; channel_id: string; thread_id: string | null; message_id: string | null;
+  text: string; due: number; repeat: "" | "daily" | "weekdays" | "weekly"; created: number; fired: number | null; seen: number | null; done: boolean;
+};
+/** It went off and waits for this person. */
+export const reminderUp = (r: Reminder, meId: string | undefined) => r.target.kind === "user" && r.target.id === meId && !!r.fired && (!r.seen || r.seen < r.fired);
 /** A file on a message: what the server knows of it, and a link (15 minutes) to show or download it. */
-export type Attachment = { path: string; name: string; mime: string; size: number; url?: string };
+export type Attachment = { path: string; name: string; mime: string; size: number; url?: string;
+  /** A picture: its own size, and a link to a version at most 480px on a side. */
+  width?: number; height?: number; thumb?: string;
+  /** A text file: its first 40 lines, and whether there is more. */
+  preview?: string; more?: boolean };
 export type Session = { url: string; session: string };
 export type Conn = "connecting" | "live" | "offline" | "unauthorized";
-export type Reply = { ok: boolean; status: number; data: any };
+/** `error`: why a call got no response at all (status 0), in the network stack's words. */
+export type Reply = { ok: boolean; status: number; data: any; error?: string };
 
 export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email" } as const;
 
@@ -121,6 +141,10 @@ export function loginServer(text: string): string {
   return m ? normalizeServer(m[1]) : "";
 }
 
+/** Whether a failed call was refused because the app may not use plain http here (App Transport Security on
+ * Apple platforms, cleartext rules on Android) rather than because the server is unreachable. */
+export const insecureRefused = (error = "") => /App Transport Security|secure connection|cleartext/i.test(error);
+
 export const wsUrl = (base: string, token: string) => `${base.replace(/^http/, "ws")}/api/v1/stream?token=${encodeURIComponent(token)}`;
 
 /** One JSON call; never throws (status 0: unreachable). */
@@ -130,8 +154,8 @@ export async function call(base: string, method: string, path: string, token = "
   let r: Response;
   try {
     r = await fetch(`${base}${path}`, method === "GET" ? { headers } : { method, headers, body: JSON.stringify(body ?? {}) });
-  } catch {
-    return { ok: false, status: 0, data: {} };
+  } catch (e) {
+    return { ok: false, status: 0, data: {}, error: e instanceof Error ? e.message : String(e) };
   }
   let data: any = {};
   try {
@@ -174,6 +198,8 @@ export function runtimeOn(m: Machine | undefined, name: string): RuntimeInfo | u
 }
 
 /** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing or logged out. */
+const PAUSE_EN: Record<string, string> = { auth: "its runtime is not logged in", billing: "its runtime is out of credit", not_installed: "its runtime is not installed" };
+
 export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): string {
   const rt = runtimeLabel(a.runtime);
   if (!a.machine_id || !m) return en ? "no machine" : "没有机器";
@@ -181,6 +207,7 @@ export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): st
   const r = runtimeOn(m, a.runtime);
   if (!r || !r.installed) return en ? `${rt} isn’t installed on ${m.name}` : `${m.name} 上没装 ${rt}`;
   if (r.logged_in === false) return en ? `${rt} isn’t logged in on ${m.name}` : `${m.name} 上的 ${rt} 没登录`;
+  if (a.paused) return en ? `paused: ${PAUSE_EN[a.paused.reason] ?? a.paused.text}` : `已暂停：${a.paused.text}`;
   return "";
 }
 
@@ -242,6 +269,8 @@ export function createTeam(s: Session) {
   const inbox = signal<string[]>([]);
   /** Tasks waiting for an outside result: shown, never notified. */
   const waiting = signal<string[]>([]);
+  /** The reminders that concern this person: scheduled ones they set or get, and the ones that went off for them. */
+  const reminders = signal<Reminder[]>([]);
   /** New top-level messages from others since a channel was last looked at. */
   const unread = signal<Record<string, number>>({});
   let viewing: string | null = null;
@@ -305,6 +334,9 @@ export function createTeam(s: Session) {
       case "machine":
         if (f.machine) machines.update((ms) => upsert(ms, f.machine as Machine));
         break;
+      case "reminder":
+        if (f.reminder) putReminder(f.reminder as Reminder);
+        break;
       case "task":
         if (f.task) {
           putTasks([f.task as Task]);
@@ -339,6 +371,35 @@ export function createTeam(s: Session) {
     waiting.set((w.data.tasks as Task[]).map((t) => t.id));
   }
 
+  async function loadReminders() {
+    const r = await api("GET", "/api/v1/reminders");
+    if (r.ok) reminders.set(r.data.reminders as Reminder[]);
+  }
+  function putReminder(r: Reminder) {
+    const meId = untracked(me)?.id;
+    const keep = !r.done || reminderUp(r, meId);
+    reminders.update((rs) => {
+      const rest = rs.filter((x) => x.id !== r.id);
+      return keep ? [...rest, r].sort((a, b) => a.due - b.due) : rest;
+    });
+  }
+  /** Set one: {command} as typed after /remind, or {message_id, when}. Returns an error to show, or null. */
+  async function remind(body: { command?: string; when?: string; message_id?: string; channel_id?: string; thread_id?: string | null }): Promise<string | null> {
+    const r = await api("POST", "/api/v1/reminders", body);
+    if (!r.ok) return String(r.data?.error ?? L("Couldn’t set the reminder", "提醒没设上"));
+    putReminder(r.data as Reminder);
+    return null;
+  }
+  /** Done with one that went off; with `when`, again then. */
+  async function reminderSeen(id: string, when?: string) {
+    const r = await api("POST", `/api/v1/reminders/${id}/seen`, when ? { when } : {});
+    if (r.ok) await loadReminders();
+  }
+  async function cancelReminder(id: string) {
+    const r = await api("DELETE", `/api/v1/reminders/${id}`);
+    if (r.ok) reminders.update((rs) => rs.filter((x) => x.id !== id));
+  }
+
   async function load() {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
@@ -353,7 +414,7 @@ export function createTeam(s: Session) {
       for (const ch of cs) if (ch.last_seq > after) after = ch.last_seq;
     }
     loaded.set(true);
-    if (m.ok) void loadInbox();
+    if (m.ok) { void loadInbox(); void loadReminders(); }
     return m.ok;
   }
 
@@ -453,6 +514,14 @@ export function createTeam(s: Session) {
     } catch {
       return { error: L(`Couldn’t upload ${name}: the server is unreachable`, `${name} 上传失败：连不上服务器`) };
     }
+  }
+  /** Messages and tasks with all the words, newest first (the server's full-text index). */
+  async function search(q: string, opts: { channel?: string; from?: string } = {}): Promise<{ messages: Message[]; tasks: Task[] } | null> {
+    const p = new URLSearchParams({ q });
+    if (opts.channel) p.set("channel", opts.channel);
+    if (opts.from) p.set("from", opts.from);
+    const r = await api("GET", `/api/v1/search?${p}`);
+    return r.ok ? { messages: r.data.messages ?? [], tasks: r.data.tasks ?? [] } : null;
   }
   /** A message's files, each with a short-lived link to show or download it. */
   async function attachments(messageId: string): Promise<Attachment[]> {
@@ -572,6 +641,12 @@ export function createTeam(s: Session) {
     return r.ok ? s.url.replace(/\/$/, "") + r.data.url : null;
   }
   /** Where a task runs, before it ever ran (an address; "" = a general task). */
+  /** Rename a task (its creator or the agent's owner); the agent then leaves the title as it is. */
+  async function setTaskTitle(id: string, title: string) {
+    const r = await api("PATCH", `/api/v1/tasks/${id}`, { title });
+    if (r.ok) putTasks([r.data as Task]);
+    return r;
+  }
   async function setTaskRepo(id: string, repo: string) {
     const r = await api("PATCH", `/api/v1/tasks/${id}`, { repo });
     if (r.ok) putTasks([r.data as Task]);
@@ -599,8 +674,8 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
-    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, createChannel, join, addMember, removeMember, patchChannel, repos,
+    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
+    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };

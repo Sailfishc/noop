@@ -1,16 +1,60 @@
 name: ci
 on: [push, pull_request]
+# Borrowed from T3 Code's CI: read-only token, and a newer push to a PR cancels the older run.
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  # Keys, tokens and IP addresses (docs/secret-scan.md). The same script runs as the
+  # pre-commit hook. It scans every commit the push or PR adds, so a secret added and
+  # then deleted in a later commit is still caught, and then the whole tree as it is.
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+        with: { bun-version-file: package.json }
+      - if: steps.bun.outcome == 'failure'
+        run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
+      - name: Scan the commits this change adds
+        env:
+          # Optional repository secret: intranet domains and other names that must not
+          # appear, one regex per line. It stays out of the repository by design.
+          REMI_SENSITIVE_PATTERNS: ${{ secrets.REMI_SENSITIVE_PATTERNS }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -n "$BASE" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            bun scripts/check-secrets.ts --range "$BASE..$HEAD"
+          else
+            echo "no base commit (new branch): the full-tree scan below covers it"
+          fi
+      - name: Scan the whole tree
+        env:
+          REMI_SENSITIVE_PATTERNS: ${{ secrets.REMI_SENSITIVE_PATTERNS }}
+        run: bun scripts/check-secrets.ts
   test:
     strategy: { matrix: { os: [ubuntu-latest, macos-latest] } }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # Bun's own download (GitHub release assets) sometimes answers 504 for hours; a pinned version stays cached,
+      # and npm's copy of the same version is the fallback.
       - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+        with: { bun-version-file: package.json }
+      - if: steps.bun.outcome == 'failure'
+        run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
       - run: bun install --frozen-lockfile
       - run: bunx tsc --noEmit
       - run: bun test
-      - run: git config --global user.name ci && git config --global user.email ci@ci && ./test/e2e.sh
   server:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: server } }
@@ -22,13 +66,16 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+        with: { bun-version-file: package.json }
+      - if: steps.bun.outcome == 'failure'
+        working-directory: .
+        run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
       - run: bun install --frozen-lockfile
         working-directory: .
       - run: |
           go build -o /tmp/remi-server ./cmd/remi-server
-          REMI_TOKEN=ci-token-0123456789 /tmp/remi-server -addr 127.0.0.1:18080 -data /tmp/ta &
-          sleep 1
-          REMI_TOKEN=ci-token-0123456789 bun test/e2e-claim.ts http://127.0.0.1:18080
           CODE=$(/tmp/remi-server invite -data /tmp/ta-team -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
           /tmp/remi-server -addr 127.0.0.1:18081 -data /tmp/ta-team &
           sleep 1

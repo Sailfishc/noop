@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Cfg, HOME_DIR } from "./core";
+import { type Cfg, HOME_DIR } from "./config";
 import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
 import { gitAfterRun, refreshPRs } from "./gitflow";
 import { repoBook, type RepoBook } from "./repos";
@@ -171,8 +171,25 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     }
   };
 
+  const LOGIN: Record<string, string> = { codex: "codex login", claude: "claude auth login", pi: "pi（配好模型凭据，pi --list-models 能列出模型）" };
+  const minutes = (v: unknown, d: number) => (Number(v) > 0 ? Number(v) : d) * 60_000;
   const worker = createWorker({
-    api: (path, init) => api(path, init), server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
+    stallMs: minutes(cfg.clis?.stall_minutes, 20), timeoutMs: minutes(cfg.clis?.timeout_minutes, 60),
+    // what the last look said; when it says not logged in, look again now (people log in, then reply in the thread)
+    runtimeReady: async (name) => {
+      const said = probe?.runtime_info.find((x) => x.name === name);
+      if (said?.logged_in !== false) return null;
+      const now = detectRuntimes().find((x) => x.name === name);
+      if (probe) probe = { ...probe, at: Date.now(), runtime_info: probe.runtime_info.map((x) => (x.name === name && now ? now : x)) };
+      return now?.logged_in === false ? `${name} 在这台机器上没有登录：运行 ${LOGIN[name] ?? `${name} 登录`} 后，在线程里回复一句即可重试` : null;
+    },
+    api: (path, init) => api(path, init),
+    send: async (path, body) => {
+      const r = await fetch(base + path, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null);
+      if (!r) return "retry";
+      if (r.ok) return "ok";
+      return r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429 ? "drop" : "retry";
+    }, server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
     resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
     files: {
       async upload(taskId, name, data) {
@@ -223,6 +240,8 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
     const r = await api("/api/v1/machine/tasks?prs=1");
     if (r?.tasks) await refreshPRs(cfg, r.tasks, (id, pr) => api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify({ pr }) }));
   }, 120_000);
+  // the folders of tasks that ended a week ago or more, hourly
+  const sweepTick = setInterval(() => void worker.sweep(), 3_600_000);
   void report().then((r) => {
     if (r) log(`已接入 ${base}：${r.machine?.name ?? "?"}，Agent ${agents.map((a) => `@${a.handle}`).join(" ") || "（还没有）"}`);
   });
@@ -230,6 +249,6 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   return {
     agents: () => agents,
     worker,
-    stop: () => { stopped = true; clearInterval(tick); clearInterval(prTick); worker.stop(); ws?.close(); },
+    stop: () => { stopped = true; clearInterval(tick); clearInterval(prTick); clearInterval(sweepTick); worker.stop(); ws?.close(); },
   };
 }

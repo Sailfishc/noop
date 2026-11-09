@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -144,14 +145,20 @@ type taskView struct {
 	ClaimedBy   *string       `json:"claimed_by"`
 	ConfirmedBy *string       `json:"confirmed_by"`
 	Runs        int64         `json:"runs"`
-	Tracked     bool          `json:"tracked"` // a task people track (on the board); false: a conversation turn (an answer)
+	Tracked     bool          `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
+	Titled      bool          `json:"titled"`       // its title was given (by the agent or a person), not cut from the request
+	Events      []taskEvent   `json:"events"`       // its status as it changed, oldest first: shown between the thread's replies
+	Failures    int64         `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
+	LastFailure string        `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
+	Usage       *usageView    `json:"usage"`        // tokens its runs used, added up
 	Created     int64         `json:"created"`
 	Updated     int64         `json:"updated"`
 	seenSeq     int64
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
+	failures, last_failure, COALESCE(usage, ''), titled`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -161,16 +168,20 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait string
+		var decision, pr, mandate, wait, usage string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
+		}
+		if usage != "" {
+			t.Usage = &usageView{}
+			_ = json.Unmarshal([]byte(usage), t.Usage)
 		}
 		if mandate != "" {
 			t.Mandate = &mandateView{}
@@ -213,7 +224,45 @@ func (h *Hub) taskChanged(id string) {
 	}
 }
 
+// taskEvent: the status a task came to (and what it then needed of a person), and when.
+type taskEvent struct {
+	At     int64  `json:"at"`
+	Status string `json:"status"`
+	Needs  string `json:"needs,omitempty"`
+}
+
+// noteStatus records the task's status when it differs from the last one recorded.
+func (h *Hub) noteStatus(id, state string) {
+	status, needs := statusOf(state)
+	var last, lastNeeds string
+	_ = h.db.QueryRow("SELECT status, needs FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", id).Scan(&last, &lastNeeds)
+	if last == status && lastNeeds == needs {
+		return
+	}
+	h.must(h.db.Exec("INSERT INTO task_events (task_id, at, status, needs) VALUES (?, ?, ?, ?)", id, h.nowMs(), status, needs))
+}
+
+func (h *Hub) taskEvents(id string) []taskEvent {
+	rows, err := h.db.Query("SELECT at, status, needs FROM task_events WHERE task_id = ? ORDER BY at, rowid", id)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []taskEvent{}
+	for rows.Next() {
+		var e taskEvent
+		if err := rows.Scan(&e.At, &e.Status, &e.Needs); err != nil {
+			panic(err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (h *Hub) setTask(id string, cols map[string]any) {
+	if state, ok := cols["state"].(string); ok {
+		h.noteStatus(id, state)
+	}
 	sets, args := []string{"updated = ?"}, []any{h.nowMs()}
 	for k, v := range cols {
 		sets = append(sets, k+" = ?")
@@ -325,6 +374,7 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bo
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
 		branch, repo, tracked, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
 		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), now, now))
+	h.noteStatus(id, state)
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
 	}
@@ -483,15 +533,29 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 
 // v1TaskPatch: the creator or the agent's owner writes down what "done" means, or (before it ever ran) where it runs.
 func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
-	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting)
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting, taskDone, taskClosed)
 	if !ok {
 		return
 	}
 	var b struct {
+		Title      *string `json:"title"`
 		Acceptance *string `json:"acceptance"`
 		Repo       *string `json:"repo"`
 	}
 	_ = q.json(&b)
+	if b.Title != nil {
+		title := trimmed(*b.Title, 60)
+		if title == "" {
+			errJSON(w, 400, "标题不能为空")
+			return
+		}
+		h.setTask(t.ID, map[string]any{"title": title, "titled": 1})
+		h.taskChanged(t.ID)
+	}
+	if (b.Repo != nil || b.Acceptance != nil) && (t.State == taskDone || t.State == taskClosed) {
+		errJSON(w, 409, "任务已经结束了；重新打开再改")
+		return
+	}
 	if b.Repo != nil {
 		r := normRemote(*b.Repo)
 		if r == "" && strings.TrimSpace(*b.Repo) != "" {
@@ -535,7 +599,7 @@ func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
 	_ = q.json(&b)
 	cols := map[string]any{"tracked": 1}
 	if title := trimmed(b.Title, 60); title != "" {
-		cols["title"] = title
+		cols["title"], cols["titled"] = title, 1
 	}
 	h.setTask(t.ID, cols)
 	h.taskChanged(t.ID)
@@ -604,6 +668,9 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 }
 
 // v1MachineTasks: the work waiting for this machine, and what it was running (to pick up after a restart).
+// endedKeep: how long a machine keeps an ended task's worktree, in case someone picks the task up again.
+const endedKeep = 7 * 24 * time.Hour
+
 func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("waiting") == "1" { // its tasks that wait on a check command it runs
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'waiting' AND json_extract(wait, '$.how') = 'poll'
@@ -614,6 +681,21 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
 		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
 			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
+		return
+	}
+	if ids := q.query("ended"); ids != "" { // of the task folders it keeps, the ones whose task ended a week ago or more
+		list := strings.Split(ids, ",")
+		if len(list) > 200 {
+			list = list[:200]
+		}
+		args := []any{q.who.machineID, h.nowMs() - endedKeep.Milliseconds()}
+		for _, id := range list {
+			args = append(args, id)
+		}
+		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('done', 'closed')
+			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) AND updated < ?
+			AND id IN (?`+strings.Repeat(", ?", len(list)-1)+`) ORDER BY num`, args...))
+		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')
@@ -649,6 +731,9 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	mine := t.State == taskRunning && t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID
 	if t.State != taskQueued && !mine {
 		errJSON(w, 409, "任务现在是 "+t.State+"，不能认领")
+		return
+	}
+	if !h.mayRun(w, t, a, mine) {
 		return
 	}
 	fresh := h.unseen(t)
@@ -731,6 +816,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Title string `json:"title"`
 		// Reaction: the emoji the agent chose for the request as it read it; it takes the place of the 👀 put there at claim
 		Reaction string `json:"reaction"`
+		// Run: which run of the task this is (its runs when claimed). A final report of an earlier run is refused, so a
+		// report the machine sends again (it kept it until the server took it) never lands twice.
+		Run int64 `json:"run"`
+		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go)
+		Failure string `json:"failure"`
+		// Usage: tokens this run used
+		Usage *usageView `json:"usage"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -752,9 +844,10 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	cols := map[string]any{}
 	if b.Track && !t.Tracked {
 		cols["tracked"] = 1
-		if title := trimmed(b.Title, 60); title != "" {
-			cols["title"] = title
-		}
+	}
+	// the agent names the task once (its "task:" line), unless a person already did
+	if title := trimmed(b.Title, 60); title != "" && !t.Titled {
+		cols["title"], cols["titled"] = title, 1
 	}
 	if b.Acceptance != nil && t.Acceptance == "" {
 		cols["acceptance"] = clip(strings.TrimSpace(*b.Acceptance), 4000)
@@ -776,6 +869,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			errJSON(w, 409, "任务现在是 "+t.State+"，这次运行已经无效")
 			return
 		}
+		if b.Run > 0 && b.Run != t.Runs {
+			errJSON(w, 409, "这是任务的旧一次运行，已经无效")
+			return
+		}
+	}
+	if b.Usage != nil {
+		cols["usage"] = jsonOrNil(t.Usage.add(*b.Usage))
 	}
 	if b.Step != nil {
 		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
@@ -796,6 +896,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		if b.Result == "confirmed" || b.Result == "unconfirmed" {
 			cols["result"] = b.Result
 		}
+		h.runEnded(t, a, b.State, b.Failure, cols)
 		state := b.State
 		summary := trimmed(b.Summary, 8000)
 		cols["summary"], cols["step"] = summary, ""

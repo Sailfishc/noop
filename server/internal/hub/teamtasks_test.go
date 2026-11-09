@@ -3,6 +3,7 @@ package hub
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 type taskEnv struct {
@@ -213,6 +214,14 @@ func TestTaskPRsAndGitlabHook(t *testing.T) {
 	check(t, "merged on Ant Code → done", r.status == 200 && tk["state"] == "done" && tk["pr"].(map[string]any)["state"] == "merged", resp{raw: []byte(fmt.Sprint(tk))})
 	r = hook("s3cret", map[string]any{"object_kind": "merge_request", "object_attributes": map[string]any{"source_branch": "feature/x", "state": "merged"}})
 	check(t, "other branches are not tasks", r.body["ignored"] == "not a task branch", r)
+
+	ended := func(token string) int {
+		return len(e.do("GET", "/api/v1/machine/tasks?ended=T-0001,T-0099", token, nil).body["tasks"].([]any))
+	}
+	check(t, "an ended task's folder is kept for a week", ended(e.token) == 0)
+	e.advance(endedKeep + time.Minute)
+	check(t, "then the machine may remove it", ended(e.token) == 1)
+	check(t, "not another machine's", ended(e.otherToken) == 0)
 }
 
 func TestTaskTeamScopeAndAcceptance(t *testing.T) {
@@ -324,4 +333,31 @@ func TestTaskTracking(t *testing.T) {
 	check(t, "the asker converts the answer into a task", r.body["tracked"] == true, r)
 	r = e.do("GET", "/api/v1/tasks?tracked=1", e.zw.session, nil)
 	check(t, "four on the board now", len(r.body["tasks"].([]any)) == 4, r)
+}
+
+func TestTaskTitleAndStatusEvents(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	e.post(e.zw.session, "@acha 看下 https://github.com/corp/pay/issues/12 这个报错", "")
+	tk := e.task("T-0001")
+	check(t, "first cut from the request", tk["titled"] == false && tk["title"] == "看下 https://github.com/corp/pay/issues/12 这个报错", resp{raw: []byte(fmt.Sprint(tk))})
+	e.do("POST", "/api/v1/tasks/T-0001/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/T-0001/report", e.token, map[string]any{"track": true, "title": "修支付回调报错"})
+	tk = e.task("T-0001")
+	check(t, "the agent names it once, even when it was tracked already", tk["titled"] == true && tk["title"] == "修支付回调报错", resp{raw: []byte(fmt.Sprint(tk))})
+	check(t, "someone else may not rename it", e.do("PATCH", "/api/v1/tasks/T-0001", e.ll.session, map[string]any{"title": "x"}).status == 403)
+	check(t, "a blank title is refused", e.do("PATCH", "/api/v1/tasks/T-0001", e.zw.session, map[string]any{"title": "  "}).status == 400)
+	check(t, "its creator renames it", e.do("PATCH", "/api/v1/tasks/T-0001", e.zw.session, map[string]any{"title": "支付回调 500"}).body["title"] == "支付回调 500")
+	e.do("POST", "/api/v1/tasks/T-0001/report", e.token, map[string]any{"state": "review", "summary": "改好了", "title": "别的名字"})
+	check(t, "the agent does not rename it again", e.task("T-0001")["title"] == "支付回调 500")
+	e.do("POST", "/api/v1/tasks/T-0001/accept", e.zw.session, nil)
+	r := e.do("PATCH", "/api/v1/tasks/T-0001", e.zw.session, map[string]any{"title": "支付回调 500（已修）"})
+	check(t, "renamed after it is done", r.status == 200 && r.body["title"] == "支付回调 500（已修）", r)
+	check(t, "but its repo stays", e.do("PATCH", "/api/v1/tasks/T-0001", e.zw.session, map[string]any{"repo": "https://github.com/corp/x"}).status == 409)
+	evs := e.task("T-0001")["events"].([]any)
+	got := []string{}
+	for _, x := range evs {
+		ev := x.(map[string]any)
+		got = append(got, fmt.Sprint(ev["status"], ev["needs"]))
+	}
+	check(t, "its status as it went: in progress (queued), in review, done", fmt.Sprint(got) == "[in_progress<nil> in_review<nil> done<nil>]", resp{raw: []byte(fmt.Sprint(got))})
 }

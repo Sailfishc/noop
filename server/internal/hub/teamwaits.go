@@ -131,7 +131,8 @@ func (h *Hub) wakeTask(id string, w *waitView, reason, note, payload string) {
 	h.taskChanged(id)
 }
 
-// Tick wakes the waits that are due (timers, deadlines). The server calls it every half minute.
+// Tick wakes the waits that are due (timers, deadlines) and fires the reminders that are. The server calls it every
+// half minute.
 func (h *Hub) Tick() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -158,6 +159,7 @@ func (h *Hub) Tick() {
 			h.wakeTask(id, w, "timer", "", "")
 		}
 	}
+	h.fireReminders()
 }
 
 // v1WaitHook: anything posted to a task's callback address wakes it with the body (its format is the agent's to

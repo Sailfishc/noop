@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
+import { addUsage, classify, FAILURE_TEXT, type Failure, planFor, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 
 export type Decision = { question: string; options: string[]; recommendation?: string; answer?: string };
@@ -20,6 +21,8 @@ export type TeamTask = {
   claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
   /** A task people track; false: a request the agent may simply answer (it claims it with a "task:" line). */
   tracked?: boolean;
+  /** Its title was given (by the agent or a person), not cut from the request: the agent leaves it as it is. */
+  titled?: boolean;
   /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
   repo?: string;
 };
@@ -197,8 +200,9 @@ bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, �
 report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.
 If fulfilling the request needs you to act beyond replying (change files, run commands that change something, open a
 pull request, submit to an outside service, produce a file), claim it as a task in that same message with a second line
-task: <a short title, under 30 characters, in the people's language>
-so the team can track it. Only answering a question or talking needs no claim.`;
+task: <a short title, under 30 characters, in the people's language, saying what the work is>
+so the team can track it. Only answering a question or talking needs no claim. When the request is already tracked as a
+task, still give that line: it names the task on the team's board (people may rename it later).`;
 
 const WAKE: Record<Wake["reason"], string> = {
   callback: "the outside service called your callback address",
@@ -286,6 +290,16 @@ export type WorkerOptions = {
   logDir?: string;
   /** How often a step reaches the card, at most (ms). */
   stepEveryMs?: number;
+  /** Stop a run that printed nothing for this long (ms; default 20 minutes), or ran this long in all (default 60). */
+  stallMs?: number;
+  timeoutMs?: number;
+  /** Why a runtime cannot run here right now (not logged in), as far as the machine knows; null: it can. */
+  runtimeReady?: (name: string) => string | null | Promise<string | null>;
+  /** Sends a final report: "ok" (taken), "drop" (refused for good: a stale run) or "retry" (could not reach the
+   * server). Default: through api, where no answer means retry. */
+  send?: (path: string, body: Record<string, unknown>) => Promise<"ok" | "drop" | "retry">;
+  /** How long a pause before a retry really is (tests shorten it). */
+  pauseMs?: (ms: number) => number;
 };
 
 const expand = (p: string) => (p.startsWith("~") ? join(homedir(), p.slice(1)) : resolve(p));
@@ -330,6 +344,20 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
   return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
+}
+
+/** Removes a task's folders: its worktree (the branch stays in the repository, so a task picked up again gets its
+ * work back) or its general-task directory, and the in/ and out/ beside it. */
+export async function removeWorkdir(root: string, id: string): Promise<void> {
+  const dir = join(root, id);
+  if (existsSync(dir)) {
+    const common = (await git(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
+    const inRepo = existsSync(join(dir, ".git")) && !!common && existsSync(common);
+    if (inRepo) await git(dir, `--git-dir=${common}`, "worktree", "remove", "--force", dir);
+    rmSync(dir, { recursive: true, force: true });
+    if (inRepo) await git(root, `--git-dir=${common}`, "worktree", "prune");
+  }
+  rmSync(join(root, `${id}.files`), { recursive: true, force: true });
 }
 
 /** Whether the run left anything in the task's worktree: edits, or commits on its branch. */
@@ -417,16 +445,34 @@ export function gateEnv(wd: Workdir): Record<string, string> {
 /** The agent's own read-only command for the team chat (as in Raft, where agents read and search with a CLI): it
  * asks the server with the run's read token, which works only while the task runs and only in the agent's channels. */
 export const REMI_CLI = `#!/bin/sh
-# remi (also installed as teamagent): look things up in the team chat (read-only).
+# remi (also installed as teamagent): the team chat, from inside your task.
 #   remi read [--channel NAME] [--limit N] [--before SEQ]   a channel's latest messages (default: this task's)
 #   remi read --thread MSG                                 a whole thread
 #   remi search WORDS [--channel NAME]                     messages with all the words, newest first
 #   remi tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
 #   remi task T-0001                                       one task: acceptance, summary, PR
+#   remi channel [NAME]                                    what a channel is for, who is in it
+#   remi who @HANDLE                                       who a person or an agent is
+#   remi file /media/... > FILE                            a file attached to a message (as remi read shows it)
+#   remi memory                                            your memory.md as it is now
+#   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
+#   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
+#   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
+#                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
+api="$REMI_URL/api/v1/agent"
+auth="Authorization: Bearer $REMI_TOKEN"
+usage() { sed -n '2,16p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
-  task) path="tasks/$2"; shift ;;
-  *) sed -n '2,8p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2 ;;
+  task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
+  channel) [ -n "$2" ] && set -- "$1" --channel "$2"; path=channel ;;
+  who) [ -n "$2" ] || usage; exec curl -sS -G "$api/who" -H "$auth" --data-urlencode "handle=$2" ;;
+  file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
+  memory) exec curl -sS "$api/memory" -H "$auth" ;;
+  say) shift; [ -n "$*" ] || usage; exec curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  remind) shift; [ -n "$*" ] || usage; exec curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
+  *) usage ;;
 esac
 shift
 q=""
@@ -441,7 +487,7 @@ while [ "$n" -gt 0 ]; do
   esac
 done
 [ -n "$q" ] && set -- "$@" --data-urlencode "q=$q"
-exec curl -sS -G "$REMI_URL/api/v1/agent/$path" -H "Authorization: Bearer $REMI_TOKEN" "$@"
+exec curl -sS -G "$api/$path" -H "$auth" "$@"
 `;
 
 /** The command on the runtime's PATH, and what it needs. */
@@ -456,14 +502,44 @@ export function cliEnv(root: string, server: string, token: string): Record<stri
   return { REMI_URL: server.replace(/\/$/, ""), REMI_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
 }
 
-const LOOKUP = `# Looking things up
-You see only the request, its thread and a few recent messages here. When you need more of the team's context (what
-was said before, a related thread, other tasks), look it up with the \`remi\` command in your shell:
+const LOOKUP = `# The remi command
+You see only the request, its thread and a few recent messages here. When you need more of the team's context, look it
+up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi read                      this channel's latest messages (--channel NAME for another, --before SEQ for older)
 - remi read --thread MSG         a whole thread (the msg=… of a message)
 - remi search WORDS              messages with all the words, newest first
 - remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
-Look up only what the request needs.`;
+- remi channel / remi who @HANDLE     what a channel is for and who is in it; who someone is
+- remi file /media/…  > FILE     a file someone attached (remi read shows them)
+Look up only what the request needs. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
+most every 5 minutes, only when people would want to know), and hand over a file before you stop with
+\`remi upload FILE\`. When someone wants something done later or again and again ("every morning…", "remind me on
+Friday…"), set it with \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` instead of waiting for it. Your result
+still goes in the result block at the end.`;
+
+/** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
+export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {
+  return `The machine stopped your last turn: ${why === "stall" ? `it printed nothing for ${minutes} minutes` : `it ran for ${minutes} minutes, the limit of one turn`}.
+Continue from where you got to. Run anything slow (a long build, a test suite, a deployment) in the background and
+return "waiting" with a way to check it, instead of waiting in place.
+
+${RESULT_SPEC}`;
+}
+
+/** The provider failed or was busy; the same session goes on after a pause. */
+export function retryPrompt(error: string): string {
+  return `Your last turn was cut off by an error from the model service (${error.slice(0, 200)}). Continue from where you got to; do not redo steps that already took effect.
+
+${RESULT_SPEC}`;
+}
+
+/** The agent worked but ended without the result block: it is asked for the block alone, once. */
+export const RESULT_ONLY = `Your last message did not end with the result block. Do not redo or change anything: reply with only the
+\`\`\`json result block for the work you already did, in the format below.
+
+${RESULT_SPEC}`;
+
+const hasResultBlock = (text: string) => /```json\s*\{[\s\S]*?"status"[\s\S]*?\}\s*```/.test(text);
 
 export function createWorker(o: WorkerOptions) {
   const log = o.log ?? ((s: string) => console.log(`remi: ${s}`));
@@ -476,18 +552,62 @@ export function createWorker(o: WorkerOptions) {
 
   const report = (id: string, body: Record<string, unknown>) => o.api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify(body) });
 
+  // A run's final report is written to the outbox first and deleted once the server took it (or refused it for good),
+  // so a report lost to a network blip or a restart is sent again instead of the task being run again. It names its
+  // run: the server takes one final report per run, so sending it twice never posts twice.
+  const outbox = join(root, ".outbox");
+  const send = o.send ?? (async (path: string, body: Record<string, unknown>) =>
+    ((await o.api(path, { method: "POST", body: JSON.stringify(body) }).catch(() => null)) ? "ok" as const : "retry" as const));
+  const sending = new Set<string>();
+  async function sendOut(file: string): Promise<boolean> {
+    if (sending.has(file)) return false;
+    sending.add(file);
+    try {
+      const { id, body } = JSON.parse(readFileSync(join(outbox, file), "utf8"));
+      const res = await send(`/api/v1/tasks/${id}/report`, body);
+      if (res === "retry") return false;
+      if (res === "drop") log(`${id} 的结果服务端不再接收（这次运行已经无效），丢弃`);
+      rmSync(join(outbox, file), { force: true });
+      return true;
+    } catch {
+      rmSync(join(outbox, file), { force: true }); // unreadable: nothing to send
+      return true;
+    } finally {
+      sending.delete(file);
+    }
+  }
+  async function finish(t: TeamTask, body: Record<string, unknown>) {
+    mkdirSync(outbox, { recursive: true });
+    const file = `${t.id}-${t.runs || 0}.json`;
+    writeFileSync(join(outbox, file), JSON.stringify({ id: t.id, body: { ...body, ...(t.runs ? { run: t.runs } : {}) } }));
+    if (!(await sendOut(file))) log(`${t.id} 的结果暂时发不出去，连上后重发`);
+  }
+  /** Sends what is waiting in the outbox, oldest first. */
+  async function flush() {
+    let files: string[] = [];
+    try { files = readdirSync(outbox).filter((f) => f.endsWith(".json")).sort((a, b) => statSync(join(outbox, a)).mtimeMs - statSync(join(outbox, b)).mtimeMs); } catch { return; }
+    for (const f of files) if (!(await sendOut(f))) return; // the server is not there: try again later
+  }
+  /** The tasks whose final report has not reached the server yet: they are not to be run again. */
+  const unsent = (id: string) => { try { return readdirSync(outbox).some((f) => f.startsWith(`${id}-`)); } catch { return false; } };
+
   async function run(c: Claim) {
     const t = c.task;
     const rt = runtimes[c.agent.runtime || "codex"];
     if (!rt || !rt.available()) {
-      await report(t.id, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试` });
+      await finish(t, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试`, failure: "not_installed" });
+      return;
+    }
+    const notReady = await o.runtimeReady?.(c.agent.runtime || "codex");
+    if (notReady) {
+      await finish(t, { state: "blocked", summary: notReady, failure: "auth" });
       return;
     }
     let wd: Workdir;
     try {
       wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo)))(c, root);
     } catch (e) {
-      await report(t.id, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
+      await finish(t, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
       return;
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
@@ -504,7 +624,7 @@ export function createWorker(o: WorkerOptions) {
         const emoji = reactionOf(e.text);
         if (emoji) { reacted = true; void report(t.id, { reaction: emoji }); }
       }
-      if (e.kind === "message" && !claimed && !t.tracked) {
+      if (e.kind === "message" && !claimed && (!t.tracked || !t.titled)) {
         const title = taskClaimOf(e.text);
         if (title !== null) { claimed = true; void report(t.id, { track: true, ...(title ? { title } : {}) }); }
       }
@@ -513,21 +633,77 @@ export function createWorker(o: WorkerOptions) {
       if (Date.now() - lastStep >= every) flushStep();
       else stepTimer ??= setTimeout(flushStep, every - (Date.now() - lastStep));
     };
-    const start = (resumeId: string, text: string) => rt.start({
-      cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined,
-      env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
+    const stallMs = o.stallMs ?? 20 * 60_000, timeoutMs = o.timeoutMs ?? 60 * 60_000;
+    let usage: Usage | undefined, cancelled = false, wakeUp = () => {};
+    const go = async (resumeId: string, text: string): Promise<RunResult> => {
+      const h = rt.start({
+        cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined, stallMs, timeoutMs,
+        env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
+      });
+      kills.set(t.id, () => { cancelled = true; h.kill(); });
+      const res = await h.done;
+      if (res.usage) usage = addUsage(usage, res.usage);
+      return res;
+    };
+    // a pause before trying again, cut short when the task is cancelled
+    const pause = (ms: number) => new Promise<void>((res) => {
+      const timer = setTimeout(res, o.pauseMs ? o.pauseMs(ms) : ms);
+      wakeUp = () => { clearTimeout(timer); res(); };
+      kills.set(t.id, () => { cancelled = true; wakeUp(); });
     });
     log(`${t.id} @${c.agent.handle} 开工：${t.title}${resume ? "（续）" : ""}`);
-    let h = start(resume, prompt);
-    kills.set(t.id, () => h.kill());
-    let r: RunResult = await h.done;
-    if (resume && !r.killed && r.exitCode !== 0 && !r.text) { // the session is gone (another machine, cleaned up): start over
-      h = start("", taskPrompt(c, wd));
-      kills.set(t.id, () => h.kill());
-      r = await h.done;
+    let r: RunResult = await go(resume, prompt), resumed = !!resume;
+    let failure: Failure | null = null, retries = 0, fresh = false, continued = false, emptyRetried = false;
+    for (;;) {
+      if (r.killed || cancelled) break;
+      // an empty completion (no text, no step, no error) is a flake of the tool chain: once more, as it was
+      if (!r.text && !r.error && !r.stopped && r.exitCode === 0 && !r.steps && !emptyRetried) { emptyRetried = true; r = await go(resume, prompt); continue; }
+      const f = classify({ ...r, resumed });
+      if (!f) break;
+      const plan = planFor(f, c.agent.runtime || "codex");
+      if (plan.act === "retry" && retries < plan.afterMs.length) {
+        const wait = plan.afterMs[retries++]!;
+        log(`${t.id} ${FAILURE_TEXT[f]}，${Math.round(wait / 60_000)} 分钟后重试（第 ${retries} 次）`);
+        void report(t.id, { step: `${FAILURE_TEXT[f]}，${Math.round(wait / 60_000)} 分钟后重试（第 ${retries} 次）` });
+        await pause(wait);
+        if (cancelled) break;
+        r = r.session ? await go(r.session, retryPrompt(r.error ?? f)) : await go(resume, prompt);
+        resumed = !!(r.session || resume);
+        continue;
+      }
+      if (plan.act === "fresh" && !fresh) {
+        fresh = true;
+        log(`${t.id} ${FAILURE_TEXT[f]}，换新会话重来`);
+        r = await go("", taskPrompt(c, wd));
+        resumed = false;
+        continue;
+      }
+      if (plan.act === "continue" && !continued && r.session) {
+        continued = true;
+        log(`${t.id} ${FAILURE_TEXT[f]}，在同一会话里续跑一次`);
+        r = await go(r.session, stoppedPrompt(r.stopped ?? "stall", Math.round((r.stopped === "timeout" ? timeoutMs : stallMs) / 60_000)));
+        resumed = true;
+        continue;
+      }
+      failure = f;
+      break;
+    }
+    // it worked but forgot the result block: ask for the block alone, once (a plain answer with no steps is fine as it is)
+    if (!failure && !r.killed && !cancelled && r.text && r.steps && r.session && !hasResultBlock(r.text)) {
+      const again = await go(r.session, RESULT_ONLY);
+      if (!again.killed && !cancelled && hasResultBlock(again.text)) r = { ...again, text: again.text };
+      else if (again.killed || cancelled) r = again;
     }
     clearTimeout(stepTimer);
-    if (r.killed) { log(`${t.id} 已停止`); return; }
+    if (r.killed || cancelled) { log(`${t.id} 已停止`); return; }
+    if (failure) {
+      const plan = planFor(failure, c.agent.runtime || "codex");
+      const detail = (r.error ?? r.stderr ?? "").trim().split("\n").slice(-3).join("\n").slice(0, 600);
+      const summary = plan.act === "block" ? `${plan.why}${detail ? `\n\n${detail}` : ""}` : `运行失败（${FAILURE_TEXT[failure]}）：${detail || `退出码 ${r.exitCode}`}`;
+      await finish(t, { state: plan.act === "block" ? "blocked" : "failed", summary, session: r.session, failure, ...(usage ? { usage } : {}) });
+      log(`${t.id} → ${plan.act === "block" ? "blocked" : "failed"}（${failure}）`);
+      return;
+    }
     const result = r.text ? parseTaskResult(r.text) : { status: "failed" as const, summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
     let extra: { pr?: PR; note?: string } | null = null;
     if (o.afterRun && result.status === "review") {
@@ -546,7 +722,7 @@ export function createWorker(o: WorkerOptions) {
       }
     }
     const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? "", notes.join("；")].filter(Boolean).join("\n\n");
-    const body: Record<string, unknown> = { state: result.status, summary, session: r.session };
+    const body: Record<string, unknown> = { state: result.status, summary, session: r.session, ...(usage ? { usage } : {}) };
     if (result.result === "confirmed" || result.result === "unconfirmed") body.result = result.result;
     if (result.status === "waiting" && result.wait) {
       const w = result.wait;
@@ -561,7 +737,7 @@ export function createWorker(o: WorkerOptions) {
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
-    await report(t.id, body);
+    await finish(t, body);
     log(`${t.id} → ${result.status}`);
   }
 
@@ -573,7 +749,7 @@ export function createWorker(o: WorkerOptions) {
       if (!c?.task) return;
       const p = run(c).catch(async (e) => {
         log(`${t.id} 出错：${e instanceof Error ? e.message : e}`);
-        await report(t.id, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
+        await finish(c.task, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
       }).finally(() => { running.delete(t.id); kills.delete(t.id); void poll(); });
       running.set(t.id, p);
     } finally {
@@ -632,14 +808,34 @@ export function createWorker(o: WorkerOptions) {
   /** The tasks waiting for this machine (also the ones it ran before a restart). */
   async function poll() {
     if (stopped) return;
+    await flush(); // results from before a restart or a lost connection go first: those tasks must not run again
     const r = await o.api("/api/v1/machine/tasks");
     for (const t of (r?.tasks ?? []) as TeamTask[]) {
-      if (t.state === "queued" || (t.state === "running" && !running.has(t.id))) void claim(t);
+      if (t.state === "queued" || (t.state === "running" && !running.has(t.id) && !unsent(t.id))) void claim(t);
     }
   }
 
+  /** The folders of tasks that ended a week ago or more (the server says which; it keeps them that long in case
+   * someone picks the task up again) go, so worktrees do not pile up on the machine. */
+  async function sweep(): Promise<string[]> {
+    let ids: string[] = [];
+    try { ids = [...new Set(readdirSync(root).map((n) => n.replace(/\.files$/, "")).filter((n) => /^T-\d+$/.test(n)))].sort(); } catch { return []; }
+    ids = ids.filter((id) => !running.has(id) && !claiming.has(id) && !unsent(id));
+    const removed: string[] = [];
+    for (let i = 0; i < ids.length; i += 100) {
+      const r = await o.api(`/api/v1/machine/tasks?ended=${ids.slice(i, i + 100).join(",")}`).catch(() => null);
+      for (const t of (r?.tasks ?? []) as { id: string }[]) {
+        if (!ids.includes(t.id) || running.has(t.id)) continue;
+        await removeWorkdir(root, t.id).catch((e) => log(`清理 ${t.id} 的目录失败：${e instanceof Error ? e.message : e}`));
+        removed.push(t.id);
+      }
+    }
+    if (removed.length) log(`清理了已结束一周以上的任务目录：${removed.join(" ")}`);
+    return removed;
+  }
+
   return {
-    onTask, poll, checkWaits,
+    onTask, poll, checkWaits, flush, sweep,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },

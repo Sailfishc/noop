@@ -59,7 +59,7 @@ REMI_GIT_WEBHOOK_SECRET=一串随机字符 ./remi-server -addr :8080 -data /var/
 
 ### 2. 客户端
 
-不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（版本见 `.github/workflows/release.yml` 里的 `NSH_REF`）。
+不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（用 commit `c4c4bf5cec60886b3308034a51eef9c3fbb58c50`）。
 
 ```sh
 cd app
@@ -100,7 +100,7 @@ token = "…"                 # 主人自己的 token，对仓库至少要有 De
 
 也可以手动配置：在接入命令下面点「手动配置」，起个名字生成令牌，把显示的 `[cloud]`、`[server]` 几行写进 `config.local.toml`，然后在仓库目录里 `bun install && bun run daemon`。
 
-有了 Remi 的机器 token，守护进程只跑 Remi：不需要 noop 的 `init`，也不会启动 noop 单人模式的那些东西。
+装好后可以运行 `noop doctor`（在 `~/.noop/app` 里是 `bun src/cli.ts doctor`）检查这台电脑：能不能连上服务端、令牌对不对、各个 Runtime 有没有登录、Git 凭证是谁。每一项不对都会写明怎么修。
 
 守护进程会跟随这个仓库的 `main` 自动更新：发现 `origin/main` 有新提交时，先跑 `bun test`，通过了才切换，失败就回滚。所以 `main` 就是线上版本，合进 `main` 的东西会自动到达所有机器。
 
@@ -161,7 +161,7 @@ cd app && nsh test                         # 客户端
 
 ## 和上游 noop 的关系
 
-这个仓库是 huacnlee/noop 的 fork，但产品形态已经不同：noop 是单人自用、跑在 Cloudflare 上；Remi 是多人、自部署、Go 服务端。noop 的单人模式不再保证可用。上游的代码仍然有很多值得拿的东西，同步规则见 [docs/upstream-sync.md](docs/upstream-sync.md)。
+这个仓库是 huacnlee/noop 的 fork，但产品形态已经不同：noop 是单人自用、跑在 Cloudflare 上；Remi 是多人、自部署、Go 服务端。noop 的单人模式（Cloudflare Worker、单人界面、数据仓库同步、例行任务等）已经从这个仓库删掉了。上游的代码仍然有很多值得拿的东西，同步规则见 [docs/upstream-sync.md](docs/upstream-sync.md)。
 
 ## License
 

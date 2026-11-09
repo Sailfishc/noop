@@ -1,12 +1,11 @@
 #!/bin/sh
-# Builds the web package the hub and the Worker serve (dist/web/noop; machines download a release's
-# instead, see src/webclient.ts, and leave one built here alone), then adds what
+# Builds the web package remi-server serves (-static app/dist/web/noop), then adds what
 # `nsh package` has no place for: the push service worker at the site's root (its scope is the
 # whole app), a stable icon URL for notifications, and the manifest's colors (the gallery's page).
 set -e
 cd "$(dirname "$0")"
 NSH="${NSH:-$HOME/work/nsh/target/debug/nsh}"
-# The package directory is named after the display name (Remi), but the Worker serves dist/web/noop.
+# The package directory is named after the display name (Remi); the server is pointed at dist/web/noop.
 OUT="dist/web/noop"
 TMP="dist/.web-build"
 rm -rf "$TMP"

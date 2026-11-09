@@ -9,8 +9,7 @@ import (
 )
 
 // OpenDB opens (or creates) the hub's SQLite file. One connection: every statement is serialized, and the hub's
-// own mutex makes multi-statement operations (compare-and-swap commits, sign-in checks) atomic, the way the
-// Durable Object's single thread did in cloud/.
+// own mutex makes multi-statement operations (claims, sign-in checks) atomic.
 func OpenDB(path string) (*sql.DB, error) {
 	dsn := fmt.Sprintf("file:%s?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(on)&_pragma=synchronous(NORMAL)", path)
 	db, err := sql.Open("sqlite", dsn)
@@ -29,25 +28,12 @@ func OpenDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// The same tables as cloud/src/index.ts and cloud/src/files.ts, so data can move between the two.
+// Sessions, small settings (kv) and stored files (media, 1 MB chunks). A database from noop's single-person days
+// still has its other tables (events, inbox, files, history, …); nothing reads them now.
 const schema = `
-CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, json TEXT, ref TEXT);
-CREATE INDEX IF NOT EXISTS events_ts ON events (ts);
-CREATE INDEX IF NOT EXISTS events_ref ON events (ref);
-CREATE INDEX IF NOT EXISTS events_client_id ON events (json_extract(json, '$.client_id')) WHERE json_extract(json, '$.client_id') IS NOT NULL;
-CREATE TABLE IF NOT EXISTS inbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, json TEXT);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS media (id TEXT, n INTEGER, type TEXT, data BLOB, PRIMARY KEY (id, n));
-CREATE TABLE IF NOT EXISTS auth_codes (email TEXT PRIMARY KEY, hash TEXT, expires INTEGER, attempts INTEGER);
-CREATE TABLE IF NOT EXISTS auth_sends (email TEXT, ts INTEGER, sent INTEGER);
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, email TEXT, created INTEGER, last_seen INTEGER, ua TEXT, scope TEXT);
-CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, content BLOB, hash TEXT, version INTEGER NOT NULL,
-  updated TEXT, by TEXT, deleted INTEGER NOT NULL DEFAULT 0, rev INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS files_rev ON files (rev);
-CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, path TEXT, version INTEGER, hash TEXT,
-  content BLOB, ts TEXT, by TEXT, msg TEXT);
-CREATE INDEX IF NOT EXISTS history_path ON history (path, version);
-CREATE TABLE IF NOT EXISTS files_meta (k TEXT PRIMARY KEY, v INTEGER);
 `
 
 // TeamAgent's own model: people, their machines and agents, channels, threads and messages (one workspace per server).
@@ -87,6 +73,8 @@ CREATE TABLE IF NOT EXISTS task_outputs (id TEXT PRIMARY KEY, task_id TEXT NOT N
   version INTEGER NOT NULL DEFAULT 0, service TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   media TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', versions TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS task_outputs_task ON task_outputs (task_id, created);
+CREATE TABLE IF NOT EXISTS task_events (task_id TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, needs TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS task_events_task ON task_events (task_id, at);
 CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, author_kind TEXT NOT NULL, author_id TEXT NOT NULL, emoji TEXT NOT NULL,
   created INTEGER NOT NULL, PRIMARY KEY (message_id, author_kind, author_id, emoji));
 CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT NOT NULL, created INTEGER NOT NULL);
@@ -119,6 +107,11 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN result TEXT NOT NULL DEFAULT ''",     // confirmed | unconfirmed: did the agent see the result
 		"ALTER TABLE tasks_v1 ADD COLUMN tracked INTEGER NOT NULL DEFAULT 1",  // a task people track; 0: a conversation turn (an answer)
 		"ALTER TABLE tasks_v1 ADD COLUMN read_token TEXT NOT NULL DEFAULT ''", // what its runs read the chat with (teamcontext.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                        // tokens its runs used, added up
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",     // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0", // its title was given (by the agent or a person), not cut from the request
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -133,5 +126,11 @@ func initSchema(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	if _, err := db.Exec(thumbsSchemaTable); err != nil {
+		return err
+	}
+	if _, err := db.Exec(remindersSchema); err != nil {
+		return err
+	}
+	return initSearch(db)
 }

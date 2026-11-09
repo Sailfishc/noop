@@ -1,6 +1,7 @@
 {
   "name": "noop",
   "private": true,
+  "packageManager": "bun@1.4.4",
   "type": "module",
   "bin": {
     "noop": "src/cli.ts",
@@ -8,10 +9,11 @@
   },
   "scripts": {
     "daemon": "bun src/cli.ts daemon",
-    "tick": "bun src/cli.ts tick",
-    "status": "bun src/cli.ts status",
+    "doctor": "bun src/cli.ts doctor",
     "check": "bunx tsc --noEmit",
-    "test": "bun test"
+    "secrets": "bun scripts/check-secrets.ts",
+    "test": "bun test",
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true"
   },
   "devDependencies": {
     "@types/bun": "latest",

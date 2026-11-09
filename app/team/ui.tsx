@@ -4,12 +4,17 @@ import { Input } from "nsh/base";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } from "../ui";
-import { blockedReason, runtimeLabel, type Agent, type Team } from "./api";
+import { blockedReason, insecureRefused, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
 /** The window's own title bar area (its traffic lights on macOS): content at the window's top left keeps clear of it. */
 export const chrome = () => (hasWindow ? titleBar() : { height: 0, left: 0, right: 0 });
-export const unreachable = (url: string) => L(`Can’t reach ${url}. Check the address and your network.`, `连不上服务器 ${url}，请检查地址和网络`);
+/** Why a call to `url` got no response; `error` is the network stack's reason (Reply.error). */
+export const unreachable = (url: string, error?: string) =>
+  insecureRefused(error) && url.startsWith("http://")
+    ? L(`This app may not use plain http to ${url}. Give the server an https address (see the server README), or use a build that allows http.`,
+        `这个 App 不允许用不加密的 http 连接 ${url}。请给服务端配上 https 地址（见服务端 README），或换用允许 http 的版本。`)
+    : L(`Can’t reach ${url}. Check the address and your network.`, `连不上服务器 ${url}，请检查地址和网络`);
 
 // ---------------------------------------------------------------- small pieces
 
