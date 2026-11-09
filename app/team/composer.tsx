@@ -6,6 +6,7 @@ import { L, lang } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, Avatar, Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { naturalRemind } from "./reminders";
 
 /** A `file:` URL as a local path ("file:///Users/a/My%20Shot.png" → "/Users/a/My Shot.png"; Windows drive paths too). */
 export function filePath(uri: string): string {
@@ -210,7 +211,9 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
     const v = untracked(text).trim();
     const drafts = untracked(files);
     if ((!v && !drafts.length) || untracked(busy)) return;
-    const cmd = /^\/remind(?:\s+([\s\S]*))?$/i.exec(v);
+    // "/remind WHEN …", or the same said in words ("2分钟后提醒我…") when nothing is attached
+    const said = drafts.length ? null : naturalRemind(v);
+    const cmd = said ? [v, said] : /^\/remind(?:\s+([\s\S]*))?$/i.exec(v);
     if (cmd) { // /remind WHEN [@who] WHAT: a reminder, not a message
       busy.set(true);
       const err = cmd[1]?.trim()
