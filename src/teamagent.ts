@@ -5,7 +5,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type Cfg, HOME_DIR } from "./core";
+import { type Cfg, HOME_DIR } from "./config";
 import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
 import { gitAfterRun, refreshPRs } from "./gitflow";
 import { repoBook, type RepoBook } from "./repos";

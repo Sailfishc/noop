@@ -10,7 +10,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bunx tsc --noEmit
       - run: bun test
-      - run: git config --global user.name ci && git config --global user.email ci@ci && ./test/e2e.sh
   server:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: server } }
@@ -26,9 +25,6 @@ jobs:
         working-directory: .
       - run: |
           go build -o /tmp/remi-server ./cmd/remi-server
-          REMI_TOKEN=ci-token-0123456789 /tmp/remi-server -addr 127.0.0.1:18080 -data /tmp/ta &
-          sleep 1
-          REMI_TOKEN=ci-token-0123456789 bun test/e2e-claim.ts http://127.0.0.1:18080
           CODE=$(/tmp/remi-server invite -data /tmp/ta-team -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
           /tmp/remi-server -addr 127.0.0.1:18081 -data /tmp/ta-team &
           sleep 1

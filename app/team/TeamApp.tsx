@@ -4,7 +4,7 @@
 // channel and a thread or the members side by side; narrow ones one pane at a time.
 import { cleanup, computed, effect, Image, keymap, List, openUrl, Picker, Scroll, signal, Storage, Text, untracked, View, windowSize, type InputRef, type JSX, type ViewStyle } from "nsh";
 import fs from "fs/promises";
-import { filePath } from "../hub";
+import { CLIENT_VERSION } from "../version";
 import { Input, Menu, MenuItem, MenuSeparator, TextView, type MarkdownExtension } from "nsh/base";
 import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
@@ -18,6 +18,7 @@ import { LayoutSwitch, TaskBoard, TasksPage, trackedTasks, type TaskLayout } fro
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { ReminderSections, RemindMenu } from "./reminders";
+import { UpdateRow } from "./updates";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
 // ---------------------------------------------------------------- sign in
@@ -364,7 +365,8 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           </Each>
         </If>
       </Scroll>
-      <View style={{ padding: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+      <View style={{ padding: 8, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <UpdateRow />
         <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
       </View>
     </View>
@@ -418,6 +420,7 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
       {item("menu-login-code", "mobile", L("Sign in on another device", "在其他设备登录"), () => props.onSettings("account"))}
       {sep()}
       {item("menu-sign-out", "external", L("Sign out", "退出登录"), props.onSignOut, undefined, true)}
+      <Text testID="menu-version" style={{ paddingHorizontal: 8, paddingTop: 6, paddingBottom: 3, fontSize: 11.5, color: colors.faint }}>Remi {CLIENT_VERSION}</Text>
     </Menu>
   );
 }
@@ -585,6 +588,12 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
       </View>
     </View>
   );
+}
+
+/** A `file:` URL as a local path ("file:///Users/a/My%20Shot.png" → "/Users/a/My Shot.png"; Windows drive paths too). */
+export function filePath(uri: string): string {
+  const p = decodeURIComponent(uri.replace(/^file:\/\/[^/]*/i, ""));
+  return /^\/[A-Za-z]:\//.test(p) ? p.slice(1) : p;
 }
 
 /** Someone the @ picker offers. */

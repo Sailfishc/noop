@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { type Cfg, HOME_DIR } from "./core";
+import { type Cfg, HOME_DIR } from "./config";
 
 const CACHE = join(HOME_DIR, "github-rate.json");
 type Rate = { core: number; graphql: number; reset: number; checked: number };
