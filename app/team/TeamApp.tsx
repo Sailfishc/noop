@@ -8,7 +8,6 @@ import { filePath } from "../hub";
 import { Input, Menu, MenuItem, MenuSeparator, TextView, type MarkdownExtension } from "nsh/base";
 import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
-import { formatText } from "./format";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS,
@@ -723,10 +722,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
     dismissed.set(null);
     setText(next, next.length);
   }
-  function format(kind: Parameters<typeof formatText>[2]) {
-    const r = formatText(untracked(text), caret, kind);
-    setText(r.text, r.start, r.end);
-  }
   const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string, glyphStyle?: Record<string, unknown>) => (
     <View role="button" testID={testID} accessibilityLabel={label} tooltip={<Text>{label}</Text>} onPress={onPress} hoverStyle={hovered()} style={{ width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
       <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted, ...glyphStyle }}>{glyph}</Text>}>
@@ -734,7 +729,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
       </If>
     </View>
   );
-  const sep = () => <View style={{ width: 1, height: 16, marginHorizontal: 3, backgroundColor: colors.border }} />;
   return (
     <View
       style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}
@@ -747,19 +741,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
       <View style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 1, paddingHorizontal: 6, paddingTop: 5 }}>
-          {tool(`${props.testID}-bold`, null, L("Bold", "粗体"), () => format("bold"), "B", { fontWeight: "800" })}
-          {tool(`${props.testID}-italic`, null, L("Italic", "斜体"), () => format("italic"), "I", { fontStyle: "italic", fontWeight: "500" })}
-          {tool(`${props.testID}-strike`, null, L("Strikethrough", "删除线"), () => format("strike"), "S", { textDecorationLine: "line-through", fontWeight: "500" })}
-          {sep()}
-          {tool(`${props.testID}-link`, "link", L("Link", "链接"), () => format("link"))}
-          {tool(`${props.testID}-list`, "lists", L("Bulleted list", "无序列表"), () => format("list"))}
-          {tool(`${props.testID}-numbered`, null, L("Numbered list", "有序列表"), () => format("numbered"), "1.")}
-          {tool(`${props.testID}-quote`, null, L("Quote", "引用"), () => format("quote"), "❝")}
-          {sep()}
-          {tool(`${props.testID}-inline-code`, null, L("Inline code", "行内代码"), () => format("code"), "`")}
-          {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), () => format("codeblock"))}
-        </View>
         <Input
           testID={props.testID}
           ref={(r) => (input = r)}
@@ -775,7 +756,7 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
             if (uris.length) void attachUris(uris);
           }}
           onSubmit={send}
-          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
+          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
         <If when={files().length}>
           <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>
