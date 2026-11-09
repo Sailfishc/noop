@@ -96,7 +96,13 @@ export function parseTaskResult(text: string): TaskResult {
 }
 
 const who = (c: Claim, m: TeamMessage) => c.names[m.author.id] ?? (m.author.kind === "agent" ? "an agent" : "someone");
-const quote = (c: Claim, ms: TeamMessage[]) => ms.map((m) => `- ${who(c, m)}: ${m.text.replace(/\n/g, "\n  ")}`).join("\n");
+/** The file name an attachment gets in in/ ("/media/<time>-<id>-<name>" → its id and name). */
+export const inName = (a: string) => basename(decodeURIComponent(a)).replace(/[^\w.\-\u4e00-\u9fff]+/g, "_").slice(-120);
+const attached = (m: TeamMessage) => (m.attachments ?? []).filter((a) => a.startsWith("/media/")).map(inName);
+const quote = (c: Claim, ms: TeamMessage[]) => ms.map((m) => {
+  const files = attached(m);
+  return `- ${who(c, m)}: ${m.text.replace(/\n/g, "\n  ")}${files.length ? `\n  [attached, in your in/ folder: ${files.join(", ")}]` : ""}`;
+}).join("\n");
 
 const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenced \`\`\`json block:
 {
@@ -382,8 +388,7 @@ export async function fetchInputs(files: FileApi, c: Claim, dir: string) {
   for (const m of [...c.thread, ...c.new]) {
     for (const a of m.attachments ?? []) {
       if (!a.startsWith("/media/")) continue;
-      const name = basename(decodeURIComponent(a)).replace(/[^\w.\-\u4e00-\u9fff]+/g, "_").slice(-120);
-      const p = join(inDir, name);
+      const p = join(inDir, inName(a));
       if (existsSync(p)) continue;
       const data = await files.download(a);
       if (data) writeFileSync(p, data);

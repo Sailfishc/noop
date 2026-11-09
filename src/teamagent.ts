@@ -183,7 +183,8 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
         return !!r?.ok;
       },
       async download(path) {
-        const r = await fetch(base + path, { headers: auth, signal: AbortSignal.timeout(120_000) }).catch(() => null);
+        const url = path.startsWith("/media/") ? `${base}/api/v1/media/${path.slice(7)}` : base + path; // a person's attachment
+        const r = await fetch(url, { headers: auth, signal: AbortSignal.timeout(120_000) }).catch(() => null);
         return r?.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       },
     },
