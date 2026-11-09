@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
@@ -236,6 +236,45 @@ test("a task gets its own worktree on agent/T-xxxx, and the agent's git cannot p
     expect(general).toEqual({ cwd: join(W, "work", "T-0004"), writable: [], files: join(W, "work", "T-0004") });
     expect(own.files).toBe(join(W, "work", "T-0002.files"));
     expect(own.writable).toContain(own.files!);
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
+});
+
+test("ended tasks' folders go after a week, their branches stay", async () => {
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-")));
+  try {
+    const repo = join(W, "repo"), work = join(W, "work");
+    sh(W, "git", "init", "-q", "-b", "main", repo);
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-qm", "init");
+    const done = await prepareWorkdir(claim({ id: "T-0001" }, { repo }), work);
+    writeFileSync(join(done.cwd, "b.txt"), "b\n");
+    sh(done.cwd, "git", "add", ".");
+    sh(done.cwd, "git", "commit", "-qm", "agent change");
+    writeFileSync(join(done.cwd, "half.txt"), "not committed\n");
+    const open = await prepareWorkdir(claim({ id: "T-0002", branch: "agent/T-0002" }, { repo }), work);
+    const general = await prepareWorkdir(claim({ id: "T-0003" }), work);
+    writeFileSync(join(general.cwd, "out", "r.md"), "r");
+
+    const asked: string[] = [];
+    const api = async (path: string) => {
+      asked.push(path);
+      return { tasks: [{ id: "T-0001" }, { id: "T-0003" }, { id: "T-0009" }] }; // T-0009: not on this machine
+    };
+    const w = createWorker({ api, maxParallel: 1, workRoot: work, runtimes: {}, log: () => {} });
+    expect(await w.sweep()).toEqual(["T-0001", "T-0003"]);
+    expect(asked).toEqual(["/api/v1/machine/tasks?ended=T-0001,T-0002,T-0003"]);
+    expect(existsSync(done.cwd)).toBe(false);
+    expect(existsSync(join(work, "T-0001.files"))).toBe(false);
+    expect(existsSync(general.cwd)).toBe(false);
+    expect(existsSync(open.cwd)).toBe(true);
+    expect(sh(repo, "git", "worktree", "list").out).not.toContain("T-0001");
+    expect(sh(repo, "git", "log", "-1", "--format=%s", "agent/T-0001").out).toBe("agent change");
+    // picked up again: the worktree comes back on its branch
+    const again = await prepareWorkdir(claim({ id: "T-0001", branch: "agent/T-0001" }, { repo }), work);
+    expect(sh(again.cwd, "git", "log", "-1", "--format=%s").out).toBe("agent change");
   } finally {
     rmSync(W, { recursive: true, force: true });
   }
