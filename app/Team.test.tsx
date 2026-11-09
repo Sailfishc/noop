@@ -1,5 +1,4 @@
 import { describe, expect, open, test } from "nsh/test";
-import { formatText } from "./team/format";
 
 const URL = "http://hub.test:8080";
 const SESSION = { "team.url": URL, "team.session": "sess", "team.email": "zw@corp.com" };
@@ -209,28 +208,16 @@ describe("team channels", () => {
     expect(app.shows("id:team-composer-as-task")).toBe(false);
   });
 
-  test("the formatting buttons write Markdown; messages show it", async () => {
+  test("the composer is a plain box; Markdown typed in it shows in the message", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
     await app.waitFor("id:team-composer");
-    await app.press("id:team-composer-bold");
-    expect(app.value("id:team-composer")).toBe("****");
-    await app.clear("id:team-composer");
-    await app.press("id:team-composer-list");
-    await app.type("id:team-composer", "第一条");
-    expect(app.value("id:team-composer")).toBe("- 第一条");
+    expect(app.shows("id:team-composer-bold")).toBe(false);
+    expect(app.shows("id:team-composer-code")).toBe(false);
+    await app.type("id:team-composer", "- 第一条");
     await app.press("id:team-composer-send");
     await app.waitFor("text:/第一条/");
     expect(log.posts[0].text).toBe("- 第一条");
-  });
-
-  test("formatting wraps the selection or marks its lines", () => {
-    expect(formatText("改这里", { start: 1, end: 3 }, "bold")).toEqual({ text: "改**这里**", start: 3, end: 5 });
-    expect(formatText("ab", { start: 2, end: 2 }, "code")).toEqual({ text: "ab``", start: 3, end: 3 });
-    expect(formatText("一\n二", { start: 0, end: 3 }, "numbered").text).toBe("1. 一\n2. 二");
-    expect(formatText("x\n看这段", { start: 3, end: 3 }, "quote").text).toBe("x\n> 看这段");
-    expect(formatText("文档", { start: 0, end: 2 }, "link")).toEqual({ text: "[文档](https://)", start: 13, end: 13 });
-    expect(formatText("说明", { start: 2, end: 2 }, "codeblock").text).toBe("说明\n```\n\n```\n");
   });
 
   test("files: pasted, picked or dropped, shown before sending, uploaded with the message, shown on it", async () => {
