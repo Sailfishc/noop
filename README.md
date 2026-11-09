@@ -1,8 +1,10 @@
-# TeamAgent
+# Remi
 
 一个团队里的几个人，加上每个人自己的几个 AI Agent，在同一个地方一起干活。
 
-TeamAgent 是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，TeamAgent 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人自己的电脑上用 Codex 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
+Remi（原名 TeamAgent）是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，Remi 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人自己的电脑上用 Codex 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
+
+产品名已改为 Remi。命令和环境变量也随之改名（`remi-server`、`REMI_*`、配置节 `[remi]`、Agent 用的 `remi read`），旧名 `TEAMAGENT_*`、`[teamagent]`、`teamagent` 命令仍然可用，已有的部署不用改。
 
 ## 它是什么样的
 
@@ -10,7 +12,7 @@ TeamAgent 是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分�
 - **派活就是 @，但不是每次 @ 都是任务。** 在频道里 @Agent 说一句话，它就会接手。只是问个问题，它在线程里回答并贴个表情。要动手的事（改代码、跑会改东西的命令、开 PR、提交外部服务、产出文件），它会认领为任务，频道里出现一张任务卡。你也可以在输入框勾「作为任务」，或者事后点「转为任务」。机器在 `agent/T-xxxx` 分支的独立 worktree 里干活。
 - **任务只有 5 个状态。** 待办、进行中、待验收、完成、关闭。要人出手时（主人确认、做决定、被阻塞、执行失败）任务上会多一个「需要你」标记，并出现在「待你决定」里。排队、运行、等外部结果这些执行细节不算任务状态，显示在 Agent 名字旁的状态点上：绿色空闲、黄色工作中、橙色出错、灰色离线。
 - **对话和任务各管一件事。** 频道的「对话」页用来交代和讨论，「任务」页按看板或列表看这个频道的任务；左侧栏的「任务」汇总所有频道。在任务线程里回复，Agent 会接着上次的会话继续做。
-- **上下文推最少、按需拉。** Agent 开工时只拿到请求、所在线程和几条最近消息；需要更多时，它在自己的 shell 里用 `teamagent read / search / tasks` 查频道历史、其他线程和任务。只能查它所在的频道，只在任务运行期间有效。
+- **上下文推最少、按需拉。** Agent 开工时只拿到请求、所在线程和几条最近消息；需要更多时，它在自己的 shell 里用 `remi read / search / tasks` 查频道历史、其他线程和任务。只能查它所在的频道，只在任务运行期间有效。
 - **代码只能经过 PR。** Agent 自己推不了代码。机器只推 `agent/` 开头的分支，并在 GitHub 或 Ant Code（基于 GitLab）上开 PR，合并永远由人来做。PR 合并后任务自动完成（这是唯一一个自动变化的状态，合并本身就是人的验收）。
 - **自己部署，依赖很少。** 服务端是一个 Go 二进制文件加一个 SQLite 文件，部署在内网一台机器上。机器只向外连服务端，服务端不需要能访问机器。
 
@@ -28,7 +30,7 @@ v1 的范围：10 人以内、每人 1–2 个 Agent；运行时只有 Codex（C
 
 ```
  人（客户端）──┐                         ┌── 机器 A：守护进程 → Codex → agent/T-0001 → PR
-              ├──► TeamAgent 服务端 ◄────┤
+              ├──► Remi 服务端 ◄────┤
  人（客户端）──┘   （内网，Go + SQLite）    └── 机器 B：守护进程 → Codex → …
                         ▲
                         └── Ant Code / GitHub webhook（PR 合并）
@@ -43,21 +45,21 @@ v1 的范围：10 人以内、每人 1–2 个 Agent；运行时只有 Codex（C
 需要 Go 1.26+。
 
 ```sh
-git clone https://github.com/Sailfishc/noop teamagent && cd teamagent/server
-go build -o teamagent-server ./cmd/teamagent-server
+git clone https://github.com/Sailfishc/noop remi && cd remi/server
+go build -o remi-server ./cmd/remi-server
 
 # 第一个管理员：打印一个邀请链接，用它在客户端里注册
-./teamagent-server invite -data /var/lib/teamagent -email 你@公司.com -role admin -url http://teamagent.内网域名:8080
+./remi-server invite -data /var/lib/remi -email 你@公司.com -role admin -url http://remi.内网域名:8080
 
 # 启动（建议用 systemd 或 launchd 托管）
-TEAMAGENT_GIT_WEBHOOK_SECRET=一串随机字符 ./teamagent-server -addr :8080 -data /var/lib/teamagent
+REMI_GIT_WEBHOOK_SECRET=一串随机字符 ./remi-server -addr :8080 -data /var/lib/remi
 ```
 
 要备份，就备份数据目录里的 `hub.db`。
 
 ### 2. 客户端
 
-不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 TeamAgent 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（版本见 `.github/workflows/release.yml` 里的 `NSH_REF`）。
+不要用 noop 官网的安装脚本或 huacnlee/noop 的 Release：那是上游的 noop，没有 Remi 的界面。客户端从这个仓库的 `app/` 构建，需要先按 [NSH](https://github.com/longbridge/nsh) 的说明装好 `nsh`（版本见 `.github/workflows/release.yml` 里的 `NSH_REF`）。
 
 ```sh
 cd app
@@ -78,7 +80,7 @@ Web 版可以直接让服务端托管：启动时加 `-static ../app/dist/web/no
 在客户端的「设置 → 我的机器」里点「添加机器」，把给出的一行命令复制到那台电脑的终端里运行：
 
 ```sh
-curl -fsSL http://teamagent.内网域名:8080/api/v1/install.sh | bash -s -- http://teamagent.内网域名:8080 tj_…
+curl -fsSL http://remi.内网域名:8080/api/v1/install.sh | bash -s -- http://remi.内网域名:8080 tj_…
 ```
 
 它会：没有 Bun 就装上；把守护进程装到 `~/.noop/app`；用一次性接入码（一小时内有效）换到这台机器的令牌，写进 `~/.noop/data/config.local.toml`；检查 Runtime 和 gh；最后装成后台服务（macOS 用 launchd，Linux 用 systemd --user），开机自启、关掉终端也不停。不用先起名字：电脑连上后自己出现在「我的机器」里，名字取它的主机名，可以在卡片上改。一小时内同一条命令可以接你的多台电脑；同一台电脑再运行一次是重新接入，原来的 Agent 都还在（靠 `~/.noop/data/machine-id` 认出它）。日志在 `~/.noop/data/logs/daemon.log`（macOS）或 `journalctl --user -u noop -f`（Linux）。
@@ -98,7 +100,7 @@ token = "…"                 # 主人自己的 token，对仓库至少要有 De
 
 也可以手动配置：在接入命令下面点「手动配置」，起个名字生成令牌，把显示的 `[cloud]`、`[server]` 几行写进 `config.local.toml`，然后在仓库目录里 `bun install && bun run daemon`。
 
-有了 TeamAgent 的机器 token，守护进程只跑 TeamAgent：不需要 noop 的 `init`，也不会启动 noop 单人模式的那些东西。
+有了 Remi 的机器 token，守护进程只跑 Remi：不需要 noop 的 `init`，也不会启动 noop 单人模式的那些东西。
 
 守护进程会跟随这个仓库的 `main` 自动更新：发现 `origin/main` 有新提交时，先跑 `bun test`，通过了才切换，失败就回滚。所以 `main` 就是线上版本，合进 `main` 的东西会自动到达所有机器。
 
@@ -106,7 +108,7 @@ token = "…"                 # 主人自己的 token，对仓库至少要有 De
 
 1. 在「我的 Agent」里新建一个 Agent，选它跑在哪台机器、用哪个 Runtime，再选派活方式。Agent 不绑定仓库。
 2. 仓库跟着任务走，按这个顺序决定：消息里写的仓库地址（如 `https://github.com/acme/pay`，或者某台机器上已有仓库的 `acme/pay`）→ 同一线程里之前任务用的仓库 → 频道的默认仓库（在频道的「成员」面板里设置）→ 都没有就是通用任务，在一个空目录里做。任务开始前，发起人可以在任务卡上换仓库。
-3. 机器会在 `~/code`、`~/work`、`~/src`、`~/projects` 等目录（最多往下三层）里找本地仓库，按远端地址上报，只报地址，不报路径。要指定其他目录，在 `config.local.toml` 里写 `[teamagent]` 的 `roots = ["~/somewhere"]`。任务要用的仓库本机没有时，机器会用自己的 git 凭证自动克隆到 `~/.noop/data/teamagent/repos/`。
+3. 机器会在 `~/code`、`~/work`、`~/src`、`~/projects` 等目录（最多往下三层）里找本地仓库，按远端地址上报，只报地址，不报路径。要指定其他目录，在 `config.local.toml` 里写 `[remi]` 的 `roots = ["~/somewhere"]`。任务要用的仓库本机没有时，机器会用自己的 git 凭证自动克隆到 `~/.noop/data/teamagent/repos/`。
 4. 在频道里 @它说一句话。需要确认的话，主人在任务卡或「待你决定」里点「确认开工」。
 5. 干完后线程里会有 Agent 的总结和 PR 链接。PR 的 CI 状态由机器每两分钟查一次。
 6. 每个 Agent 有自己的记忆（memory.md），主人在「我的 Agent」里可以编辑。Agent 每次开工前会读它，学到以后用得上的东西时会自己改写。
@@ -118,15 +120,15 @@ token = "…"                 # 主人自己的 token，对仓库至少要有 De
 想先自己一个人、一个 Agent 跑通，可以把服务端、客户端和守护进程都放在同一台 Mac 上。前提是装好 Go、Bun、git、`nsh` 和已登录的 Codex。
 
 ```sh
-git clone https://github.com/Sailfishc/noop ~/teamagent && cd ~/teamagent && bun install
+git clone https://github.com/Sailfishc/noop ~/remi && cd ~/remi && bun install
 
 # 1. 服务端（一个终端）
-cd server && go build -o teamagent-server ./cmd/teamagent-server
-./teamagent-server invite -data ~/teamagent-data -email 你@公司.com -role admin -url http://127.0.0.1:8080
-./teamagent-server -addr 127.0.0.1:8080 -data ~/teamagent-data
+cd server && go build -o remi-server ./cmd/remi-server
+./remi-server invite -data ~/remi-data -email 你@公司.com -role admin -url http://127.0.0.1:8080
+./remi-server -addr 127.0.0.1:8080 -data ~/remi-data
 
 # 2. 客户端（另一个终端）
-cd ~/teamagent/app && nsh run
+cd ~/remi/app && nsh run
 ```
 
 3. 在 App 里选「我有邀请」，粘贴上面打印的邀请链接，填名字和 @名。
@@ -141,8 +143,8 @@ cd ~/teamagent/app && nsh run
 
 在 Ant Code 仓库的集成服务里加一个 webhook：
 
-- 地址：`http://teamagent.内网域名:8080/api/v1/hooks/gitlab`
-- 密钥：服务端的 `TEAMAGENT_GIT_WEBHOOK_SECRET`
+- 地址：`http://remi.内网域名:8080/api/v1/hooks/gitlab`
+- 密钥：服务端的 `REMI_GIT_WEBHOOK_SECRET`
 - 事件：勾选 PullRequest
 
 这样 PR 一合并，任务就马上变成「已完成」。不配也能用，机器轮询也会发现，只是慢一点。
@@ -159,7 +161,7 @@ cd app && nsh test                         # 客户端
 
 ## 和上游 noop 的关系
 
-这个仓库是 huacnlee/noop 的 fork，但产品形态已经不同：noop 是单人自用、跑在 Cloudflare 上；TeamAgent 是多人、自部署、Go 服务端。noop 的单人模式不再保证可用。上游的代码仍然有很多值得拿的东西，同步规则见 [docs/upstream-sync.md](docs/upstream-sync.md)。
+这个仓库是 huacnlee/noop 的 fork，但产品形态已经不同：noop 是单人自用、跑在 Cloudflare 上；Remi 是多人、自部署、Go 服务端。noop 的单人模式不再保证可用。上游的代码仍然有很多值得拿的东西，同步规则见 [docs/upstream-sync.md](docs/upstream-sync.md)。
 
 ## License
 

@@ -6,7 +6,7 @@
 set -e
 cd "$(dirname "$0")"
 NSH="${NSH:-$HOME/work/nsh/target/debug/nsh}"
-# The package directory is named after the display name (Noop), but the Worker serves dist/web/noop.
+# The package directory is named after the display name (Remi), but the Worker serves dist/web/noop.
 OUT="dist/web/noop"
 TMP="dist/.web-build"
 rm -rf "$TMP"

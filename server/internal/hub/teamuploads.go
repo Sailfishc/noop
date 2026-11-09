@@ -97,7 +97,7 @@ func (h *Hub) v1MediaSigned(w http.ResponseWriter, q *request) {
 	id := q.r.PathValue("id")
 	exp, _ := strconv.ParseInt(q.query("exp"), 10, 64)
 	if exp < h.nowMs()/1000 || q.query("sig") != h.linkSig("media:"+id, 0, exp) {
-		errJSON(w, 403, "这个链接已经过期，请回到 TeamAgent 重新打开")
+		errJSON(w, 403, "这个链接已经过期，请回到 Remi 重新打开")
 		return
 	}
 	h.sendMedia(w, id)

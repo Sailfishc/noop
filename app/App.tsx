@@ -5298,7 +5298,7 @@ function Connected(props: { config: Config; openRef: string | null; onExpired: (
   );
 }
 
-/** TeamAgent is the client now; the single-person noop chat stays only for a device that already holds its session. */
+/** Remi (TeamAgent) is the client now; the single-person noop chat stays only for a device that already holds its session. */
 function Root() {
   const mode = signal<"team" | "legacy" | null>(null);
   Promise.all([Storage.getItem(KEYS.token), Storage.getItem(TEAM_KEYS.session), Storage.getItem(LANG_KEY)]).then(([legacy, team, saved]) => {
@@ -5314,7 +5314,7 @@ function Root() {
 
 function TeamRoot() {
   void loadAppearance();
-  if (hasWindow) currentWindow().set({ title: "TeamAgent", titleBar: { style: "hidden", height: size.bar } });
+  if (hasWindow) currentWindow().set({ title: "Remi", titleBar: { style: "hidden", height: size.bar } });
   Scrollbar.setTheme(scrollbarTheme);
   return (
     <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: touch ? safeArea().top : 0 }}>

@@ -1,6 +1,6 @@
 // After an agent's run: push its task branch (agent/T-xxxx, never anything else) and open or update the pull request
 // on the repository's platform, and later read the PR's state and CI. GitHub uses the REST API; Ant Code and other
-// GitLab-based platforms use the GitLab v4 API (a merge request, called a PR in TeamAgent). Credentials stay on this
+// GitLab-based platforms use the GitLab v4 API (a merge request, called a PR in Remi). Credentials stay on this
 // machine: [git] in the config, or GITHUB_TOKEN / `gh auth token` for GitHub.
 //
 //   [git.github]            token = "…"                       (optional when gh is logged in)
@@ -128,9 +128,9 @@ export function providerFor(cfg: Cfg, host: string, f: Fetch = fetch): Provider 
   return g?.token ? gitlab(host, String(g.token), f, g.api ? String(g.api).replace(/\/$/, "") : undefined) : null;
 }
 
-/** The PR's description: what the agent wrote, then who made it for whom (outside TeamAgent nobody knows the agent). */
+/** The PR's description: what the agent wrote, then who made it for whom (outside Remi nobody knows the agent). */
 export function prBody(c: Claim, r: TaskResult): string {
-  return `${(r.pr_body || r.summary || c.task.title).trim()}\n\n---\n由 TeamAgent 的 @${c.agent.handle}（${c.agent.name}）替 ${c.creator.name} 完成 · 任务 ${c.task.id}`;
+  return `${(r.pr_body || r.summary || c.task.title).trim()}\n\n---\n由 Remi 的 @${c.agent.handle}（${c.agent.name}）替 ${c.creator.name} 完成 · 任务 ${c.task.id}`;
 }
 
 /** Push the task branch and open (or find) its PR. Only agent/… branches are ever pushed. */
