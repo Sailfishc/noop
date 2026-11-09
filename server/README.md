@@ -1,4 +1,4 @@
-# TeamAgent server（Go）
+# Remi server（Go）
 
 自部署的协调服务端，替代 `cloud/` 里的 Cloudflare Worker。它实现了和 Worker 相同的 HTTP 接口，所以 noop 的客户端和守护进程不用改代码，改一下地址就能连上。
 
@@ -58,7 +58,7 @@ export TEAMAGENT_PUBLIC_URL=http://teamagent.内网域名:8080   # 别人访问�
 
 ## 已实现的接口
 
-TeamAgent 自己的接口都在 `/api/v1` 下，包括账号与邀请、机器、Agent、频道、消息、线程、任务、「待你决定」和 webhook，具体见 `internal/hub/v1.go`。下面是为老的 noop 单人模式保留的接口：
+Remi 自己的接口都在 `/api/v1` 下，包括账号与邀请、机器、Agent、频道、消息、线程、任务、「待你决定」和 webhook，具体见 `internal/hub/v1.go`。下面是为老的 noop 单人模式保留的接口：
 
 | 范围 | 接口 |
 | --- | --- |

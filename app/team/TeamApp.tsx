@@ -78,7 +78,7 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
         <View style={{ width: "100%", maxWidth: 440, gap: 22 }}>
           <View style={{ alignItems: "center", gap: 10 }}>
             <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
-            <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text }}>TeamAgent</Text>
+            <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text }}>Remi</Text>
             <Text style={{ fontSize: 15, lineHeight: 22, color: colors.muted, textAlign: "center" }}>
               {mode() === "login" ? L("Sign in with a login code from a device you’re already signed in on, or a login link from your admin.", "用已登录设备上生成的登录码，或管理员发给你的登录链接登录。") : L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")}
             </Text>
