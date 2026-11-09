@@ -307,13 +307,6 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
     return items.sort((a, b) => a.at - b.at);
   };
   const task = () => tasks()[tasks().length - 1];
-  const agentOf = (x: Task) => t.agents().find((a) => a.id === x.agent_id);
-  const hint = () => {
-    const x = task();
-    if (!x || ["done", "closed"].includes(x.state)) return L("Replies go to the thread. @ an agent to hand it work here.", "回复发到线程里。@Agent 可以在这里给它派活。");
-    const name = agentOf(x)?.name ?? "Agent";
-    return L(`Goes straight to ${name}’s session for this task; no need to @ it.`, `会直接送到${name}这个任务的 Session，不用再 @。`);
-  };
   return (
     <View testID="thread" style={{ flex: 1, backgroundColor: colors.background }}>
       <Header
@@ -345,7 +338,7 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
               </Each>
             </Scroll>
             <If when={member()}>
-              <Composer team={t} channelId={r().channel_id} threadId={r().id} testID="thread-composer" placeholder={L("Reply…", "回复…")} hint={hint()} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
+              <Composer team={t} channelId={r().channel_id} threadId={r().id} testID="thread-composer" placeholder={L("Reply…", "回复…")} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
             </If>
           </>
         )}

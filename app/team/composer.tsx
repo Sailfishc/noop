@@ -5,7 +5,8 @@ import { Input } from "nsh/base";
 import { L, lang } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
-import { agentState, Avatar, Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { agentState, Avatar, Btn, COMPOSER_GAP, COMPOSER_TOOLBAR, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { naturalRemind } from "./reminders";
 
 /** A `file:` URL as a local path ("file:///Users/a/My%20Shot.png" → "/Users/a/My Shot.png"; Windows drive paths too). */
 export function filePath(uri: string): string {
@@ -133,7 +134,7 @@ const guessType = (name: string) => {
   return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" } as Record<string, string>)[ext] ?? "";
 };
 
-export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; hint?: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
+export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
   /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
@@ -210,7 +211,9 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
     const v = untracked(text).trim();
     const drafts = untracked(files);
     if ((!v && !drafts.length) || untracked(busy)) return;
-    const cmd = /^\/remind(?:\s+([\s\S]*))?$/i.exec(v);
+    // "/remind WHEN …", or the same said in words ("2分钟后提醒我…") when nothing is attached
+    const said = drafts.length ? null : naturalRemind(v);
+    const cmd = said ? [v, said] : /^\/remind(?:\s+([\s\S]*))?$/i.exec(v);
     if (cmd) { // /remind WHEN [@who] WHAT: a reminder, not a message
       busy.set(true);
       const err = cmd[1]?.trim()
@@ -259,7 +262,7 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
   );
   return (
     <View
-      style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}
+      style={{ paddingHorizontal: 12, paddingBottom: COMPOSER_GAP, paddingTop: 6, gap: 6 }}
       onFileDragEnter={() => dropping.set(true)}
       onFileDragLeave={() => dropping.set(false)}
       onFileDrop={({ uris }) => { dropping.set(false); void attachUris(uris); }}
@@ -268,10 +271,13 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
       <If when={sent() && !text()}>
         <Text testID={`${props.testID}-sent`} style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.muted }}>{sent()}</Text>
       </If>
+      <If when={preview()}>
+        {(p) => <Text testID={`${props.testID}-preview`} style={{ paddingHorizontal: 4, fontSize: 12, lineHeight: 17, color: p().warn ? colors.warn : colors.muted }}>{p().text}</Text>}
+      </If>
       <If when={open()}>
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
-      <View style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
+      <View testID={`${props.testID}-box`} style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
         <Input
           testID={props.testID}
           ref={(r) => (input = r)}
@@ -309,7 +315,7 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
             </Each>
           </View>
         </If>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 6, paddingBottom: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 2, height: COMPOSER_TOOLBAR, paddingHorizontal: 6, paddingBottom: 6 }}>
           {tool(`${props.testID}-attach`, "plus", L("Attach files (or paste or drop them)", "添加文件（也可粘贴或拖入）"), () => void pickFiles())}
           {tool(`${props.testID}-at`, null, L("Mention someone", "@ 人或 Agent"), addAt, "@")}
           <View style={{ flex: 1 }} />
@@ -325,12 +331,6 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
           </If>
           <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim() && !files().length} onPress={send} />
         </View>
-      </View>
-      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 4 }}>
-        <Text testID={`${props.testID}-preview`} style={{ flex: 1, fontSize: 12, lineHeight: 17, color: preview()?.warn ? colors.warn : colors.muted }}>
-          {preview()?.text ?? props.hint ?? ""}
-        </Text>
-        <Text style={{ fontSize: 12, color: colors.faint }}>{L("⏎ send · ⇧⏎ new line", "⏎ 发送 · ⇧⏎ 换行")}</Text>
       </View>
     </View>
   );

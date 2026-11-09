@@ -513,9 +513,11 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi file /media/…  > FILE     a file someone attached (remi read shows them)
 Look up only what the request needs. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
 most every 5 minutes, only when people would want to know), and hand over a file before you stop with
-\`remi upload FILE\`. When someone wants something done later or again and again ("every morning…", "remind me on
-Friday…"), set it with \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` instead of waiting for it. Your result
-still goes in the result block at the end.`;
+\`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
+2 minutes", "remind me on Friday…", "every morning…"), always set it with
+\`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` (WHEN: 2m, 1h, 3d, 9:30, tomorrow 9:00, fri 17:00), then finish
+at once. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
+person's "Waiting for you" and their system notifications. Your result still goes in the result block at the end.`;
 
 /** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
 export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {

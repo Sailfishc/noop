@@ -22,6 +22,7 @@ export function TaskFacts(props: { team: Team; task: Task }) {
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
   const creator = () => t.users().find((u) => u.id === task().created_by);
+  const handler = () => t.users().find((u) => u.id === task().handler);
   const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
   const fold = signal<"" | "acceptance" | "repo" | "mandate" | "log">("");
   const allOutputs = signal(false);
@@ -50,6 +51,9 @@ export function TaskFacts(props: { team: Team; task: Task }) {
         <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
       </>)}
       {fact(L("Asked by", "发起人"), plain(`${creator()?.name ?? "?"} · ${time(task().created)}`))}
+      <If when={handler()}>
+        {fact(L("Taken by", "处理人"), plain(L(`${handler()!.name} (accepts and decides)`, `${handler()!.name}（验收与决定）`), `task-${task().id}-handler`))}
+      </If>
       {fact(live() ? L("Time", "用时") : L("Updated", "更新"), <>
         {plain(live() ? minutes(Date.now() - task().created) : time(task().updated))}
         <If when={task().result}>
