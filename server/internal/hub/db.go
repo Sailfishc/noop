@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS task_outputs (id TEXT PRIMARY KEY, task_id TEXT NOT N
   version INTEGER NOT NULL DEFAULT 0, service TEXT NOT NULL DEFAULT '', external_id TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
   media TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', versions TEXT NOT NULL DEFAULT '[]', created INTEGER NOT NULL, updated INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS task_outputs_task ON task_outputs (task_id, created);
+CREATE TABLE IF NOT EXISTS task_events (task_id TEXT NOT NULL, at INTEGER NOT NULL, status TEXT NOT NULL, needs TEXT NOT NULL DEFAULT '');
+CREATE INDEX IF NOT EXISTS task_events_task ON task_events (task_id, at);
 CREATE TABLE IF NOT EXISTS reactions (message_id TEXT NOT NULL, author_kind TEXT NOT NULL, author_id TEXT NOT NULL, emoji TEXT NOT NULL,
   created INTEGER NOT NULL, PRIMARY KEY (message_id, author_kind, author_id, emoji));
 CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, name TEXT NOT NULL, user_id TEXT NOT NULL, created INTEGER NOT NULL);
@@ -107,8 +109,9 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN read_token TEXT NOT NULL DEFAULT ''", // what its runs read the chat with (teamcontext.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                    // tokens its runs used, added up
-		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''", // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                        // tokens its runs used, added up
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",     // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0", // its title was given (by the agent or a person), not cut from the request
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

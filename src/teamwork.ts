@@ -21,6 +21,8 @@ export type TeamTask = {
   claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
   /** A task people track; false: a request the agent may simply answer (it claims it with a "task:" line). */
   tracked?: boolean;
+  /** Its title was given (by the agent or a person), not cut from the request: the agent leaves it as it is. */
+  titled?: boolean;
   /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
   repo?: string;
 };
@@ -198,8 +200,9 @@ bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, �
 report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.
 If fulfilling the request needs you to act beyond replying (change files, run commands that change something, open a
 pull request, submit to an outside service, produce a file), claim it as a task in that same message with a second line
-task: <a short title, under 30 characters, in the people's language>
-so the team can track it. Only answering a question or talking needs no claim.`;
+task: <a short title, under 30 characters, in the people's language, saying what the work is>
+so the team can track it. Only answering a question or talking needs no claim. When the request is already tracked as a
+task, still give that line: it names the task on the team's board (people may rename it later).`;
 
 const WAKE: Record<Wake["reason"], string> = {
   callback: "the outside service called your callback address",
@@ -621,7 +624,7 @@ export function createWorker(o: WorkerOptions) {
         const emoji = reactionOf(e.text);
         if (emoji) { reacted = true; void report(t.id, { reaction: emoji }); }
       }
-      if (e.kind === "message" && !claimed && !t.tracked) {
+      if (e.kind === "message" && !claimed && (!t.tracked || !t.titled)) {
         const title = taskClaimOf(e.text);
         if (title !== null) { claimed = true; void report(t.id, { track: true, ...(title ? { title } : {}) }); }
       }

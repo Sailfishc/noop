@@ -146,6 +146,8 @@ type taskView struct {
 	ConfirmedBy *string       `json:"confirmed_by"`
 	Runs        int64         `json:"runs"`
 	Tracked     bool          `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
+	Titled      bool          `json:"titled"`       // its title was given (by the agent or a person), not cut from the request
+	Events      []taskEvent   `json:"events"`       // its status as it changed, oldest first: shown between the thread's replies
 	Failures    int64         `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
 	LastFailure string        `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
 	Usage       *usageView    `json:"usage"`        // tokens its runs used, added up
@@ -156,7 +158,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, '')`
+	failures, last_failure, COALESCE(usage, ''), titled`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -169,7 +171,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait, usage string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -222,7 +224,45 @@ func (h *Hub) taskChanged(id string) {
 	}
 }
 
+// taskEvent: the status a task came to (and what it then needed of a person), and when.
+type taskEvent struct {
+	At     int64  `json:"at"`
+	Status string `json:"status"`
+	Needs  string `json:"needs,omitempty"`
+}
+
+// noteStatus records the task's status when it differs from the last one recorded.
+func (h *Hub) noteStatus(id, state string) {
+	status, needs := statusOf(state)
+	var last, lastNeeds string
+	_ = h.db.QueryRow("SELECT status, needs FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", id).Scan(&last, &lastNeeds)
+	if last == status && lastNeeds == needs {
+		return
+	}
+	h.must(h.db.Exec("INSERT INTO task_events (task_id, at, status, needs) VALUES (?, ?, ?, ?)", id, h.nowMs(), status, needs))
+}
+
+func (h *Hub) taskEvents(id string) []taskEvent {
+	rows, err := h.db.Query("SELECT at, status, needs FROM task_events WHERE task_id = ? ORDER BY at, rowid", id)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []taskEvent{}
+	for rows.Next() {
+		var e taskEvent
+		if err := rows.Scan(&e.At, &e.Status, &e.Needs); err != nil {
+			panic(err)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func (h *Hub) setTask(id string, cols map[string]any) {
+	if state, ok := cols["state"].(string); ok {
+		h.noteStatus(id, state)
+	}
 	sets, args := []string{"updated = ?"}, []any{h.nowMs()}
 	for k, v := range cols {
 		sets = append(sets, k+" = ?")
@@ -334,6 +374,7 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bo
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
 		branch, repo, tracked, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
 		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), now, now))
+	h.noteStatus(id, state)
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
 	}
@@ -492,15 +533,29 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 
 // v1TaskPatch: the creator or the agent's owner writes down what "done" means, or (before it ever ran) where it runs.
 func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
-	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting)
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskNeedsDecision, taskReview, taskBlocked, taskFailed, taskWaiting, taskDone, taskClosed)
 	if !ok {
 		return
 	}
 	var b struct {
+		Title      *string `json:"title"`
 		Acceptance *string `json:"acceptance"`
 		Repo       *string `json:"repo"`
 	}
 	_ = q.json(&b)
+	if b.Title != nil {
+		title := trimmed(*b.Title, 60)
+		if title == "" {
+			errJSON(w, 400, "标题不能为空")
+			return
+		}
+		h.setTask(t.ID, map[string]any{"title": title, "titled": 1})
+		h.taskChanged(t.ID)
+	}
+	if (b.Repo != nil || b.Acceptance != nil) && (t.State == taskDone || t.State == taskClosed) {
+		errJSON(w, 409, "任务已经结束了；重新打开再改")
+		return
+	}
 	if b.Repo != nil {
 		r := normRemote(*b.Repo)
 		if r == "" && strings.TrimSpace(*b.Repo) != "" {
@@ -544,7 +599,7 @@ func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
 	_ = q.json(&b)
 	cols := map[string]any{"tracked": 1}
 	if title := trimmed(b.Title, 60); title != "" {
-		cols["title"] = title
+		cols["title"], cols["titled"] = title, 1
 	}
 	h.setTask(t.ID, cols)
 	h.taskChanged(t.ID)
@@ -789,9 +844,10 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	cols := map[string]any{}
 	if b.Track && !t.Tracked {
 		cols["tracked"] = 1
-		if title := trimmed(b.Title, 60); title != "" {
-			cols["title"] = title
-		}
+	}
+	// the agent names the task once (its "task:" line), unless a person already did
+	if title := trimmed(b.Title, 60); title != "" && !t.Titled {
+		cols["title"], cols["titled"] = title, 1
 	}
 	if b.Acceptance != nil && t.Acceptance == "" {
 		cols["acceptance"] = clip(strings.TrimSpace(*b.Acceptance), 4000)
