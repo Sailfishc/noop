@@ -1,5 +1,4 @@
 import { describe, expect, open, test } from "nsh/test";
-import { formatText } from "./team/format";
 
 const URL = "http://hub.test:8080";
 const SESSION = { "team.url": URL, "team.session": "sess", "team.email": "zw@corp.com" };
@@ -44,6 +43,7 @@ function server(log: Log, over: Record<string, unknown> = {}, tasks: any[] = [])
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
+    [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
@@ -193,28 +193,31 @@ describe("team channels", () => {
     expect(app.value("id:team-composer")).toBe("");
   });
 
-  test("the formatting buttons write Markdown; messages show it", async () => {
+  test("\"as task\" shows once the message @s an agent, and sends it as a task", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
     await app.waitFor("id:team-composer");
-    await app.press("id:team-composer-bold");
-    expect(app.value("id:team-composer")).toBe("****");
-    await app.clear("id:team-composer");
-    await app.press("id:team-composer-list");
-    await app.type("id:team-composer", "第一条");
-    expect(app.value("id:team-composer")).toBe("- 第一条");
+    await app.type("id:team-composer", "整理一下");
+    expect(app.shows("id:team-composer-as-task")).toBe(false);
+    await app.type("id:team-composer", " @acha 慢查询清单");
+    await app.waitFor("id:team-composer-as-task");
+    await app.press("id:team-composer-as-task");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(log.posts[0]).toMatchObject({ text: "整理一下 @acha 慢查询清单", as_task: true });
+    expect(app.shows("id:team-composer-as-task")).toBe(false);
+  });
+
+  test("the composer is a plain box; Markdown typed in it shows in the message", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:team-composer");
+    expect(app.shows("id:team-composer-bold")).toBe(false);
+    expect(app.shows("id:team-composer-code")).toBe(false);
+    await app.type("id:team-composer", "- 第一条");
     await app.press("id:team-composer-send");
     await app.waitFor("text:/第一条/");
     expect(log.posts[0].text).toBe("- 第一条");
-  });
-
-  test("formatting wraps the selection or marks its lines", () => {
-    expect(formatText("改这里", { start: 1, end: 3 }, "bold")).toEqual({ text: "改**这里**", start: 3, end: 5 });
-    expect(formatText("ab", { start: 2, end: 2 }, "code")).toEqual({ text: "ab``", start: 3, end: 3 });
-    expect(formatText("一\n二", { start: 0, end: 3 }, "numbered").text).toBe("1. 一\n2. 二");
-    expect(formatText("x\n看这段", { start: 3, end: 3 }, "quote").text).toBe("x\n> 看这段");
-    expect(formatText("文档", { start: 0, end: 2 }, "link")).toEqual({ text: "[文档](https://)", start: 13, end: 13 });
-    expect(formatText("说明", { start: 2, end: 2 }, "codeblock").text).toBe("说明\n```\n\n```\n");
   });
 
   test("files: pasted, picked or dropped, shown before sending, uploaded with the message, shown on it", async () => {
@@ -267,6 +270,20 @@ describe("team channels", () => {
     await app.waitFor("text:/2 replies|2 条回复/");
     await app.press("id:close-thread");
     expect(app.shows("id:thread")).toBe(false);
+  });
+
+  test("the thread column widens when its edge is dragged, and keeps its width", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1400, height: 800, network: server(log) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:side-resize");
+    await app.drag("id:side-resize", { x: -200 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === "580");
+    await app.drag("id:side-resize", { x: -2000 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === String(1400 - 248 - 360));
+    await app.drag("id:side-resize", { x: 2000 });
+    await app.waitUntil(() => app.storage()["team.sideWidth"] === "320");
   });
 
   test("a channel you're not in can be read and joined", async () => {
@@ -772,6 +789,63 @@ describe("tasks", () => {
     await app.press("id:task-T-0001-reopen");
     await app.waitFor("text:In progress");
     expect(log.acts).toEqual(["T-0001 accept", "T-0001 reopen"]);
+  });
+
+  test("a question the agent only answered is no task card; its asker may convert it", async () => {
+    const log = newLog();
+    const t = task({ created_by: "u_1", state: "done", tracked: false, summary: "有两个索引" });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log, {}, [t]) });
+    await app.waitFor("id:track-T-0001");
+    expect(app.shows("id:task-T-0001")).toBe(false);
+    await app.press("id:track-T-0001");
+    await app.waitFor("id:task-T-0001");
+    expect(log.acts).toEqual(["T-0001 track"]);
+  });
+
+  test("an untracked request that needs a person still shows its card", async () => {
+    const t = task({ created_by: "u_1", state: "pending", tracked: false });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [t]) });
+    await app.waitFor("id:task-T-0001-needs");
+  });
+
+  test("a channel's Tasks tab: a board by status, or a list; a press opens the task's thread", async () => {
+    const ts = [
+      task({ id: "T-0001", state: "running", tracked: true }),
+      task({ id: "T-0002", thread_id: "msg_1", state: "blocked", tracked: true, title: "加索引" }),
+      task({ id: "T-0003", state: "review", tracked: true, title: "写周报" }),
+      task({ id: "T-0004", state: "done", tracked: false, title: "问个问题" }),
+    ];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:channel-tab-tasks");
+    await app.press("id:channel-tab-tasks");
+    await app.waitFor("id:tasks-board");
+    const count = (label: string) => { const xs = app.texts(); return xs[xs.lastIndexOf(label) + 1]; };
+    expect(count("In progress")).toBe("2");
+    expect(count("In review")).toBe("1");
+    expect(count("Done")).toBe("0"); // an answer is no task
+    expect(app.shows("id:taskrow-T-0004")).toBe(false);
+    await app.press("id:tasks-layout-list");
+    await app.waitFor("id:tasks-list");
+    expect(app.shows("text:Blocked")).toBe(true);
+    await app.press("id:taskrow-T-0002");
+    await app.waitFor("id:close-thread");
+  });
+
+  test("the Tasks page lists every tracked task; filters narrow it to mine or my agents'", async () => {
+    const ts = [
+      task({ id: "T-0001", state: "running", tracked: true, created_by: "u_1" }),
+      task({ id: "T-0002", state: "review", tracked: true, created_by: "u_2", agent_id: "a_9" }),
+    ];
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, ts) });
+    await app.waitFor("id:open-tasks");
+    await app.press("id:open-tasks");
+    await app.waitFor("id:taskrow-T-0002");
+    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    await app.press("id:tasks-filter-mine");
+    await app.waitUntil(() => !app.shows("id:taskrow-T-0002"));
+    expect(app.shows("id:taskrow-T-0001")).toBe(true);
+    await app.press("id:tasks-filter-agents");
+    await app.waitUntil(() => app.shows("id:taskrow-T-0001") && !app.shows("id:taskrow-T-0002"));
   });
 
   test("a finished task's card shows its conclusion in the channel; the agent's 👀 shows it took the message up", async () => {

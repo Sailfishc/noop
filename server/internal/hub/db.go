@@ -116,7 +116,9 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE agents ADD COLUMN memory TEXT NOT NULL DEFAULT ''", // the agent's memory.md: what it keeps between tasks
 		"ALTER TABLE tasks_v1 ADD COLUMN wait TEXT",                     // what a waiting task waits for (teamwaits.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN wait_token TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE tasks_v1 ADD COLUMN result TEXT NOT NULL DEFAULT ''", // confirmed | unconfirmed: did the agent see the result
+		"ALTER TABLE tasks_v1 ADD COLUMN result TEXT NOT NULL DEFAULT ''",     // confirmed | unconfirmed: did the agent see the result
+		"ALTER TABLE tasks_v1 ADD COLUMN tracked INTEGER NOT NULL DEFAULT 1",  // a task people track; 0: a conversation turn (an answer)
+		"ALTER TABLE tasks_v1 ADD COLUMN read_token TEXT NOT NULL DEFAULT ''", // what its runs read the chat with (teamcontext.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

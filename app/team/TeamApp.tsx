@@ -8,13 +8,13 @@ import { filePath } from "../hub";
 import { Input, Menu, MenuItem, MenuSeparator, TextView, type MarkdownExtension } from "nsh/base";
 import { L, lang } from "../i18n";
 import { LOGO } from "./logo";
-import { formatText } from "./format";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
 import {
   blockedReason, call, createTeam, dispatchFor, errorOf, type Reply, isMember, isParty, loginServer, mentionAt, normalizeServer, parseInvite, runtimeLabel, TEAM_KEYS,
   EXTERNAL_TRIES, repoLabel, type Agent, type Attachment, type Member, type Mention, type Message, type Output, type Repo, type Session, type Task, type TaskState, type Team,
 } from "./api";
 import { NEEDS, STATUS, statusOf, type Needs } from "./status";
+import { LayoutSwitch, TaskBoard, TasksPage, trackedTasks, type TaskLayout } from "./tasks";
 import { AUTONOMY, DISPATCH, SettingsPage, type SettingsTab } from "./settings";
 import { agentState, authorOf, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable, WIDE } from "./ui";
 
@@ -130,10 +130,33 @@ function SignIn(props: { url: string; email: string; notice: string; onSession: 
 
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "home" };
 /** What the right column shows beside a channel: a thread, or the channel's members. */
 type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
+
+const SIDE_WIDTH = 380, SIDE_MIN = 320, MAIN_MIN = 360, SIDE_WIDTH_KEY = "team.sideWidth";
+
+/** The grip on the right column's left edge: drag it to widen or narrow the column, double-click it to reset. */
+function ResizeHandle(props: { width: () => number; onResize: (w: number) => void; onDone: () => void; onReset: () => void }) {
+  let from = 0, x0 = 0;
+  const active = signal(false);
+  return (
+    <View
+      testID="side-resize"
+      accessibilityLabel={L("Drag to resize, double-click to reset", "拖动调整宽度，双击复位")}
+      onStartShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={(e) => { from = props.width(); x0 = e.pageX; active.set(true); }}
+      onResponderMove={(e) => props.onResize(from - (e.pageX - x0))}
+      onResponderRelease={() => { active.set(false); props.onDone(); }}
+      onResponderTerminate={() => { active.set(false); props.onDone(); }}
+      onPress={(e) => { if (e.clickCount === 2) props.onReset(); }}
+      hoverStyle={{ backgroundColor: alpha(colors.accent, 0.35) }}
+      style={{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, cursor: "col-resize", backgroundColor: active() ? alpha(colors.accent, 0.5) : "transparent" }}
+    />
+  );
+}
 
 function Workspace(props: { team: Team; onSignOut: () => void }) {
   const t = props.team;
@@ -144,6 +167,11 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   /** Narrow windows: the list shows until a page is picked. */
   const showList = signal(true);
   const thread = () => { const s = side(); return s?.kind === "thread" ? s.id : null; };
+  /** The right column's width: dragged at its left edge, remembered, reset by a double click. */
+  const sideWidth = signal(SIDE_WIDTH);
+  void Storage.getItem(SIDE_WIDTH_KEY).then((v) => { const n = Number(v); if (v && n > 0) sideWidth.set(n); });
+  const fitSide = (w: number) => Math.round(Math.max(SIDE_MIN, Math.min(w, windowSize().width - 248 - MAIN_MIN)));
+  const setSide = (w: number) => { sideWidth.set(w); void Storage.setItem(SIDE_WIDTH_KEY, String(w)); };
 
   // the first channel this person is in opens by itself on a wide window
   effect(() => {
@@ -177,6 +205,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       );
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
+    if (p.kind === "tasks") return <TasksPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     if (p.kind === "inbox") return <Inbox team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
@@ -215,7 +244,12 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
             <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
             <View style={{ flex: 1 }}>{main()}</View>
             <If when={sidePane(false)}>
-              {(pane) => <View style={{ width: 380, borderLeftWidth: 1, borderLeftColor: colors.border }}>{pane()}</View>}
+              {(pane) => (
+                <View testID="side-pane" style={{ width: fitSide(sideWidth()), borderLeftWidth: 1, borderLeftColor: colors.border }}>
+                  {pane()}
+                  <ResizeHandle width={() => fitSide(untracked(sideWidth))} onResize={(w) => sideWidth.set(fitSide(w))} onDone={() => setSide(fitSide(untracked(sideWidth)))} onReset={() => setSide(SIDE_WIDTH)} />
+                </View>
+              )}
             </If>
           </If>
         </View>
@@ -270,6 +304,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
         <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+        <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         <Section
           label={L("CHANNELS", "频道")}
           right={
@@ -483,7 +518,7 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
         </If>
         <If when={!props.noTask}>
           <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
-            {(task) => <TaskCard team={props.team} task={task()} />}
+            {(task) => <If when={shownAsTask(task())} else={<TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} /></If>}
           </Each>
         </If>
         <If when={props.onThread}>
@@ -619,9 +654,11 @@ const guessType = (name: string) => {
   return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" } as Record<string, string>)[ext] ?? "";
 };
 
-function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; onSend: (text: string, files: string[]) => Promise<string | null> }) {
+function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
+  /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
+  const asTask = signal(false);
   const error = signal("");
   const busy = signal(false);
   const pick = signal(0);
@@ -703,11 +740,12 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
       }
       paths.push(r.path);
     }
-    const err = await props.onSend(v, paths);
+    const err = await props.onSend(v, paths, !!props.asTask && untracked(asTask) && !!untracked(preview));
     busy.set(false);
     error.set(err ?? "");
     if (!err) {
       text.set("");
+      asTask.set(false);
       for (const f of drafts) unattach(f.id);
     }
   }
@@ -717,10 +755,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
     dismissed.set(null);
     setText(next, next.length);
   }
-  function format(kind: Parameters<typeof formatText>[2]) {
-    const r = formatText(untracked(text), caret, kind);
-    setText(r.text, r.start, r.end);
-  }
   const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string, glyphStyle?: Record<string, unknown>) => (
     <View role="button" testID={testID} accessibilityLabel={label} tooltip={<Text>{label}</Text>} onPress={onPress} hoverStyle={hovered()} style={{ width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
       <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted, ...glyphStyle }}>{glyph}</Text>}>
@@ -728,7 +762,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
       </If>
     </View>
   );
-  const sep = () => <View style={{ width: 1, height: 16, marginHorizontal: 3, backgroundColor: colors.border }} />;
   return (
     <View
       style={{ paddingHorizontal: 12, paddingBottom: 10, paddingTop: 6, gap: 6 }}
@@ -741,19 +774,6 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
       <View style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 1, paddingHorizontal: 6, paddingTop: 5 }}>
-          {tool(`${props.testID}-bold`, null, L("Bold", "粗体"), () => format("bold"), "B", { fontWeight: "800" })}
-          {tool(`${props.testID}-italic`, null, L("Italic", "斜体"), () => format("italic"), "I", { fontStyle: "italic", fontWeight: "500" })}
-          {tool(`${props.testID}-strike`, null, L("Strikethrough", "删除线"), () => format("strike"), "S", { textDecorationLine: "line-through", fontWeight: "500" })}
-          {sep()}
-          {tool(`${props.testID}-link`, "link", L("Link", "链接"), () => format("link"))}
-          {tool(`${props.testID}-list`, "lists", L("Bulleted list", "无序列表"), () => format("list"))}
-          {tool(`${props.testID}-numbered`, null, L("Numbered list", "有序列表"), () => format("numbered"), "1.")}
-          {tool(`${props.testID}-quote`, null, L("Quote", "引用"), () => format("quote"), "❝")}
-          {sep()}
-          {tool(`${props.testID}-inline-code`, null, L("Inline code", "行内代码"), () => format("code"), "`")}
-          {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), () => format("codeblock"))}
-        </View>
         <Input
           testID={props.testID}
           ref={(r) => (input = r)}
@@ -769,7 +789,7 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
             if (uris.length) void attachUris(uris);
           }}
           onSubmit={send}
-          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 6, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
+          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
         <If when={files().length}>
           <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>
@@ -795,6 +815,16 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
           {tool(`${props.testID}-attach`, "plus", L("Attach files (or paste or drop them)", "添加文件（也可粘贴或拖入）"), () => void pickFiles())}
           {tool(`${props.testID}-at`, null, L("Mention someone", "@ 人或 Agent"), addAt, "@")}
           <View style={{ flex: 1 }} />
+          <If when={props.asTask && preview()}>
+            <View role="checkbox" testID={`${props.testID}-as-task`} accessibilityState={{ checked: asTask() }} accessibilityLabel={L("As task", "作为任务")}
+              onPress={() => asTask.update((v) => !v)} hoverStyle={hovered()}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingHorizontal: 8, marginRight: 4, borderRadius: 7 }}>
+              <View style={{ width: 15, height: 15, borderRadius: 4, borderWidth: asTask() ? 0 : 1.5, borderColor: colors.fieldBorder, backgroundColor: asTask() ? colors.accentFill : "transparent", alignItems: "center", justifyContent: "center" }}>
+                <If when={asTask()}><Icon name="check" size={11} tint={colors.onAccent} /></If>
+              </View>
+              <Text style={{ fontSize: 12.5, color: colors.muted }}>{L("As task", "作为任务")}</Text>
+            </View>
+          </If>
           <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim() && !files().length} onPress={send} />
         </View>
       </View>
@@ -820,6 +850,20 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
   const agents = () => (channel()?.members ?? []).filter((m) => m.kind === "agent");
   const faces = () => [...people(), ...agents()].slice(0, 4);
   const joining = signal(false);
+  /** Conversation | Tasks (as in Raft: the channel's tasks as a board or a list). */
+  const tab = signal<"chat" | "tasks">("chat");
+  const layout = signal<TaskLayout>("board");
+  effect(() => { if (tab() === "tasks") void t.loadTasks(props.id); });
+  const channelTasks = () => trackedTasks(t).filter((x) => x.channel_id === props.id);
+  const tabItem = (v: "chat" | "tasks", label: string, count?: number) => (
+    <View role="tab" testID={`channel-tab-${v}`} accessibilityState={{ selected: tab() === v }} onPress={() => tab.set(v)} hoverStyle={hovered()}
+      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderBottomWidth: 2, borderBottomColor: tab() === v ? colors.accent : "transparent" }}>
+      <Text style={{ fontSize: 13.5, fontWeight: tab() === v ? "600" : "400", color: tab() === v ? colors.text : colors.muted }}>{label}</Text>
+      <If when={count}>
+        <Text style={{ fontSize: 12, color: colors.faint }}>{String(count)}</Text>
+      </If>
+    </View>
+  );
   return (
     <View style={{ flex: 1 }}>
       <Header
@@ -849,36 +893,48 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           </View>
         }
       />
-      <List
-        testID="messages"
-        each={messages()}
-        keyExtractor={(m) => m.id}
-        alignment="bottom"
-        maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 80 }}
-        estimatedItemSize={72}
-        onLoadMoreAtStart={() => t.loadOlder(props.id)}
-        contentStyle={{ paddingVertical: 12 }}
-        empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
-        style={{ flex: 1 }}
-      >
-        {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
-      </List>
-      <If
-        when={member()}
-        else={
-          <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
-            <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
-            <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
-          </View>
-        }
-      >
-        <Composer
-          team={t}
-          channelId={props.id}
-          testID="team-composer"
-          placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-          onSend={(text, files) => t.send(props.id, text, null, files)}
-        />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+        {tabItem("chat", L("Conversation", "对话"))}
+        {tabItem("tasks", L("Tasks", "任务"), channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length)}
+        <View style={{ flex: 1 }} />
+        <If when={tab() === "tasks"}>
+          <LayoutSwitch value={layout()} onChange={layout.set} />
+        </If>
+      </View>
+      <If when={tab() === "chat"} else={<TaskBoard team={t} tasks={channelTasks()} layout={layout()} onOpen={(x) => props.onThread(x.thread_id)}
+        empty={L("No tasks in this channel yet. Tick “As task” when you @ an agent, or let it claim the work.", "这个频道还没有任务。@Agent 时勾选「作为任务」，或者让它自己认领。")} />}>
+        <List
+          testID="messages"
+          each={messages()}
+          keyExtractor={(m) => m.id}
+          alignment="bottom"
+          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 80 }}
+          estimatedItemSize={72}
+          onLoadMoreAtStart={() => t.loadOlder(props.id)}
+          contentStyle={{ paddingVertical: 12 }}
+          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
+          style={{ flex: 1 }}
+        >
+          {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
+        </List>
+        <If
+          when={member()}
+          else={
+            <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
+              <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
+              <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
+            </View>
+          }
+        >
+          <Composer
+            team={t}
+            channelId={props.id}
+            testID="team-composer"
+            placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
+            asTask
+            onSend={(text, files, asTask) => t.send(props.id, text, null, files, asTask)}
+          />
+        </If>
       </If>
     </View>
   );
@@ -1330,7 +1386,7 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
         {(r) => (
           <>
             <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 10 }}>
-              <Each of={tasks()} key={(x) => x.id}>
+              <Each of={tasks().filter(shownAsTask)} key={(x) => x.id}>
                 {(x) => (
                   <View style={{ paddingHorizontal: 12, paddingBottom: 4 }}>
                     <TaskCard team={t} task={x()} detail />
@@ -1412,6 +1468,28 @@ function NewChannel(props: { team: Team; back: boolean; onBack: () => void; onCr
 }
 
 // ---------------------------------------------------------------- tasks
+
+/** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
+ * request the agent only answered stays a conversation: its reply is in the thread, its emoji on the message. */
+export function shownAsTask(task: Task): boolean {
+  return task.tracked !== false || statusOf(task.state).needs !== "";
+}
+
+/** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
+function TrackLink(props: { team: Team; task: Task }) {
+  const t = props.team;
+  const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
+  const busy = signal(false);
+  return (
+    <If when={isParty(props.task, t.me(), agent()) && props.task.state !== "closed"}>
+      <View role="button" testID={`track-${props.task.id}`} onPress={async () => { busy.set(true); await t.act(props.task.id, "track"); busy.set(false); }} hoverStyle={hovered()}
+        style={{ alignSelf: "flex-start", height: 24, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6, opacity: busy() ? 0.5 : 1 }}>
+        <Icon name="plus" size={13} tint={colors.faint} />
+        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Convert to task", "转为任务")}</Text>
+      </View>
+    </If>
+  );
+}
 
 const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
 

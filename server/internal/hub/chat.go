@@ -491,6 +491,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 	var b struct {
 		Text        string          `json:"text"`
 		ThreadID    string          `json:"thread_id"`
+		AsTask      bool            `json:"as_task"` // the composer's "as task": track it as a task from the start
 		ClientID    string          `json:"client_id"`
 		Attachments json.RawMessage `json:"attachments"`
 		AsAgent     string          `json:"as_agent"`
@@ -561,6 +562,22 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 			thread = root.ID
 		}
 	}
+	if b.AsTask {
+		if thread != nil {
+			errJSON(w, 400, "线程里的消息是讨论，不能作为任务；在频道里另发一条吧")
+			return
+		}
+		agents := 0
+		for _, mm := range h.mentions(text) {
+			if mm.Kind == "agent" {
+				agents++
+			}
+		}
+		if agents == 0 {
+			errJSON(w, 400, "作为任务要 @ 一个 Agent")
+			return
+		}
+	}
 	mentions, _ := json.Marshal(h.mentions(text))
 	att, _ := json.Marshal(files)
 	var clientID any
@@ -572,7 +589,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, c.ID, thread, author.Kind, author.ID, text, string(mentions), string(att), clientID, h.nowMs()))
 	m, _ := h.message(id)
 	h.broadcastChannel(c.ID, obj{"type": "message", "message": m})
-	h.onPosted(m)
+	h.onPosted(m, b.AsTask)
 	writeJSON(w, 200, m)
 }
 

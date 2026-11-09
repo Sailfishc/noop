@@ -51,6 +51,9 @@ export type Task = {
   outputs?: Output[] | null;
   /** What it waits for while "waiting" (and why it woke, until its next run). */
   wait?: Wait | null;
+  /** A task people track (on the board); false: a request the agent only answered, or has not claimed yet. Older
+   * servers send none: every run was a task then. */
+  tracked?: boolean;
   /** Whether the agent saw the outcome itself, or only handed the work over. */
   result?: "confirmed" | "unconfirmed" | "";
 };
@@ -316,6 +319,11 @@ export function createTeam(s: Session) {
     clearTimeout(inboxTimer);
     inboxTimer = setTimeout(loadInbox, 300);
   }
+  /** The tracked tasks (of one channel, or of every channel this person can see): the task views. */
+  async function loadTasks(channelId?: string) {
+    const r = await api("GET", `/api/v1/tasks?tracked=1&limit=500${channelId ? `&channel=${channelId}` : ""}`);
+    if (r.ok) putTasks(r.data.tasks as Task[]);
+  }
   async function loadInbox() {
     const r = await api("GET", "/api/v1/inbox");
     if (!r.ok) return;
@@ -447,9 +455,10 @@ export function createTeam(s: Session) {
     const r = await api("GET", `/api/v1/messages/${messageId}/attachments`);
     return r.ok ? (r.data.attachments as Attachment[]).map((a) => ({ ...a, url: a.url ? s.url.replace(/\/$/, "") + a.url : undefined })) : [];
   }
-  async function send(channelId: string, text: string, threadId: string | null = null, files: string[] = []): Promise<string | null> {
+  /** asTask: the composer's "as task" (a top-level message that @s an agent): tracked as a task from the start. */
+  async function send(channelId: string, text: string, threadId: string | null = null, files: string[] = [], asTask = false): Promise<string | null> {
     const client_id = `c${Date.now().toString(36)}${(counter++).toString(36)}`;
-    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}), ...(files.length ? { attachments: files } : {}) });
+    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}), ...(files.length ? { attachments: files } : {}), ...(asTask ? { as_task: true } : {}) });
     if (!r.ok) return errorOf(r, `发送失败（${r.status || "连不上服务器"}）`);
     applyMessage(r.data as Message, false);
     return null;
@@ -537,8 +546,8 @@ export function createTeam(s: Session) {
   const gitSettings = () => api("GET", "/api/v1/git");
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
@@ -586,7 +595,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox,
+    url: s.url, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, loadOlder, openThread, send, upload, attachments, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
