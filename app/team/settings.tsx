@@ -8,6 +8,7 @@ import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, 
 import { Dialog, Input } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
+import { notifyOn, notifyPermission, setNotify } from "./notify";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
@@ -350,6 +351,7 @@ function GeneralSection() {
         <Choice testID="appearance" options={LOOKS.map((l) => ({ value: l.value, label: l.label() }))} value={appearance()} onChange={pickAppearance} />
         <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Dark is graphite; black is true black, easier on OLED screens. Kept on this device.", "深色是石墨灰，黑色是纯黑，适合 OLED 屏幕和暗光环境。只对这台设备生效。")}</Text>
       </Panel>
+      <NotifyPanel />
       <Panel title={L("Language", "语言")}>
         <Choice
           testID="lang"
@@ -359,6 +361,33 @@ function GeneralSection() {
         />
       </Panel>
     </>
+  );
+}
+
+/** System notifications: the switch, and what the system lets the app do. */
+function NotifyPanel() {
+  const note = () => {
+    const p = notifyPermission();
+    if (!notifyOn()) return L("Off: only Waiting for you lists them.", "已关闭：只在「待你决定」里显示。");
+    if (p === "denied") return L("The system blocks Remi’s notifications: allow them in System Settings › Notifications.", "系统禁止了 Remi 的通知：到「系统设置 › 通知」里打开。");
+    if (p === "unavailable") return L("This build can’t show system notifications (on macOS, only the signed Remi.app can).", "当前版本发不了系统通知（macOS 上要用签名的 Remi.app）。");
+    return L("Reminders that go off for you, tasks that come to Waiting for you, and @mentions of you. Kept on this device.", "到点的提醒、进入「待你决定」的任务、@你的消息。只对这台设备生效。");
+  };
+  return (
+    <Panel title={L("Notifications", "通知")}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{L("System notifications", "系统通知")}</Text>
+          <Text testID="notify-note" style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{note()}</Text>
+          <If when={notifyOn() && notifyPermission() === "default"}>
+            <View style={{ flexDirection: "row", paddingTop: 6 }}>
+              <Btn testID="notify-allow" small label={L("Allow notifications", "允许通知")} onPress={() => void setNotify(true)} />
+            </View>
+          </If>
+        </View>
+        <Toggle testID="notify" value={notifyOn()} label={L("System notifications", "系统通知")} onChange={(v) => void setNotify(v)} />
+      </View>
+    </Panel>
   );
 }
 
