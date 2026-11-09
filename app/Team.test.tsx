@@ -641,7 +641,8 @@ describe("channel v2", () => {
     expect(app.shows("text:/^(\\d+ h )?\\d+ min$/")).toBe(true); // how long it has run
     expect(app.shows("text:@acha (张伟’s agent)")).toBe(true);
     expect(app.shows("text:PR #3 · checks running")).toBe(true);
-    expect(app.shows("text:/^Goes straight to 阿查’s session/")).toBe(true);
+    expect(app.shows("text:/^Goes straight to/")).toBe(false); // no standing hint under the box
+    expect(app.shows("text:/new line/")).toBe(false);
     expect(app.shows("id:task-T-0001-runlog")).toBe(false); // folded
     await app.press("id:task-T-0001-fold-log");
     await app.waitFor("text:Now: 运行 bun test");

@@ -34,6 +34,25 @@ export const RULES: Rule[] = [
   },
 ];
 
+/** Rules across every pane of the trace: each testID where it first appears. */
+export const ACROSS: Rule[] = [
+  {
+    // The columns' bottoms line up: the sidebar footer's top line is level with
+    // the top of the empty channel and thread composer boxes. The sidebar and the
+    // channel are separate panes in the trace, so this runs over all of them at
+    // once (every screen in screens.test.tsx has the same window size).
+    name: "sidebar footer and composers line up",
+    check: (ids) => {
+      const foot = ids.get("side-footer");
+      if (!foot) return null;
+      for (const [id, b] of matching(ids, /^(team|thread)-composer-box$/))
+        if (Math.abs(b.y - foot.y) > 1 || Math.abs(b.y + b.h - (foot.y + foot.h - 10)) > 1)
+          return `${id} (y ${b.y}, h ${b.h}) is not level with side-footer (y ${foot.y}, h ${foot.h})`;
+      return null;
+    },
+  },
+];
+
 /** Every app the trace opened: its views with a testID and where they sit in the window. */
 export function parse(trace: string): { name: string; ids: Map<string, Box> }[] {
   const apps: { name: string; ids: Map<string, Box> }[] = [];
@@ -92,6 +111,12 @@ if (import.meta.main) {
       const err = rule.check(app.ids);
       if (err) { failed++; console.error(`✗ ${rule.name}: ${err}`); }
     }
-  console.log(`check-layout: ${apps.length} apps, ${seen} views with a testID, ${RULES.length} rules, ${failed} failures`);
+  const all = new Map<string, Box>();
+  for (const app of apps) for (const [id, b] of app.ids) if (!all.has(id)) all.set(id, b);
+  for (const rule of ACROSS) {
+    const err = rule.check(all);
+    if (err) { failed++; console.error(`✗ ${rule.name}: ${err}`); }
+  }
+  console.log(`check-layout: ${apps.length} apps, ${seen} views with a testID, ${RULES.length + ACROSS.length} rules, ${failed} failures`);
   process.exit(failed ? 1 : 0);
 }

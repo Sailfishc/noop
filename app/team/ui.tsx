@@ -7,6 +7,18 @@ import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints } f
 import { blockedReason, insecureRefused, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
+
+// The three columns line up: every header is HEADER tall, and the sidebar's footer
+// line sits level with the top of the channel and thread composers' boxes.
+export const HEADER = 56;
+/** The composer's button row under its text box. */
+export const COMPOSER_TOOLBAR = 36;
+/** Space under the composer's box. */
+export const COMPOSER_GAP = 10;
+/** The empty composer box: border, a 44 high text box, the button row, border. */
+const COMPOSER_BOX = 1 + 44 + COMPOSER_TOOLBAR + 1;
+/** The sidebar footer, as tall as the composer box and the space under it. */
+export const FOOTER = COMPOSER_BOX + COMPOSER_GAP;
 /** The window's own title bar area (its traffic lights on macOS): content at the window's top left keeps clear of it. */
 export const chrome = () => (hasWindow ? titleBar() : { height: 0, left: 0, right: 0 });
 /** Why a call to `url` got no response; `error` is the network stack's reason (Reply.error). */
@@ -162,13 +174,13 @@ export const time = (ms: number) => {
 
 export function Header(props: { title: string; subtitle?: string; back?: boolean; onBack?: () => void; right?: JSX.Element; backLabel?: string }) {
   return (
-    <View desktop={{ windowDrag: true }} style={{ minHeight: 56, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+    <View desktop={{ windowDrag: true }} style={{ height: HEADER, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <If when={props.back}>
         <View role="button" testID="back" accessibilityLabel={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
           <Icon name="back" size={18} tint={colors.text} />
         </View>
       </If>
-      <View style={{ flex: 1, paddingVertical: 8 }}>
+      <View style={{ flex: 1 }}>
         <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{props.title}</Text>
         <If when={props.subtitle}>
           <Text style={{ fontSize: 13, color: colors.muted, numberOfLines: 1 }}>{props.subtitle}</Text>
