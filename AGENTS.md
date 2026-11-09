@@ -27,7 +27,7 @@ Verify the signature with `codesign --verify --strict`, install with `xcrun devi
 
 ## Changing the client without running it
 
-When nsh is not installed (cloud sessions: no `app/.nsh`, so `nsh/test` and `app/Team.test.tsx` cannot run and `tsc` knows nothing about nsh), client changes are unverified until someone opens the app. Then:
+Only if `nsh` really can't be installed (`scripts/install-nsh.sh` failed, or a platform it has no build for), client changes are unverified until someone opens the app. Then:
 
 - Use only nsh components and props that already work elsewhere in `app/`. A prop that appears nowhere else is unproven: `<Scroll horizontal>` stacked a task board's columns vertically on the Mac (fixed in #43). For side-by-side layout, put a `flexDirection: "row"` View inside a plain Scroll.
 - Say in the PR which screens changed and that they were not run, so the person checks those screens before merging.
