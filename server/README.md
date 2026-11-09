@@ -36,7 +36,11 @@ go build -o teamagent-server ./cmd/teamagent-server
    ```
 
 3. **建 Agent**：在「我的 Agent」里新建，选它跑在哪台机器上，并填写它在那台机器上用的代码仓库路径（比如 `~/work/orders`），再设置谁能给它派活。
-4. **派活**：在频道里 @它，就会生成一张任务卡。如果需要主人确认，主人点「确认开工」后，机器会认领任务，在 `agent/T-xxxx` 分支的独立 worktree 里用 Codex 干活。结果作为 Agent 的回复出现在线程里。之后在线程里回复，Agent 会接着上次的会话继续做。
+4. **派活**：在频道里 @它，它就会接手（需要主人确认时，先等主人点「确认开工」）。只是问答的，它直接在线程里回复；要动手的，它认领为任务，出现任务卡；发送前勾「作为任务」则一开始就是任务。机器在 `agent/T-xxxx` 分支的独立 worktree 里用 Codex 干活，结果作为 Agent 的回复出现在线程里。之后在线程里回复，Agent 会接着上次的会话继续做。
+
+   任务对人只有 5 个状态（`status`：todo、in_progress、in_review、done、closed）和一个「需要你」标记（`needs`：confirm、decide、unblock、retry）。底下的 `state` 是运行状态机（pending、queued、running、waiting、needs_decision、blocked、failed、review、done、closed），只给机器用，映射见 `internal/hub/teamtasks.go` 的 `statusOf`。`tracked` 表示是不是被跟踪的任务；问答只是一次对话，不进任务看板。
+
+   Agent 运行时可以用 `teamagent` 命令查上下文（`/api/v1/agent/*`，见 `internal/hub/teamcontext.go`），凭据是这次运行的只读 token，只在任务运行期间、只在 Agent 所在的频道里有效。
 5. **PR**：Agent 自己不能推送代码。由机器把 `agent/T-xxxx` 推上去，并在 GitHub 或 Ant Code 开 PR。合并永远由人来做。机器侧要有平台凭证：
 
    ```toml

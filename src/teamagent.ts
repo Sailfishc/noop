@@ -171,7 +171,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   };
 
   const worker = createWorker({
-    api: (path, init) => api(path, init), maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
+    api: (path, init) => api(path, init), server: base, maxParallel: machineReport(cfg).max_sessions, log, afterRun: opts.afterRun ?? gitAfterRun(cfg),
     resolveRepo: async (remote) => { const p = await repos.resolve(remote); void report(); return p; },
     files: {
       async upload(taskId, name, data) {

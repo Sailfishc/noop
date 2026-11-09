@@ -627,7 +627,8 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, obj{"tasks": out})
 }
 
-const contextMessages = 12
+// contextMessages: the channel's latest messages the claim brings; the agent reads further itself (teamcontext.go).
+const contextMessages = 6
 const contextChars = 600
 
 func clip(s string, n int) string {
@@ -694,7 +695,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	creator, _ := h.user(t.CreatedBy)
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic},
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
-		"wake": woke, "callback_url": callbackURL(q.r, h.callbackToken(t.ID))})
+		"wake": woke, "callback_url": callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID)})
 }
 
 // v1TaskReport: the machine says how the run goes. {step, session, branch} while it runs; {state, summary, decision}
