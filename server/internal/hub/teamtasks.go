@@ -12,9 +12,13 @@ import (
 	"unicode/utf8"
 )
 
-// Tasks: a person @-mentions an agent in a channel and the message becomes a Task (T-0001) whose thread is that
-// message's thread. The agent's owner confirms it when the agent's dispatch rule asks for that; the agent's machine
-// claims it (one claim wins), runs it, and reports back. Everything a person says in the thread later reaches the
+// Tasks: a person @-mentions an agent in a channel and the agent takes the message up in a run (T-0001) whose thread
+// is that message's thread. Not every run is a task people track (as in Raft, a task is a message someone has to act
+// on): a question just gets its answer. A run becomes a tracked task when the person ticks "as task" in the composer,
+// converts it later, or the agent claims it because the request needs it to act (change files, open a PR, submit to
+// an outside service); a run that ends with something to accept or wait for is tracked too. The agent's owner
+// confirms a run when the agent's dispatch rule asks for that; the agent's machine claims it (one claim wins), runs
+// it, and reports back. Everything a person says in the thread later reaches the
 // task: while it runs it waits for the next turn, after it stopped it reopens it.
 //
 // What people see is a task's status, one of five (as in Raft): todo, in_progress, in_review, done, closed; plus a
@@ -140,13 +144,14 @@ type taskView struct {
 	ClaimedBy   *string       `json:"claimed_by"`
 	ConfirmedBy *string       `json:"confirmed_by"`
 	Runs        int64         `json:"runs"`
+	Tracked     bool          `json:"tracked"` // a task people track (on the board); false: a conversation turn (an answer)
 	Created     int64         `json:"created"`
 	Updated     int64         `json:"updated"`
 	seenSeq     int64
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
-	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result`
+	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -159,7 +164,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -246,7 +251,7 @@ func taskTitle(text string) string {
 
 // onPosted: what a new message means for tasks. A person's reply in a task's thread reaches its tasks; a person's
 // @agent elsewhere hands that agent a task (one per agent and thread).
-func (h *Hub) onPosted(m messageView) {
+func (h *Hub) onPosted(m messageView, asTask bool) {
 	if m.Author.Kind != "user" {
 		return
 	}
@@ -274,7 +279,7 @@ func (h *Hub) onPosted(m messageView) {
 		if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?", root, mm.ID) > 0 {
 			continue // already on it: followUp took it
 		}
-		h.createTask(m, root, mm.ID, joined)
+		h.createTask(m, root, mm.ID, joined, asTask)
 	}
 }
 
@@ -290,7 +295,7 @@ func splitAcceptance(text string) (string, string) {
 	return strings.TrimSpace(text[:loc[0]]), strings.TrimSpace(text[loc[1]:])
 }
 
-func (h *Hub) createTask(m messageView, root, agentID string, joined bool) {
+func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bool) {
 	a, ok := h.agent(agentID)
 	if !ok {
 		return
@@ -318,8 +323,11 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined bool) {
 	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
 		Branch: branch, Runtime: a.Runtime, Model: a.Model}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
-		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, now, now))
+		branch, repo, tracked, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), now, now))
+	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
+		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
+	}
 	h.taskChanged(id)
 }
 
@@ -367,6 +375,9 @@ func (h *Hub) v1Tasks(w http.ResponseWriter, q *request) {
 		for _, st := range states {
 			args = append(args, st)
 		}
+	}
+	if q.query("tracked") == "1" {
+		where = append(where, "tracked = 1")
 	}
 	if t := q.query("thread"); t != "" {
 		where, args = append(where, "thread_id = ?"), append(args, t)
@@ -514,6 +525,24 @@ func (h *Hub) v1TaskAccept(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
+// v1TaskTrack: "convert to task": a conversation turn becomes a task people track.
+func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
+	t, _, ok := h.taskFor(w, q, "party", taskPending, taskQueued, taskRunning, taskWaiting, taskNeedsDecision, taskBlocked, taskFailed, taskReview, taskDone)
+	if !ok {
+		return
+	}
+	var b struct{ Title string }
+	_ = q.json(&b)
+	cols := map[string]any{"tracked": 1}
+	if title := trimmed(b.Title, 60); title != "" {
+		cols["title"] = title
+	}
+	h.setTask(t.ID, cols)
+	h.taskChanged(t.ID)
+	t, _ = h.task(t.ID)
+	writeJSON(w, 200, t)
+}
+
 // v1TaskReopen: a done or closed task goes back to work (in progress): its agent picks it up again with what the
 // person said (or a plain "reopened") as the news in its thread.
 func (h *Hub) v1TaskReopen(w http.ResponseWriter, q *request) {
@@ -551,7 +580,7 @@ func (h *Hub) v1TaskDecide(w http.ResponseWriter, q *request) {
 	t.Decision.Answer, t.Decision.AnsweredBy = choice, q.who.userID
 	h.setTask(t.ID, map[string]any{"decision": jsonOrNil(t.Decision)})
 	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", q.who.userID}, "决定："+choice)
-	h.onPosted(m)
+	h.onPosted(m, false)
 	t, _ = h.task(t.ID)
 	h.taskChanged(t.ID)
 	writeJSON(w, 200, t)
@@ -696,6 +725,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		// Answer: with state review, the run changed nothing (no commits, PR, files or outside results): its summary is
 		// the whole result, so the task is done without anyone's acceptance (a reply in the thread still goes on)
 		Answer bool `json:"answer"`
+		// Track: the agent claims the request as a task (it has to act on it), with a title of its own when it gives one
+		Track bool   `json:"track"`
+		Title string `json:"title"`
 		// Reaction: the emoji the agent chose for the request as it read it; it takes the place of the 👀 put there at claim
 		Reaction string `json:"reaction"`
 	}
@@ -717,6 +749,12 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		h.agentReacts(t, a.ID, e)
 	}
 	cols := map[string]any{}
+	if b.Track && !t.Tracked {
+		cols["tracked"] = 1
+		if title := trimmed(b.Title, 60); title != "" {
+			cols["title"] = title
+		}
+	}
 	if b.Acceptance != nil && t.Acceptance == "" {
 		cols["acceptance"] = clip(strings.TrimSpace(*b.Acceptance), 4000)
 	}
@@ -782,6 +820,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil {
 			state = taskDone
+		} else if state == taskReview || state == taskWaiting {
+			cols["tracked"] = 1 // something to accept or to wait for: people track it
 		}
 		if len(h.unseen(t)) > 0 {
 			state = taskQueued // people said more while it ran: the next run answers them
@@ -956,4 +996,11 @@ func isEmoji(s string) bool {
 		}
 	}
 	return true
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

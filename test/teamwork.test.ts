@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
-import { createWorker, fetchInputs, reactionOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
+import { createWorker, fetchInputs, reactionOf, taskClaimOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
   const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
@@ -93,6 +93,30 @@ test("the agent's first word is an emoji for how it read the request; it goes to
   await Bun.sleep(1);
   await w.idle();
   expect(calls.filter((c) => c.body?.reaction).map((c) => c.body.reaction)).toEqual(["🔍"]);
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("a request the agent has to act on: it claims it as a task with a \"task:\" line, once", async () => {
+  expect(taskClaimOf("react: 🛠️\ntask: 给 orders 加索引")).toBe("给 orders 加索引");
+  expect(taskClaimOf("react: 🔍")).toBe(null);
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).toContain("task: <a short title");
+  expect(parseTaskResult("react: 🛠️\ntask: 加索引\n加好了").summary).toBe("加好了");
+
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const calls: { path: string; body: any }[] = [];
+  const rt: Runtime = {
+    name: "codex", available: () => true,
+    start(o) {
+      o.onEvent?.({ kind: "message", text: "react: 🛠️\ntask: 加索引" });
+      o.onEvent?.({ kind: "message", text: "task: 另一个" });
+      return { done: Promise.resolve({ session: "thr_9", text: '```json\n{"status":"review","summary":"加好了"}\n```', exitCode: 0, killed: false }), kill: () => {} };
+    },
+  };
+  const w = createWorker({ api: fakeApi({ "T-0001": claim() }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(calls.filter((c) => c.body?.track).map((c) => c.body.title)).toEqual(["加索引"]);
   rmSync(W, { recursive: true, force: true });
 });
 
@@ -229,7 +253,7 @@ test("the worker claims a queued task, shows its steps, and reports the result o
   await w.idle();
   expect(seen.length).toBe(1);
   expect(seen[0].cwd).toBe(join(W, "T-0001"));
-  expect(seen[0].prompt).toContain("# Task T-0001: 看下慢查询");
+  expect(seen[0].prompt).toContain("# Request T-0001: 看下慢查询");
   expect(seen[0].env?.GH_TOKEN).toBe("");
   const reports = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report").map((c) => c.body);
   expect(reports).toContainEqual({ session: "thr_9", branch: "" });

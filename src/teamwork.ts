@@ -18,6 +18,8 @@ export type TeamTask = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   state: string; step: string; summary: string; decision: Decision | null; pr: PR | null; branch: string; session: string;
   claimed_by: string | null; runs: number; acceptance?: string; mandate?: Mandate | null;
+  /** A task people track; false: a request the agent may simply answer (it claims it with a "task:" line). */
+  tracked?: boolean;
   /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
   repo?: string;
 };
@@ -57,7 +59,13 @@ export type Workdir = { cwd: string; repo?: string; base?: string; branch?: stri
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
 
-const REACT_LINE = /^\s*react:[^\n]*\n?/gim;
+const REACT_LINE = /^\s*(react|task):[^\n]*\n?/gim;
+
+/** The title of the agent's "task: …" line, if a message has one: it claims the request as a task. */
+export function taskClaimOf(text: string): string | null {
+  const m = text.match(/^\s*task:\s*(.*)$/im);
+  return m ? m[1].trim().slice(0, 60) : null;
+}
 
 /** The emoji of the agent's "react: …" line, if a message has one (one emoji, nothing else). */
 export function reactionOf(text: string): string {
@@ -149,7 +157,7 @@ function mandateLine(c: Claim): string {
 export function taskPrompt(c: Claim, wd: Workdir): string {
   const a = c.agent, t = c.task;
   return `You are ${a.name} (@${a.handle}), an AI teammate in a TeamAgent workspace, running headless on your owner's machine.
-${a.description ? `Your role: ${a.description}\n` : ""}People hand you tasks by @-mentioning you in a channel; you work on one task now.
+${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a channel with requests; this is one of them. Many are questions: just answer them.
 
 # Your memory (memory.md)
 ${a.memory?.trim() || "(empty)"}
@@ -160,7 +168,7 @@ ${RULES(wd)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters):
 ${quote(c, c.recent) || "(none)"}
 
-# Task ${t.id}: ${t.title}
+# Request ${t.id}: ${t.title}${t.tracked ? " (tracked as a task)" : ""}
 Asked by ${c.creator.name} (@${c.creator.handle}).${mandateLine(c)}
 The request and its thread:
 ${quote(c, c.thread)}
@@ -178,7 +186,11 @@ const REACT = `Before anything else (before any tool call), send one short messa
 react: <one emoji>
 choosing the emoji from how you read this request, the way a teammate reacts in chat: e.g. 🔍 a lookup or question, 🐛 a
 bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, 🎨 design, 🤔 unclear (say what is unclear when you
-report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.`;
+report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.
+If fulfilling the request needs you to act beyond replying (change files, run commands that change something, open a
+pull request, submit to an outside service, produce a file), claim it as a task in that same message with a second line
+task: <a short title, under 30 characters, in the people's language>
+so the team can track it. Only answering a question or talking needs no claim.`;
 
 const WAKE: Record<Wake["reason"], string> = {
   callback: "the outside service called your callback address",
@@ -425,12 +437,16 @@ export function createWorker(o: WorkerOptions) {
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
     const flushStep = () => { stepTimer = undefined; if (pendingStep) void report(t.id, { step: pendingStep }); lastStep = Date.now(); pendingStep = ""; };
-    let reacted = false;
+    let reacted = false, claimed = false;
     const onEvent = (e: RunEvent) => {
       if (e.kind === "session") void report(t.id, { session: e.id, branch: wd.branch ?? "" });
       if (e.kind === "message" && !reacted) {
         const emoji = reactionOf(e.text);
         if (emoji) { reacted = true; void report(t.id, { reaction: emoji }); }
+      }
+      if (e.kind === "message" && !claimed && !t.tracked) {
+        const title = taskClaimOf(e.text);
+        if (title !== null) { claimed = true; void report(t.id, { track: true, ...(title ? { title } : {}) }); }
       }
       if (e.kind !== "step") return;
       pendingStep = e.text;

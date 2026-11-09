@@ -425,7 +425,7 @@ function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTa
         </If>
         <If when={!props.noTask}>
           <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
-            {(task) => <TaskCard team={props.team} task={task()} />}
+            {(task) => <If when={shownAsTask(task())} else={<TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} /></If>}
           </Each>
         </If>
         <If when={props.onThread}>
@@ -551,9 +551,11 @@ function dispatchLine(t: Team, channelId: string, text: string): { text: string;
 }
 
 /** The message box: @ opens a picker of the channel's agents and people; the line under it says where the work goes. */
-function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; onSend: (text: string) => Promise<string | null> }) {
+function Composer(props: { team: Team; channelId: string; testID: string; placeholder: string; hint?: string; asTask?: boolean; onSend: (text: string, asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
+  /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
+  const asTask = signal(false);
   const error = signal("");
   const busy = signal(false);
   const pick = signal(0);
@@ -581,10 +583,10 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
     const v = untracked(text).trim();
     if (!v || untracked(busy)) return;
     busy.set(true);
-    const err = await props.onSend(v);
+    const err = await props.onSend(v, !!props.asTask && untracked(asTask) && !!untracked(preview));
     busy.set(false);
     error.set(err ?? "");
-    if (!err) text.set("");
+    if (!err) { text.set(""); asTask.set(false); }
   }
   function addAt() {
     const v = untracked(text);
@@ -631,6 +633,16 @@ function Composer(props: { team: Team; channelId: string; testID: string; placeh
           {tool(`${props.testID}-at`, null, L("Mention someone", "@ 人或 Agent"), addAt, "@")}
           {tool(`${props.testID}-code`, "code", L("Code block", "代码块"), addCode)}
           <View style={{ flex: 1 }} />
+          <If when={props.asTask && preview()}>
+            <View role="checkbox" testID={`${props.testID}-as-task`} accessibilityState={{ checked: asTask() }} accessibilityLabel={L("As task", "作为任务")}
+              onPress={() => asTask.update((v) => !v)} hoverStyle={hovered()}
+              style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingHorizontal: 8, marginRight: 4, borderRadius: 7 }}>
+              <View style={{ width: 15, height: 15, borderRadius: 4, borderWidth: asTask() ? 0 : 1.5, borderColor: colors.fieldBorder, backgroundColor: asTask() ? colors.accentFill : "transparent", alignItems: "center", justifyContent: "center" }}>
+                <If when={asTask()}><Icon name="check" size={11} tint={colors.onAccent} /></If>
+              </View>
+              <Text style={{ fontSize: 12.5, color: colors.muted }}>{L("As task", "作为任务")}</Text>
+            </View>
+          </If>
           <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim()} onPress={send} />
         </View>
       </View>
@@ -713,7 +725,8 @@ function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () 
           channelId={props.id}
           testID="team-composer"
           placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-          onSend={(text) => t.send(props.id, text)}
+          asTask
+          onSend={(text, asTask) => t.send(props.id, text, null, asTask)}
         />
       </If>
     </View>
@@ -1166,7 +1179,7 @@ function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose
         {(r) => (
           <>
             <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 10 }}>
-              <Each of={tasks()} key={(x) => x.id}>
+              <Each of={tasks().filter(shownAsTask)} key={(x) => x.id}>
                 {(x) => (
                   <View style={{ paddingHorizontal: 12, paddingBottom: 4 }}>
                     <TaskCard team={t} task={x()} detail />
@@ -1248,6 +1261,28 @@ function NewChannel(props: { team: Team; back: boolean; onBack: () => void; onCr
 }
 
 // ---------------------------------------------------------------- tasks
+
+/** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
+ * request the agent only answered stays a conversation: its reply is in the thread, its emoji on the message. */
+export function shownAsTask(task: Task): boolean {
+  return task.tracked !== false || statusOf(task.state).needs !== "";
+}
+
+/** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
+function TrackLink(props: { team: Team; task: Task }) {
+  const t = props.team;
+  const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
+  const busy = signal(false);
+  return (
+    <If when={isParty(props.task, t.me(), agent()) && props.task.state !== "closed"}>
+      <View role="button" testID={`track-${props.task.id}`} onPress={async () => { busy.set(true); await t.act(props.task.id, "track"); busy.set(false); }} hoverStyle={hovered()}
+        style={{ alignSelf: "flex-start", height: 24, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6, opacity: busy() ? 0.5 : 1 }}>
+        <Icon name="plus" size={13} tint={colors.faint} />
+        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Convert to task", "转为任务")}</Text>
+      </View>
+    </If>
+  );
+}
 
 const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
 
