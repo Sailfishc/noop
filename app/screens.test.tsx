@@ -81,5 +81,8 @@ describe("screens", () => {
     await app.waitFor("id:settings");
     await app.press("id:settings-nav-agents");
     await shot(app, "settings-agents");
+    await app.press("id:settings-nav-general");
+    await app.waitFor("id:notify");
+    await shot(app, "settings-general");
   });
 });
