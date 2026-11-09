@@ -85,3 +85,97 @@ jobs:
           sleep 1
           git config --global user.name ci && git config --global user.email ci@ci
           bun test/e2e-dispatch.ts http://127.0.0.1:18082 "$CODE"
+  # The NSH CLI the client is built with (app/nsh-version), built once per pinned commit
+  # the way NSH's own release does (`cargo xtask dist`) and kept in the Actions cache.
+  # A push also publishes it as the release `nsh-<commit>`, which Claude Code cloud
+  # sessions download (scripts/install-nsh.sh, .claude/hooks/session-start.sh).
+  nsh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the pinned commit
+        id: pin
+        run: |
+          pin=$(tr -d ' \n' < app/nsh-version)
+          echo "pin=$pin" >> "$GITHUB_OUTPUT"
+          echo "short=${pin:0:12}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: nsh-dist
+          key: nsh-dist-linux-x86_64-${{ steps.pin.outputs.pin }}-v1
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with: { repository: longbridge/nsh, ref: "${{ steps.pin.outputs.pin }}", path: nsh-src }
+      # What NSH's release.yml installs for its linux-x86_64 distribution.
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Install clang, GTK 4 and GPUI's libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libclang-dev libgtk-4-dev libwebkitgtk-6.0-dev \
+            libfontconfig-dev libfreetype-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Install the Android platform
+        run: |
+          if [[ ! -f "$ANDROID_HOME/platforms/android-35/android.jar" ]]; then
+            sdkmanager=$(ls "$ANDROID_HOME"/cmdline-tools/latest/bin/sdkmanager* | head -1)
+            yes | "$sdkmanager" "platforms;android-35" > /dev/null || true
+          fi
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Build the distribution
+        working-directory: nsh-src
+        env:
+          CC_wasm32_unknown_unknown: /usr/bin/clang
+          AR_wasm32_unknown_unknown: /usr/bin/llvm-ar
+        run: |
+          cargo xtask dist -v
+          mkdir -p ../nsh-dist
+          tar -czf ../nsh-dist/nsh-linux-x86_64.tar.gz -C dist nsh
+          cd ../nsh-dist && sha256sum nsh-linux-x86_64.tar.gz > nsh-linux-x86_64.tar.gz.sha256
+      - run: ls -l nsh-dist
+      - uses: actions/upload-artifact@v4
+        with: { name: nsh-linux-x86_64, path: nsh-dist/*, if-no-files-found: error }
+      - name: Publish for cloud sessions
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: nsh-${{ steps.pin.outputs.short }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "$TAG already published"
+          else
+            gh release create "$TAG" nsh-dist/* --target "$GITHUB_SHA" --prerelease \
+              --title "NSH CLI ${{ steps.pin.outputs.short }} (Linux x86_64)" \
+              --notes "NSH CLI built from longbridge/nsh@${{ steps.pin.outputs.pin }} for CI and Claude Code cloud sessions (scripts/install-nsh.sh). Not a Remi release."
+          fi
+  # The client: NSH's real type check and the headless UI tests (app/*.test.tsx).
+  app:
+    needs: nsh
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: nsh-linux-x86_64, path: nsh-dist }
+      - name: Install nsh
+        run: |
+          cd nsh-dist && sha256sum --check nsh-linux-x86_64.tar.gz.sha256
+          mkdir -p "$RUNNER_TEMP/nsh" && tar -xzf nsh-linux-x86_64.tar.gz -C "$RUNNER_TEMP/nsh"
+          echo "$RUNNER_TEMP/nsh/nsh/bin" >> "$GITHUB_PATH"
+      - run: nsh --version
+      - name: Type check
+        run: nsh check app
+      - name: UI tests
+        working-directory: app
+        run: nsh test
