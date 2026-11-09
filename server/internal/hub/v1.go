@@ -51,6 +51,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("PUT /api/v1/machine", machine, h.v1MachineReport)
 
 	r("GET /api/v1/repos", anyone, h.v1Repos)
+	r("GET /api/v1/search", person, h.v1Search)
 	r("GET /api/v1/agents", anyone, h.v1Agents)
 	r("POST /api/v1/agents", person, h.v1AgentCreate)
 	r("PATCH /api/v1/agents/{id}", person, h.v1AgentPatch)

@@ -192,21 +192,17 @@ func (h *Hub) v1AgentSearch(w http.ResponseWriter, q *request) {
 		writeText(w, "(no channels)\n")
 		return
 	}
-	where, args := []string{"m.channel_id IN (?" + strings.Repeat(", ?", len(chans)-1) + ")"}, []any{}
-	for _, c := range chans {
-		args = append(args, c)
-	}
-	for _, wd := range words[:min(len(words), 8)] {
-		where = append(where, "m.text LIKE ? ESCAPE '\\'")
-		args = append(args, "%"+strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(wd)+"%")
-	}
-	limit := clampInt(q.query("limit"), 20, 1, 100)
-	ms := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE "+strings.Join(where, " AND ")+" ORDER BY m.seq DESC LIMIT ?", append(args, limit)...))
-	if len(ms) == 0 {
+	ms, ts := h.search(searchQuery{words: words, channels: chans, limit: clampInt(q.query("limit"), 20, 1, 100)})
+	if len(ms) == 0 && len(ts) == 0 {
 		writeText(w, "(nothing found)\n")
 		return
 	}
-	writeText(w, h.lines(ms, map[string]string{}))
+	var b strings.Builder
+	for _, x := range ts {
+		b.WriteString("task: " + h.taskLine(x) + "\n")
+	}
+	b.WriteString(h.lines(ms, map[string]string{}))
+	writeText(w, b.String())
 }
 
 // v1AgentTasks: `teamagent tasks [--status S] [--channel X]`: the tracked tasks in the agent's channels, newest first.

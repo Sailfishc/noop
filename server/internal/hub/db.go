@@ -137,5 +137,5 @@ func initSchema(db *sql.DB) error {
 			return err
 		}
 	}
-	return nil
+	return initSearch(db)
 }

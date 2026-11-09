@@ -459,6 +459,14 @@ export function createTeam(s: Session) {
       return { error: L(`Couldn’t upload ${name}: the server is unreachable`, `${name} 上传失败：连不上服务器`) };
     }
   }
+  /** Messages and tasks with all the words, newest first (the server's full-text index). */
+  async function search(q: string, opts: { channel?: string; from?: string } = {}): Promise<{ messages: Message[]; tasks: Task[] } | null> {
+    const p = new URLSearchParams({ q });
+    if (opts.channel) p.set("channel", opts.channel);
+    if (opts.from) p.set("from", opts.from);
+    const r = await api("GET", `/api/v1/search?${p}`);
+    return r.ok ? { messages: r.data.messages ?? [], tasks: r.data.tasks ?? [] } : null;
+  }
   /** A message's files, each with a short-lived link to show or download it. */
   async function attachments(messageId: string): Promise<Attachment[]> {
     const r = await api("GET", `/api/v1/messages/${messageId}/attachments`);
@@ -605,7 +613,7 @@ export function createTeam(s: Session) {
 
   return {
     url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, act, setAcceptance, setTaskRepo, outputLink, taskOfThread, loadInbox, loadTasks,
-    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, createChannel, join, addMember, removeMember, patchChannel, repos,
+    openChannel, leaveView, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };

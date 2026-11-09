@@ -193,6 +193,28 @@ describe("team channels", () => {
     expect(app.value("id:team-composer")).toBe("");
   });
 
+  test("search finds messages and tasks in every channel, and a result opens its thread", async () => {
+    const asked: string[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/search?*`]: (r: { url: string }) => {
+          asked.push(new globalThis.URL(r.url).searchParams.get("q") ?? "");
+          return { body: { messages: [m1], tasks: [task({ state: "review", title: "看下慢查询" })] } };
+        },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-search");
+    await app.type("id:search-input", "慢查询");
+    await app.waitFor("id:search-msg-msg_1");
+    expect(asked.at(-1)).toBe("慢查询");
+    expect(app.shows("id:search-task-T-0001")).toBe(true);
+    await app.press("id:search-msg-msg_1");
+    await app.waitFor("text:收到，在看");
+  });
+
   test("\"as task\" shows once the message @s an agent, and sends it as a task", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
