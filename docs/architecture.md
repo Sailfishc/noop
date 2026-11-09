@@ -35,5 +35,5 @@ The daemon follows this repository's `main`: when `origin/main` moves and no tas
 
 ## Client (`app/`)
 
-`App.tsx` mounts `team/TeamApp.tsx`; the screens are in `app/team/` (settings, tasks, search, reminders, updates).
+`App.tsx` mounts `team/TeamApp.tsx`; it holds the frame (sign in, sidebar, panes); the screens are beside it in `app/team/`: channel and taskfacts, composer, messages, taskcard, inbox, tasks, search, reminders, settings, updates.
 `app/ui/` is the shared NSH UI layer.
