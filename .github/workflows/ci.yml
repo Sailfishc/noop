@@ -179,3 +179,21 @@ jobs:
       - name: UI tests
         working-directory: app
         run: nsh test
+      - uses: oven-sh/setup-bun@v2
+        id: bun
+        continue-on-error: true
+        with: { bun-version-file: package.json }
+      - if: steps.bun.outcome == 'failure'
+        run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
+      # Where views sit, which the tests above can't ask (scripts/check-layout.ts).
+      - name: Layout
+        run: |
+          (cd app && nsh test screens.test.tsx --trace) > "$RUNNER_TEMP/layout-trace.txt" 2>&1 || { tail -50 "$RUNNER_TEMP/layout-trace.txt"; exit 1; }
+          bun scripts/check-layout.ts "$RUNNER_TEMP/layout-trace.txt"
+      # Pictures of the main desktop screens in headless Chrome, to look at (the `screens` artifact).
+      - name: Screenshots
+        env: { NSH_BROWSER: /usr/bin/google-chrome }
+        run: scripts/screens.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: screens, path: app/.nsh/screens/*.png, if-no-files-found: warn }
