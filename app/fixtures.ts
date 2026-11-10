@@ -36,6 +36,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     live.set(id, t);
     return { body: t };
   };
+  const triggers: any[] = [...((over as any).__triggers ?? [])];
   const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
@@ -54,6 +55,26 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...(t.mandate?.takeovers ?? []), { from: t.created_by, to: "u_1", at: T0 }] };
       t.created_by = "u_1";
     }),
+    [`POST ${URL}/api/v1/tasks/*/handoff`]: act("handoff", (t, b) => {
+      t.handoffs = (t.handoffs ?? []).map((x: any) => (x.id === b.id ? { ...x, state: b.accept ? "accepted" : "declined", decided_by: "u_1", ...(b.accept ? { task: "T-0002" } : {}) } : x));
+      t.holder = { kind: "agent", id: t.agent_id, why: "work" };
+    }),
+    [`GET ${URL}/api/v1/triggers?*`]: () => ({ body: { triggers } }),
+    [`POST ${URL}/api/v1/triggers`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.created.push({ trigger: b });
+      const x = { id: `trg_${triggers.length + 1}`, channel_id: b.channel_id, agent_id: b.agent, created_by: "u_1", kind: b.kind, text: b.text, repeat: b.repeat ?? "",
+        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0 };
+      triggers.push(x);
+      return { body: x };
+    },
+    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string }) => {
+      const id = r.url.match(/triggers\/([^/]+)\//)![1];
+      log.acts.push(`${id} confirm`);
+      const x = triggers.find((y) => y.id === id)!;
+      x.confirmed_by = "u_1";
+      return { body: x };
+    },
     [`GET ${URL}/api/v1/team/config`]: { body: { repo: "" } },
     [`PUT ${URL}/api/v1/team/config`]: (r: { body?: string | null }) => {
       const b = JSON.parse(r.body!);
@@ -109,7 +130,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...over,
+    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers")),
   };
 }
 export const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });

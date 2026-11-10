@@ -27,6 +27,7 @@ type askedView struct {
 	Message  string `json:"message"` // the agent's message in the thread
 	At       int64  `json:"at"`
 	Answered int64  `json:"answered,omitempty"` // when they replied in the thread (0: not yet)
+	Kind     string `json:"kind,omitempty"`     // "" a question (remi ask) | handoff: the ball is theirs (remi handoff @person)
 }
 
 // openQuestion: the question to this person still waiting for their answer, if any.

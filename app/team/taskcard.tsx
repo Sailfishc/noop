@@ -3,7 +3,7 @@ import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
-import { errorOf, isParty, openQuestions, type Output, type Task, type Team } from "./api";
+import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
@@ -13,7 +13,7 @@ import { TaskFacts } from "./taskfacts";
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
  * request the agent only answered stays a conversation: its reply is in the thread, its emoji on the message. */
 export function shownAsTask(task: Task): boolean {
-  return task.tracked !== false || statusOf(task.state).needs !== "" || openQuestions(task).length > 0;
+  return task.tracked !== false || statusOf(task.state).needs !== "" || openQuestions(task).length > 0 || openHandoffs(task).length > 0;
 }
 
 /** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
@@ -158,6 +158,18 @@ function conclusion(task: Task): string {
   return (task.summary ?? "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").slice(0, 300);
 }
 
+const WHY: Record<Holder["why"], () => string> = {
+  confirm: () => L("to say yes", "确认开工"), handoff_card: () => L("to decide a handoff", "决定要不要交接"), answer: () => L("to answer", "回答问题"),
+  handoff: () => L("to do their part", "做交给他的事"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
+  unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
+  work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
+};
+/** "Ball: 张伟 · to accept it" / "Ball: you · …" / "Ball: @acha · working on it". */
+function holderText(t: Team, hd: Holder, me: string | undefined): string {
+  const who = hd.kind === "agent" ? "@" + (t.agents().find((a) => a.id === hd.id)?.handle ?? "?") : hd.id === me ? L("you", "你") : t.users().find((u) => u.id === hd.id)?.name ?? "?";
+  return L(`Ball: ${who} · ${WHY[hd.why]?.() ?? hd.why}`, `球在 ${who} 手里 · ${WHY[hd.why]?.() ?? hd.why}`);
+}
+
 export function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; detail?: boolean }) {
   const t = props.team;
   const task = () => props.task;
@@ -188,7 +200,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover", body: unknown = {}) {
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -265,16 +277,50 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           return (
             <View testID={`task-${task().id}-asked-${q().user}`} style={{ gap: 3, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
               <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
-                {mine() ? L(`@${agent()?.handle ?? "?"} asks you`, `@${agent()?.handle ?? "?"} 问你`) : L(`@${agent()?.handle ?? "?"} asks @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 在问 @${who()?.handle ?? "?"}`)}
+                {q().kind === "handoff"
+                  ? (mine() ? L(`@${agent()?.handle ?? "?"} handed this to you`, `@${agent()?.handle ?? "?"} 交给你`) : L(`@${agent()?.handle ?? "?"} handed this to @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 交给了 @${who()?.handle ?? "?"}`))
+                  : mine() ? L(`@${agent()?.handle ?? "?"} asks you`, `@${agent()?.handle ?? "?"} 问你`) : L(`@${agent()?.handle ?? "?"} asks @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 在问 @${who()?.handle ?? "?"}`)}
               </Text>
               <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{q().question}</Text>
               <If when={mine()}>
-                <Text style={{ fontSize: 12, color: colors.faint }}>{L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
+                <Text style={{ fontSize: 12, color: colors.faint }}>{q().kind === "handoff" ? L("Reply in the thread when it’s done; the agent hears it.", "做完在线程里回复一句，Agent 会收到。") : L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
               </If>
             </View>
           );
         }}
       </Each>
+      <Each of={openHandoffs(task())} key={(x) => x.id}>
+        {(x) => {
+          const to = () => t.agents().find((a) => a.id === x().to);
+          const mayDecide = () => party() || (!!me() && me()!.id === to()?.owner_id);
+          return (
+            <View testID={`task-${task().id}-handoff-${x().id}`} style={{ gap: 6, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
+                {L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}
+              </Text>
+              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{x().what}</Text>
+              <If when={mayDecide()} else={<Text style={{ fontSize: 12, color: colors.faint }}>{L("Its asker, the person taking it, or an owner of the two agents decides.", "由发起人、处理人或两个 Agent 的主人决定。")}</Text>}>
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
+                </View>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+      <If when={props.detail ? task().holder : null}>
+        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id)}</Text>}
+      </If>
+      <If when={props.detail && (task().mandate?.via?.length || task().mandate?.trigger || task().submits?.length)}>
+        <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.faint }}>
+          {[
+            task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
+            task().mandate?.trigger ? L("Started by a trigger", "由触发器发起") : "",
+            task().submits?.length ? L(`Outside submissions ${task().submits!.length}/3`, `外部提交 ${task().submits!.length}/3`) : "",
+          ].filter(Boolean).join(" · ")}
+        </Text>
+      </If>
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />

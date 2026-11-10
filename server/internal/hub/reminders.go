@@ -370,6 +370,9 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 	if target.Kind == "user" && target.ID != by && !h.isMember(c.ID, "user", target.ID) {
 		return reminderView{}, 403, "@" + who + " 不在这个频道"
 	}
+	if byAgent != "" && target.Kind == "agent" && target.ID != byAgent {
+		return reminderView{}, 400, "Agent 不能用提醒把事交给另一个 Agent：用 remi handoff @" + who + " 交给它的事（由人点一下确认）"
+	}
 	if target.Kind == "agent" && thread == "" && repeat == "" && target == setter {
 		return reminderView{}, 400, "要在线程里提醒自己"
 	}

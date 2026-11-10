@@ -1,0 +1,402 @@
+package hub
+
+import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// Triggers (the collaboration plan, stage 3): work that starts by itself. A person in a channel sets one up for an
+// agent there: on a schedule ("weekdays 9:00"), when a pull request is opened in a repository, or on a push to it.
+// It is confirmed once, by the agent's owner when the agent asks for that, and then each firing is a task at once (no
+// "确认开工" every morning), in the name of the person who set it up, said in the channel as them with a ⚡.
+// Branches of agents' own tasks (agent/…) never fire a trigger: agents don't set each other off.
+
+const triggersSchema = `
+CREATE TABLE IF NOT EXISTS triggers (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_by TEXT NOT NULL,
+  kind TEXT NOT NULL, text TEXT NOT NULL, repeat TEXT NOT NULL DEFAULT '', due INTEGER, repo TEXT NOT NULL DEFAULT '',
+  branch TEXT NOT NULL DEFAULT '', confirmed_by TEXT, enabled INTEGER NOT NULL DEFAULT 1, fired INTEGER, fires INTEGER NOT NULL DEFAULT 0,
+  created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS triggers_channel ON triggers (channel_id);
+`
+
+const maxTriggers = 20 // per channel
+
+var triggerKinds = map[string]bool{"schedule": true, "pr": true, "push": true}
+
+type triggerView struct {
+	ID          string  `json:"id"`
+	ChannelID   string  `json:"channel_id"`
+	AgentID     string  `json:"agent_id"`
+	CreatedBy   string  `json:"created_by"`
+	Kind        string  `json:"kind"` // schedule | pr | push
+	Text        string  `json:"text"` // what the agent is asked
+	Repeat      string  `json:"repeat,omitempty"`
+	Due         *int64  `json:"due,omitempty"`    // schedule: the next time
+	Repo        string  `json:"repo,omitempty"`   // pr | push: host/owner/name
+	Branch      string  `json:"branch,omitempty"` // push: that branch only; pr: PRs into it ("" any)
+	ConfirmedBy *string `json:"confirmed_by"`     // nil: waits for the agent's owner
+	Enabled     bool    `json:"enabled"`
+	Fired       *int64  `json:"fired"`
+	Fires       int64   `json:"fires"`
+	Created     int64   `json:"created"`
+}
+
+const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created"
+
+func scanTriggers(rows *sql.Rows, err error) []triggerView {
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []triggerView{}
+	for rows.Next() {
+		var t triggerView
+		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created); err != nil {
+			panic(err)
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+func (h *Hub) trigger(id string) (triggerView, bool) {
+	ts := scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE id = ?", id))
+	if len(ts) == 0 {
+		return triggerView{}, false
+	}
+	return ts[0], true
+}
+
+func (h *Hub) triggerChanged(t triggerView, removed bool) {
+	if removed {
+		h.broadcastChannel(t.ChannelID, obj{"type": "trigger_removed", "id": t.ID})
+		return
+	}
+	t, _ = h.trigger(t.ID)
+	h.broadcastChannel(t.ChannelID, obj{"type": "trigger", "trigger": t})
+}
+
+// v1Triggers: a channel's triggers (?channel=…), for its members.
+func (h *Hub) v1Triggers(w http.ResponseWriter, q *request) {
+	c, ok := h.channel(q.query("channel"))
+	if !ok {
+		errJSON(w, 404, "没有这个频道")
+		return
+	}
+	if !h.isMember(c.ID, "user", q.who.userID) && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "先加入这个频道")
+		return
+	}
+	writeJSON(w, 200, obj{"triggers": scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE channel_id = ? ORDER BY created", c.ID))})
+}
+
+// v1TriggerCreate: {channel_id, agent (handle or id), kind, text, when + repeat (schedule), repo + branch (pr, push)}.
+func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
+	var b struct {
+		ChannelID string `json:"channel_id"`
+		Agent     string `json:"agent"`
+		Kind      string `json:"kind"`
+		Text      string `json:"text"`
+		When      string `json:"when"`
+		Repeat    string `json:"repeat"`
+		Repo      string `json:"repo"`
+		Branch    string `json:"branch"`
+	}
+	_ = q.json(&b)
+	me := q.who.userID
+	c, ok := h.channel(b.ChannelID)
+	if !ok {
+		errJSON(w, 404, "没有这个频道")
+		return
+	}
+	if !h.isMember(c.ID, "user", me) {
+		errJSON(w, 403, "先加入这个频道")
+		return
+	}
+	a, ok := h.agent(b.Agent)
+	if !ok {
+		var id string
+		if h.db.QueryRow("SELECT id FROM agents WHERE handle = ?", strings.TrimPrefix(strings.TrimSpace(b.Agent), "@")).Scan(&id) == nil {
+			a, ok = h.agent(id)
+		}
+	}
+	if !ok || !h.isMember(c.ID, "agent", a.ID) {
+		errJSON(w, 400, "选一个在这个频道里的 Agent")
+		return
+	}
+	if a.Dispatch == "owner" && me != a.OwnerID {
+		errJSON(w, 403, "@"+a.Handle+" 只接主人派的活")
+		return
+	}
+	text := trimmed(strings.TrimSpace(b.Text), 2000)
+	if !triggerKinds[b.Kind] || text == "" {
+		errJSON(w, 400, "说清楚什么时候触发（schedule、pr 或 push），以及要 Agent 做什么")
+		return
+	}
+	if h.count("SELECT COUNT(*) FROM triggers WHERE channel_id = ?", c.ID) >= maxTriggers {
+		errJSON(w, 429, "一个频道最多 20 个触发器")
+		return
+	}
+	var due any
+	repeat, repo, branch := "", "", trimmed(strings.TrimSpace(b.Branch), 120)
+	switch b.Kind {
+	case "schedule":
+		r, ok := repeats[strings.ToLower(strings.TrimSpace(b.Repeat))]
+		if !ok || r == "" {
+			errJSON(w, 400, "定时触发要选重复：daily、weekdays 或 weekly")
+			return
+		}
+		now := h.now()
+		words := strings.Fields(b.When)
+		t, n := parseWhen(words, now)
+		if n == 0 || n != len(words) {
+			errJSON(w, 400, "看不懂这个时间："+b.When)
+			return
+		}
+		repeat, due = r, t.UnixMilli()
+	default:
+		repo = normRemote(b.Repo)
+		if repo == "" {
+			errJSON(w, 400, "填仓库地址，比如 https://github.com/acme/pay")
+			return
+		}
+	}
+	var confirmed any
+	if me == a.OwnerID || !a.Confirm {
+		confirmed = me
+	}
+	id := newID("trg_")
+	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs()))
+	t, _ := h.trigger(id)
+	if confirmed == nil {
+		if o, ok := h.user(a.OwnerID); ok {
+			h.insertMessage(c.ID, nil, member{"user", me}, "@"+o.Handle+" 我给 @"+a.Handle+" 设了一个触发器（"+describeTrigger(t)+"："+text+"），请在频道的「成员 → 触发器」里确认一次")
+		}
+	}
+	h.triggerChanged(t, false)
+	writeJSON(w, 200, t)
+}
+
+// describeTrigger: "每个工作日 09:00" / "acme/pay 有新 PR" / "推送到 acme/pay main".
+func describeTrigger(t triggerView) string {
+	switch t.Kind {
+	case "schedule":
+		at := ""
+		if t.Due != nil {
+			at = time.UnixMilli(*t.Due).Format("15:04")
+		}
+		return map[string]string{"daily": "每天 ", "weekdays": "每个工作日 ", "weekly": "每周 "}[t.Repeat] + at
+	case "pr":
+		return repoName(t.Repo) + " 有新 PR"
+	}
+	return strings.TrimSpace("推送到 " + repoName(t.Repo) + " " + t.Branch)
+}
+
+// mayManageTrigger: who set it up, the agent's owner, an admin.
+func (h *Hub) mayManageTrigger(w http.ResponseWriter, q *request) (triggerView, agentView, bool) {
+	t, ok := h.trigger(q.r.PathValue("id"))
+	if !ok {
+		errJSON(w, 404, "not found")
+		return t, agentView{}, false
+	}
+	a, _ := h.agent(t.AgentID)
+	me := q.who.userID
+	if me != t.CreatedBy && me != a.OwnerID && !h.isAdmin(me) {
+		errJSON(w, 403, "只有设置它的人、Agent 的主人或管理员能改")
+		return t, a, false
+	}
+	return t, a, true
+}
+
+// v1TriggerConfirm: the agent's owner says yes once.
+func (h *Hub) v1TriggerConfirm(w http.ResponseWriter, q *request) {
+	t, a, ok := h.mayManageTrigger(w, q)
+	if !ok {
+		return
+	}
+	if q.who.userID != a.OwnerID && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "由 @"+a.Handle+" 的主人确认")
+		return
+	}
+	h.must(h.db.Exec("UPDATE triggers SET confirmed_by = ? WHERE id = ?", q.who.userID, t.ID))
+	h.triggerChanged(t, false)
+	t, _ = h.trigger(t.ID)
+	writeJSON(w, 200, t)
+}
+
+// v1TriggerPatch: {enabled}.
+func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
+	t, _, ok := h.mayManageTrigger(w, q)
+	if !ok {
+		return
+	}
+	var b struct {
+		Enabled *bool `json:"enabled"`
+	}
+	_ = q.json(&b)
+	if b.Enabled != nil {
+		h.must(h.db.Exec("UPDATE triggers SET enabled = ? WHERE id = ?", boolInt(*b.Enabled), t.ID))
+	}
+	h.triggerChanged(t, false)
+	t, _ = h.trigger(t.ID)
+	writeJSON(w, 200, t)
+}
+
+func (h *Hub) v1TriggerDelete(w http.ResponseWriter, q *request) {
+	t, _, ok := h.mayManageTrigger(w, q)
+	if !ok {
+		return
+	}
+	h.must(h.db.Exec("DELETE FROM triggers WHERE id = ?", t.ID))
+	h.triggerChanged(t, true)
+	writeJSON(w, 200, obj{"ok": true})
+}
+
+// fire: the trigger asks its agent, in its channel, in its person's name; a task at once. extra: what happened (the
+// PR, the push). False when it can no longer fire (the person left, the agent is gone): it is turned off.
+func (h *Hub) fire(t triggerView, extra string) bool {
+	a, ok := h.agent(t.AgentID)
+	c, okc := h.channel(t.ChannelID)
+	if !ok || !okc || c.Archived || !h.isMember(c.ID, "user", t.CreatedBy) || !h.isMember(c.ID, "agent", a.ID) {
+		h.must(h.db.Exec("UPDATE triggers SET enabled = 0 WHERE id = ?", t.ID))
+		return false
+	}
+	text := "⚡ @" + a.Handle + " " + t.Text
+	if extra != "" {
+		text += "\n\n" + extra
+	}
+	m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
+	h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1 WHERE id = ?", h.nowMs(), t.ID))
+	return true
+}
+
+// fireTriggers: the scheduled ones that are due. Tick calls it.
+func (h *Hub) fireTriggers() {
+	now := h.now()
+	for _, t := range scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE kind = 'schedule' AND enabled = 1 AND due <= ?", now.UnixMilli())) {
+		next := nextDue(time.UnixMilli(*t.Due).In(now.Location()), t.Repeat, now)
+		h.must(h.db.Exec("UPDATE triggers SET due = ? WHERE id = ?", next.UnixMilli(), t.ID))
+		if t.ConfirmedBy != nil {
+			h.fire(t, "")
+		}
+		h.triggerChanged(t, false)
+	}
+}
+
+// gitTriggers: a pull request was opened (kind "pr", branch: the one it goes into) or a branch was pushed ("push").
+func (h *Hub) gitTriggers(kind, remote, branch, extra string) int {
+	if remote == "" || strings.HasPrefix(branch, "agent/") {
+		return 0
+	}
+	n := 0
+	for _, t := range scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE kind = ? AND repo = ? AND enabled = 1 AND confirmed_by IS NOT NULL", kind, remote)) {
+		if t.Branch != "" && t.Branch != branch {
+			continue
+		}
+		if h.fire(t, extra) {
+			n++
+		}
+		h.triggerChanged(t, false)
+	}
+	return n
+}
+
+// v1GithubHook: GitHub tells us a pull request was opened or a branch pushed (triggers), or how a task's PR stands.
+// Signed with the same webhook secret as GitLab's (X-Hub-Signature-256).
+func (h *Hub) v1GithubHook(w http.ResponseWriter, q *request) {
+	secret := h.cfg.GitWebhookSecret
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(q.body)
+	want := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+	if secret == "" || !hmac.Equal([]byte(q.r.Header.Get("X-Hub-Signature-256")), []byte(want)) {
+		errJSON(w, 401, "unauthorized")
+		return
+	}
+	var b struct {
+		Action string `json:"action"`
+		Ref    string `json:"ref"`
+		Repo   struct {
+			URL string `json:"html_url"`
+		} `json:"repository"`
+		PR struct {
+			Number int64  `json:"number"`
+			Title  string `json:"title"`
+			URL    string `json:"html_url"`
+			Merged bool   `json:"merged"`
+			State  string `json:"state"`
+			Head   struct {
+				Ref string `json:"ref"`
+			} `json:"head"`
+			Base struct {
+				Ref string `json:"ref"`
+			} `json:"base"`
+		} `json:"pull_request"`
+		Compare string `json:"compare"`
+		Head    struct {
+			Message string `json:"message"`
+		} `json:"head_commit"`
+		Deleted bool `json:"deleted"`
+	}
+	if err := json.Unmarshal(q.body, &b); err != nil {
+		errJSON(w, 400, "bad json")
+		return
+	}
+	remote := normRemote(b.Repo.URL)
+	switch q.r.Header.Get("X-GitHub-Event") {
+	case "pull_request":
+		if strings.HasPrefix(b.PR.Head.Ref, "agent/") {
+			h.githubTaskPR(b.PR.Head.Ref, b.PR.Number, b.PR.Title, b.PR.URL, b.PR.State, b.PR.Merged, remote)
+			writeJSON(w, 200, obj{"ok": true})
+			return
+		}
+		n := 0
+		if b.Action == "opened" || b.Action == "reopened" {
+			n = h.gitTriggers("pr", remote, b.PR.Base.Ref, fmt.Sprintf("PR #%d %s\n%s", b.PR.Number, b.PR.Title, b.PR.URL))
+		}
+		writeJSON(w, 200, obj{"ok": true, "fired": n})
+	case "push":
+		branch := strings.TrimPrefix(b.Ref, "refs/heads/")
+		n := 0
+		if !b.Deleted && strings.HasPrefix(b.Ref, "refs/heads/") {
+			n = h.gitTriggers("push", remote, branch, strings.TrimSpace("推送到 "+branch+"："+oneLine(b.Head.Message)+"\n"+b.Compare))
+		}
+		writeJSON(w, 200, obj{"ok": true, "fired": n})
+	default:
+		writeJSON(w, 200, obj{"ok": true, "ignored": q.r.Header.Get("X-GitHub-Event")})
+	}
+}
+
+// githubTaskPR: a task's own PR changed on GitHub (the machine also looks every two minutes).
+func (h *Hub) githubTaskPR(branch string, number int64, title, url, state string, merged bool, remote string) {
+	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE branch = ? ORDER BY num DESC LIMIT 1", branch))
+	if len(ts) == 0 {
+		return
+	}
+	t := ts[0]
+	pr := prView{Provider: "github", Checks: "none", Repo: remote}
+	if t.PR != nil {
+		pr = *t.PR
+	}
+	pr.Number, pr.Title, pr.URL, pr.State = number, title, url, "open"
+	if merged {
+		pr.State = "merged"
+	} else if state == "closed" {
+		pr.State = "closed"
+	}
+	cols := map[string]any{"pr": jsonOrNil(pr)}
+	if pr.State == "merged" && (t.State == taskReview || t.State == taskBlocked) {
+		cols["state"] = taskDone
+	}
+	h.setTask(t.ID, cols)
+	h.taskChanged(t.ID)
+}
