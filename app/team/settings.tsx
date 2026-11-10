@@ -17,7 +17,7 @@ import {
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { SignupSection } from "./signups";
-import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
+import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, growing, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
 
@@ -625,6 +625,7 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   const busy = signal(false);
   const saved = signal(false);
   const changed = () => value().trim() !== (props.agent.memory ?? "");
+  const grow = growing({ min: 96, max: 260, pad: 22, line: 20 });
   // the agent rewrote it while it was open here and nothing was typed: show the new text
   effect(() => {
     const m = props.agent.memory ?? "";
@@ -645,7 +646,8 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
         placeholder={L("- The pay service is Go 1.24; run make test\n- Ask Wang Lei before touching the orders table", "- 支付服务是 Go 1.24，测试用 make test\n- 动 orders 表前先问王磊")}
         class="placeholder:text-faint"
         onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        style={{ minHeight: 96, maxHeight: 260, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onContentSizeChange={grow.onContentSizeChange}
+        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
       />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />

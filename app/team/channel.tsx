@@ -5,7 +5,7 @@ import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, radius, Spinner } from "../ui";
 import { errorOf, isMember, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
+import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, growing, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
@@ -168,6 +168,7 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   const busy = signal(false);
   const error = signal("");
   const changed = () => value().trim() !== now();
+  const grow = growing({ min: 64, max: 200, pad: 18, line: 19 });
   effect(() => { const n = now(); if (!untracked(changed)) value.set(n); });
   async function save() {
     busy.set(true);
@@ -190,7 +191,8 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
         placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
         class="placeholder:text-faint"
         onChange={({ value: v }) => value.set(v)}
-        style={{ minHeight: 64, maxHeight: 200, padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
+        onContentSizeChange={grow.onContentSizeChange}
+        style={{ height: grow.height(), padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
       />
       <ErrorNote text={error()} />
       <If when={changed()}>

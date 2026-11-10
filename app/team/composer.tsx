@@ -5,7 +5,7 @@ import { Input } from "nsh/base";
 import { L, lang } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
-import { agentState, Avatar, Btn, COMPOSER_GAP, COMPOSER_TOOLBAR, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { agentState, Avatar, Btn, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, ErrorNote, growing, RuntimeBadge, StateDot, time } from "./ui";
 import { naturalRemind } from "./reminders";
 
 /** A `file:` URL as a local path ("file:///Users/a/My%20Shot.png" → "/Users/a/My Shot.png"; Windows drive paths too). */
@@ -137,6 +137,8 @@ const guessType = (name: string) => {
 export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
+  // two lines at least, then it grows with the text (a line to spare) up to about ten and scrolls
+  const grow = growing({ min: COMPOSER_TEXT, max: 240, pad: 14, line: 21 });
   /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
   const asTask = signal(false);
   const error = signal("");
@@ -293,7 +295,8 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
             if (uris.length) void attachUris(uris);
           }}
           onSubmit={send}
-          style={{ minHeight: 44, maxHeight: 180, paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
+          onContentSizeChange={grow.onContentSizeChange}
+          style={{ height: grow.height(), paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
         <If when={files().length}>
           <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>

@@ -15,8 +15,10 @@ export const HEADER = 56;
 export const COMPOSER_TOOLBAR = 36;
 /** Space under the composer's box. */
 export const COMPOSER_GAP = 10;
-/** The empty composer box: border, a 44 high text box, the button row, border. */
-const COMPOSER_BOX = 1 + 44 + COMPOSER_TOOLBAR + 1;
+/** The composer's text box while it is empty or short: two lines; it grows with longer text. */
+export const COMPOSER_TEXT = 56;
+/** The empty composer box: border, its text box, the button row, border. */
+const COMPOSER_BOX = 1 + COMPOSER_TEXT + COMPOSER_TOOLBAR + 1;
 /** The sidebar footer, as tall as the composer box and the space under it. */
 export const FOOTER = COMPOSER_BOX + COMPOSER_GAP;
 /** The window's own title bar area (its traffic lights on macOS): content at the window's top left keeps clear of it. */
@@ -277,6 +279,21 @@ export function StateDot(props: { tone: string }) {
 }
 
 /** A label above a group of controls. */
+/**
+ * The height of a multiline `Input` that grows with its text, from `min` up to `max` (it scrolls past that), from the
+ * text's size its `onContentSizeChange` reports (NSH's `Input` docs: "grow a multiline input with it"). It keeps one
+ * `line` to spare under the text: on the Mac the native text view can wrap or space the text a line taller than NSH
+ * measured it, and a box sized exactly hid the last line with nothing to scroll (the composer, 2026-11-10). `pad` is
+ * the input's vertical padding and borders.
+ */
+export function growing(o: { min: number; max: number; pad: number; line: number }) {
+  const text = signal(0);
+  return {
+    height: () => Math.min(o.max, Math.max(o.min, Math.ceil(text() + o.pad + o.line))),
+    onContentSizeChange: ({ size }: { size: { height: number } }) => text.set(size.height),
+  };
+}
+
 export function Label(props: { text: string; note?: string; testID?: string; right?: JSX.Element }) {
   return <Noted note={props.note} testID={props.testID} right={props.right} label={<Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{props.text}</Text>} />;
 }
