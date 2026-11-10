@@ -98,7 +98,8 @@ export type IconName =
   | "folder"
   | "folder-open"
   | "file"
-  | "tree";
+  | "tree"
+  | "info";
 
 type Draw = (cx: CanvasRenderingContext2D) => void;
 
@@ -130,6 +131,11 @@ const wave = (cx: CanvasRenderingContext2D, r: number) => {
 };
 
 const glyphs: Record<IconName, Draw> = {
+  info: (c) => {
+    circle(c, 10, 10, 7.5);
+    line(c, [10, 9, 10, 14]);
+    circle(c, 10, 6.4, 0.6, true);
+  },
   popover: (c) => {
     rect(c, 3, 3, 14, 9, 2.5);
     line(c, [8, 12, 10, 14.5, 12, 12]);

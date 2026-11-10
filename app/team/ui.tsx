@@ -1,5 +1,5 @@
 // TeamAgent's small shared pieces: buttons, fields, avatars, badges, headers.
-import { Text, View, type JSX, type ViewStyle } from "nsh";
+import { signal, Text, View, type JSX, type ViewStyle } from "nsh";
 import { Input } from "nsh/base";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
@@ -154,14 +154,49 @@ export function Dot(props: { on: boolean }) {
   return <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: props.on ? colors.up : colors.faint }} />;
 }
 
-export function Panel(props: { title: string; children: JSX.Element; right?: JSX.Element; style?: ViewStyle }) {
+export function Panel(props: { title: string; note?: string; testID?: string; children: JSX.Element; right?: JSX.Element; style?: ViewStyle }) {
   return (
     <View style={[{ gap: 12, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }, props.style ?? null]}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, fontSize: 16, fontWeight: "600", color: colors.text }}>{props.title}</Text>
+      <Noted
+        note={props.note}
+        testID={props.testID}
+        label={<Text style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>{props.title}</Text>}
+        right={props.right}
+      />
+      {props.children}
+    </View>
+  );
+}
+
+/**
+ * A label with its guidance behind a small ⓘ after it: the note shows under the label while the ⓘ is pressed on,
+ * so a settings page reads as its labels and fields, not paragraphs (the same on a phone, which has no hover).
+ * `right` goes at the end of the label's row.
+ */
+export function Noted(props: { label: JSX.Element; note?: string; testID?: string; right?: JSX.Element }) {
+  const open = signal(false);
+  return (
+    <View style={{ gap: 4 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+        {props.label}
+        <If when={props.note}>
+          <View
+            role="button"
+            testID={props.testID ? `${props.testID}-info` : undefined}
+            accessibilityLabel={open() ? L("Hide the explanation", "收起说明") : L("What is this?", "这是什么？")}
+            onPress={() => open.update((v) => !v)}
+            hoverStyle={hovered()}
+            style={{ width: 20, height: 20, marginVertical: -2, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: open() ? alpha(colors.text, 0.08) : "transparent" }}
+          >
+            <Icon name="info" size={14} tint={open() ? colors.muted : colors.faint} />
+          </View>
+        </If>
+        <View style={{ flex: 1 }} />
         {props.right}
       </View>
-      {props.children}
+      <If when={open() && props.note}>
+        <Text testID={props.testID ? `${props.testID}-note` : undefined} style={{ fontSize: 12.5, lineHeight: 18, color: colors.muted }}>{props.note}</Text>
+      </If>
     </View>
   );
 }
@@ -242,15 +277,8 @@ export function StateDot(props: { tone: string }) {
 }
 
 /** A label above a group of controls. */
-export function Label(props: { text: string; note?: string }) {
-  return (
-    <View style={{ gap: 2 }}>
-      <Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{props.text}</Text>
-      <If when={props.note}>
-        <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{props.note}</Text>
-      </If>
-    </View>
-  );
+export function Label(props: { text: string; note?: string; testID?: string; right?: JSX.Element }) {
+  return <Noted note={props.note} testID={props.testID} right={props.right} label={<Text style={{ fontSize: 13, fontWeight: "600", color: colors.muted }}>{props.text}</Text>} />;
 }
 
 /** A selectable card (a machine or a runtime in the New agent dialog); a disabled one says why. */

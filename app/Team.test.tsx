@@ -1154,6 +1154,12 @@ describe("team ownership", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:channel-conventions");
     expect(app.shows("id:channel-conventions-save")).toBe(false);
+    // what it is for stays behind the ⓘ until asked
+    expect(app.shows("text:Every agent working in this channel reads this with its task.")).toBe(false);
+    await app.press("id:channel-conventions-head-info");
+    expect(app.shows("id:channel-conventions-head-note")).toBe(true);
+    await app.press("id:channel-conventions-head-info");
+    expect(app.shows("id:channel-conventions-head-note")).toBe(false);
     await app.type("id:channel-conventions-input", "PR 标题用中文");
     await app.press("id:channel-conventions-save");
     await app.waitUntil(() => log.patches.length === 1);
