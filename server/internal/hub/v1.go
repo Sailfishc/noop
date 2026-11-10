@@ -71,6 +71,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("GET /api/v1/tasks", anyone, h.v1Tasks)
 	r("GET /api/v1/tasks/{id}", anyone, h.v1Task)
 	r("GET /api/v1/inbox", person, h.v1Inbox)
+	r("GET /api/v1/metrics", person, h.v1Metrics)
 	r("GET /api/v1/reminders", person, h.v1Reminders)
 	r("POST /api/v1/reminders", person, h.v1ReminderCreate)
 	r("DELETE /api/v1/reminders/{id}", person, h.v1ReminderDelete)

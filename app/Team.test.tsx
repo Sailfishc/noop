@@ -517,6 +517,24 @@ describe("settings", () => {
     expect(app.shows("text:/-public-url/")).toBe(true);
   });
 
+  test("协作数据: the three numbers, and which agents people go to", async () => {
+    const asked: string[] = [];
+    const base = server(newLog());
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900,
+      network: { ...base, [`GET ${URL}/api/v1/metrics?*`]: (r: { url: string }) => { asked.push(r.url.split("?")[1]!); return (base as any)[`GET ${URL}/api/v1/metrics?*`]; } },
+    });
+    await settings(app, "metrics");
+    await app.waitFor("id:metrics-redone");
+    expect(app.shows("text:中位 23 分钟 · 90% 在 2.5 小时内 · 共 9 次")).toBe(true);
+    expect(app.shows("text:7 个，平均 1.9 轮，中位 2，最多 4")).toBe(true);
+    expect(app.shows("text:还有 2 件在等，最久的已经等了 1.5 小时。")).toBe(true);
+    expect(app.shows("text:@acha")).toBe(true);
+    await app.press("text:最近 30 天");
+    await app.waitUntil(() => asked.length === 2);
+    expect(asked).toEqual(["days=7", "days=30"]);
+  });
+
   test("Git platforms: an admin adds a GitLab-based platform; its webhook and each machine's credentials show, never a token", async () => {
     const saved: any[] = [];
     const reported = { ...mac, git: [{ provider: "github", host: "github.com", configured: true, user: "zw", via: "gh" }, { provider: "gitlab", host: "code.corp.com", configured: false, user: "", via: "" }] };

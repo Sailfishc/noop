@@ -94,6 +94,9 @@ describe("screens", () => {
     await app.press("id:settings-nav-general");
     await app.waitFor("id:notify");
     await shot(app, "settings-general");
+    await app.press("id:settings-nav-metrics");
+    await app.waitFor("id:metrics-redone");
+    await shot(app, "settings-metrics");
   });
 });
 

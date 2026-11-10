@@ -630,6 +630,8 @@ export function createTeam(s: Session) {
   const removeDevice = (id: string) => api("DELETE", `/api/v1/sessions/${id}`);
   const gitSettings = () => api("GET", "/api/v1/git");
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
+  /** How the team works with its agents over the last `days` days (teammetrics.go). */
+  const metrics = (days = 7) => api("GET", `/api/v1/metrics?days=${days}`);
 
   /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task). */
   async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track", body: unknown = {}) {
@@ -689,11 +691,21 @@ export function createTeam(s: Session) {
   return {
     url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }
 export type Team = ReturnType<typeof createTeam>;
+
+/** A spread of waits: answered ones (ms) and the ones still open. */
+export type DurationStats = { count: number; median: number; p90: number; open: number; oldest: number };
+export type Metrics = {
+  days: number; since: number;
+  reply: DurationStats; reply_by: Partial<Record<"confirm" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
+  runs: { tasks: number; mean: number; median: number; max: number; three_plus: number };
+  cancelled: number; redone: number;
+  agents: { agent_id: string; tasks: number; people: number; others: number; team: boolean; machine: string }[];
+};
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
 export const isParty = (t: Task, me: User | null, agent: Agent | undefined) =>
