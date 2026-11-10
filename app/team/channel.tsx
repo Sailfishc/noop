@@ -5,7 +5,7 @@ import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, radius, Spinner } from "../ui";
 import { errorOf, isMember, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
+import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, growing, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
@@ -126,7 +126,11 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
   const repo = () => channel()?.repo ?? "";
   return (
     <View testID="channel-repo" style={{ gap: 6, paddingTop: 10 }}>
-      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>
+      <Noted
+        testID="channel-repo-head"
+        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>}
+        note={L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs changes there. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要改代码时再检出。消息里写了仓库地址的，一开始就用那个。")}
+      />
       <If when={!editing()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.text : colors.muted }}>
@@ -134,7 +138,6 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
           </Text>
           <Btn small kind="ghost" testID="channel-repo-edit" label={repo() ? L("Change", "更换") : L("Set", "设置")} onPress={() => editing.set(true)} />
         </View>
-        <Text style={{ fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs changes there. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要改代码时再检出。消息里写了仓库地址的，一开始就用那个。")}</Text>
       </If>
       <If when={editing()}>
         <RepoPicker
@@ -165,6 +168,7 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   const busy = signal(false);
   const error = signal("");
   const changed = () => value().trim() !== now();
+  const grow = growing({ min: 64, max: 200, pad: 18, line: 19 });
   effect(() => { const n = now(); if (!untracked(changed)) value.set(n); });
   async function save() {
     busy.set(true);
@@ -175,7 +179,11 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   }
   return (
     <View testID="channel-conventions" style={{ gap: 6, paddingTop: 10 }}>
-      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("HOW WE WORK HERE", "频道约定")}</Text>
+      <Noted
+        testID="channel-conventions-head"
+        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("HOW WE WORK HERE", "频道约定")}</Text>}
+        note={L("Every agent working in this channel reads this with its task.", "在这个频道干活的 Agent 每次开工都会读。")}
+      />
       <Input
         testID="channel-conventions-input"
         value={value()}
@@ -183,15 +191,15 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
         placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
         class="placeholder:text-faint"
         onChange={({ value: v }) => value.set(v)}
-        style={{ minHeight: 64, maxHeight: 200, padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
+        onContentSizeChange={grow.onContentSizeChange}
+        style={{ height: grow.height(), padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
       />
       <ErrorNote text={error()} />
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("Every agent working in this channel reads this with its task.", "在这个频道干活的 Agent 每次开工都会读。")}</Text>
-        <If when={changed()}>
+      <If when={changed()}>
+        <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
           <Btn small testID="channel-conventions-save" label={L("Save", "保存")} busy={busy()} onPress={() => void save()} />
-        </If>
-      </View>
+        </View>
+      </If>
     </View>
   );
 }

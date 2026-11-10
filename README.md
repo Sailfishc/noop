@@ -2,21 +2,23 @@
 
 一个团队里的几个人，加上每个人自己的几个 AI Agent，在同一个地方一起干活。
 
-Remi（原名 TeamAgent）是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，Remi 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人自己的电脑上用 Codex 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
+Remi（原名 TeamAgent）是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，Remi 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人的电脑或团队的常开机器上用 Codex、Claude Code 或 Pi 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
+
+**第一次用？看 [快速上手](docs/quickstart.md)**：部署服务端、加入团队、接入机器、建 Agent、派出第一个任务。想先知道它为什么这样设计、适合拿来做什么，看 [理念和使用场景](docs/why-remi.md)。
 
 产品名已改为 Remi。命令和环境变量也随之改名（`remi-server`、`REMI_*`、配置节 `[remi]`、Agent 用的 `remi read`），旧名 `TEAMAGENT_*`、`[teamagent]`、`teamagent` 命令仍然可用，已有的部署不用改。
 
 ## 它是什么样的
 
-- **每个 Agent 都有主人。** Agent 跑在主人的机器上，用主人的仓库和凭证。主人决定谁能给它派活：只有主人、需要主人确认（默认）、或者频道里谁都能直接派。
+- **每个 Agent 都有主人。** Agent 跑在主人的机器上，用那台机器的仓库和凭证；团队机器上的团队 Agent 由管理员指定负责人，谁都能 @。主人决定谁能给它派活：只有主人、需要主人确认（默认）、或者频道里谁都能直接派。
 - **派活就是 @，但不是每次 @ 都是任务。** 在频道里 @Agent 说一句话，它就会接手。只是问个问题，它在线程里回答并贴个表情。要动手的事（改代码、跑会改东西的命令、开 PR、提交外部服务、产出文件），它会认领为任务，频道里出现一张任务卡。你也可以在输入框勾「作为任务」，或者事后点「转为任务」。机器在 `agent/T-xxxx` 分支的独立 worktree 里干活。
 - **任务只有 5 个状态。** 待办、进行中、待验收、完成、关闭。要人出手时（主人确认、做决定、被阻塞、执行失败）任务上会多一个「需要你」标记，并出现在「待你决定」里。排队、运行、等外部结果这些执行细节不算任务状态，显示在 Agent 名字旁的状态点上：绿色空闲、黄色工作中、橙色出错、灰色离线。
 - **对话和任务各管一件事。** 频道的「对话」页用来交代和讨论，「任务」页按看板或列表看这个频道的任务；左侧栏的「任务」汇总所有频道。在任务线程里回复，Agent 会接着上次的会话继续做。
 - **上下文推最少、按需拉。** Agent 开工时只拿到请求、所在线程和几条最近消息；需要更多时，它在自己的 shell 里用 `remi read / search / tasks` 查频道历史、其他线程和任务。只能查它所在的频道，只在任务运行期间有效。
-- **代码只能经过 PR。** Agent 自己推不了代码。机器只推 `agent/` 开头的分支，并在 GitHub 或 Ant Code（基于 GitLab）上开 PR，合并永远由人来做。PR 合并后任务自动完成（这是唯一一个自动变化的状态，合并本身就是人的验收）。
+- **代码只能经过 PR。** Agent 自己推不了代码。机器只推 `agent/` 开头的分支，并在 GitHub 或公司内部基于 GitLab 的平台上开 PR，合并永远由人来做。PR 合并后任务自动完成（这是唯一一个自动变化的状态，合并本身就是人的验收）。
 - **自己部署，依赖很少。** 服务端是一个 Go 二进制文件加一个 SQLite 文件，部署在内网一台机器上。机器只向外连服务端，服务端不需要能访问机器。
 
-v1 的范围：10 人以内、每人 1–2 个 Agent；运行时只有 Codex（Claude Code 在第二阶段）；客户端先保证 macOS Apple 芯片。
+v1 的范围：10 人以内、每人 1–2 个 Agent；运行时支持 Codex、Claude Code 和 Pi；客户端先保证 macOS Apple 芯片。
 
 设计参考了 [Raft](https://docs.raft.build/) 的任务、频道和 Agent 模型，取舍见设计文档[《参考 Raft 重审任务与对话模型》](https://claude.ai/artifact/NohbYPq5pWbbMaW51NWAxh)。
 
@@ -25,20 +27,20 @@ v1 的范围：10 人以内、每人 1–2 个 Agent；运行时只有 Codex（C
 | 部分 | 目录 | 说明 |
 | --- | --- | --- |
 | 服务端 | `server/` | Go，单个二进制。账号与邀请、频道、消息、任务、「待你决定」、Git webhook。数据在一个 SQLite 文件里 |
-| 机器守护进程 | `src/` | TypeScript / Bun。每台跑 Agent 的电脑上一个，负责认领任务、调 Codex、推分支、开 PR、查 CI |
+| 机器守护进程 | `src/` | TypeScript / Bun。每台跑 Agent 的电脑上一个，负责认领任务、调 Runtime（Codex、Claude Code、Pi）、推分支、开 PR、查 CI |
 | 客户端 | `app/` | 基于 [NSH](https://github.com/longbridge/nsh) 的跨平台 App（macOS、Linux、Windows、iOS、Android、Web） |
 
 ```
- 人（客户端）──┐                         ┌── 机器 A：守护进程 → Codex → agent/T-0001 → PR
+ 人（客户端）──┐                         ┌── 机器 A：守护进程 → Runtime → agent/T-0001 → PR
               ├──► Remi 服务端 ◄────┤
- 人（客户端）──┘   （内网，Go + SQLite）    └── 机器 B：守护进程 → Codex → …
+ 人（客户端）──┘   （内网，Go + SQLite）    └── 机器 B：守护进程 → Runtime → …
                         ▲
-                        └── Ant Code / GitHub webhook（PR 合并）
+                        └── GitLab / GitHub webhook（PR 合并、推送）
 ```
 
 ## 部署
 
-完整的参数和接口见 [server/README.md](server/README.md)。下面是从零到能派活的最短路径。
+完整的参数和接口见 [server/README.md](server/README.md)，按步骤走一遍的版本见 [快速上手](docs/quickstart.md)。
 
 ### 1. 服务端（内网一台机器）
 
@@ -49,7 +51,8 @@ git clone https://github.com/Sailfishc/noop remi && cd remi/server
 go build -o remi-server ./cmd/remi-server
 
 # 第一个管理员：打印一个邀请链接，用它在客户端里注册
-./remi-server invite -data /var/lib/remi -email 你@公司.com -role admin -url http://remi.内网域名:8080
+export REMI_PUBLIC_URL=http://remi.内网域名:8080   # 同事访问服务器用的地址，邀请链接和接入命令都用它
+./remi-server invite -data /var/lib/remi -email 你@公司.com -role admin
 
 # 启动（建议用 systemd 或 launchd 托管）
 REMI_GIT_WEBHOOK_SECRET=一串随机字符 ./remi-server -addr :8080 -data /var/lib/remi
@@ -124,7 +127,7 @@ token = "…"                 # 主人自己的 token，对仓库至少要有 De
 8. 产出：Agent 放进工作目录 `out/` 的文件会上传到服务端，在任务卡上能预览、下载（同名文件再传是新版本）；PR 和外部服务里的结果（比如渲染任务）也列在产出里。消息附件会放进 `in/` 给 Agent 用。
 9. 团队一起用：管理员可以把一台常开的机器设为「团队机器」，在上面建大家都能 @、不用确认的团队 Agent；「设置 → 团队配置」里填一个 Git 仓库，里面的 `AGENTS.md`（团队约定）、`skills/`、`mcp.json` 会同步到团队机器给所有 Agent 用；个人机器由主人自己在机器卡片上决定要不要同步（步骤见 [docs/team-agent.md](docs/team-agent.md)，配置仓库的主分支要设保护，改动走 PR 由管理员合并）。频道「成员」面板里可以写「频道约定」；发起人不在时，频道里的人可以在任务线程里「接手」。仓库的 `.remi/setup.sh` 会在新开 worktree 时自动跑一次。
 10. 球在谁手里：每个没结束的任务都标着「球在谁手里」（等谁确认、回答、决定、验收，或者 Agent 自己在做、在等外部结果），线程里的任务卡上能看到。Agent 用 `remi handoff @某人 事项` 把球交给人（出现在那个人的「待你决定」里，他在线程里回复后 Agent 接着做）；交给另一个 Agent 时会在线程里出一张卡，由发起人、处理人或两个 Agent 的主人点「交给 @xx」才生效，新任务仍记在最初提出的人名下（「@谁 经 @A」）。一条交接链最多 3 个 Agent，不能交回链上已有的 Agent；Agent 也不能用提醒去 @ 另一个 Agent。
-11. 触发器：频道「成员」面板里可以给频道里的 Agent 设触发器：定时（每天、每个工作日、每周的某个时间）、有人开 PR、或者有推送（可以只看某个分支）。Agent 的主人确认一次之后，每次触发都直接开工，记在设置人名下。上一次开的任务还没结束（停在待验收不算）时，这次触发会跳过，触发器上会显示连续跳过了几次、卡在哪个任务；每个触发器每天最多触发 10 次（添加时可以改）。PR 和推送事件来自 GitLab webhook或 GitHub webhook（见下面第 5 步）。Agent 自己的 `agent/…` 分支不会触发。
+11. 触发器：频道「成员」面板里可以给频道里的 Agent 设触发器：定时（每天、每个工作日、每周的某个时间）、有人开 PR、或者有推送（可以只看某个分支）。Agent 的主人确认一次之后，每次触发都直接开工，记在设置人名下。上一次开的任务还没结束（停在待验收不算）时，这次触发会跳过，触发器上会显示连续跳过了几次、卡在哪个任务；每个触发器每天最多触发 10 次（添加时可以改）。PR 和推送事件来自 GitLab 或 GitHub 的 webhook（见下面第 5 步）。Agent 自己的 `agent/…` 分支不会触发。
 12. 等外部结果：要等外部服务出结果时，Agent 会把任务挂成「等待外部结果」，并说清楚靠什么叫醒它：回调地址、本机定时跑的查询命令，或者一个时间。等待期间不占机器、不打扰任何人，到点或有结果时 Agent 被叫醒继续。每个任务最多向外部提交 3 次（失败或超时都算），由服务端计数（Agent 每次提交前运行 `remi submit`，第 4 次会被拒绝），之后由发起人决定。任务卡会标明「结果已确认」还是「已提交，结果未确认」。
 
 ### 在一台电脑上先跑通
@@ -151,9 +154,9 @@ cd ~/remi/app && nsh run
 
 只有本地仓库、没有 `origin` 的话，在 Agent 设置的「本机默认仓库」里填它的路径；Agent 的改动只留在本地分支上，不会推送或开 PR。要试 PR，就用一个有 GitHub 远端的仓库，并在 `config.local.toml` 里配好 `[git.github]`。
 
-### 5. Ant Code webhook（可选）
+### 5. Git webhook（可选）
 
-在 Ant Code 仓库的集成服务里加一个 webhook：
+在基于 GitLab 的内部平台上，到仓库的集成服务里加一个 webhook：
 
 - 地址：`http://remi.内网域名:8080/api/v1/hooks/gitlab`
 - 密钥：服务端的 `REMI_GIT_WEBHOOK_SECRET`

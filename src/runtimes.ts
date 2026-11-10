@@ -110,14 +110,32 @@ export function codexEvent(line: string): RunEvent | RunEvent[] | null {
   return null;
 }
 
+/** The run's own environment (`env`: the push gate, REMI_URL / REMI_TOKEN, PATH with the remi command) for the shell
+ * commands Codex starts. Codex does not hand its whole environment to them: its shell_environment_policy may keep
+ * only a few core variables (`inherit = "core"` drops everything but PATH, HOME, …) and may drop every name with KEY,
+ * SECRET or TOKEN in it (`ignore_default_excludes = false`). Its `set` entries are applied after those filters, so
+ * the run's variables reach the commands whatever the machine's config says. One entry per variable: the person's
+ * own `set` entries stay. */
+export function codexEnvArgs(env: Record<string, string> = {}): string[] {
+  return Object.entries(env).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
+    .flatMap(([k, v]) => ["-c", `shell_environment_policy.set.${k}=${JSON.stringify(v)}`]);
+}
+
 /** The command line of a Codex run: non-interactive, sandboxed to the work directory (plus `writable`), with network. */
-export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model" | "mcp">): string[] {
+export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model" | "mcp" | "env">): string[] {
   const cmd = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
-    "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", ...codexMcpArgs(o.mcp?.servers ?? {}), "--cd", o.cwd];
+    "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", ...codexMcpArgs(o.mcp?.servers ?? {}),
+    ...codexEnvArgs(o.env), "--cd", o.cwd];
   for (const d of o.writable ?? []) cmd.push("--add-dir", d);
   if (o.model) cmd.push("-m", o.model);
   if (o.resume) cmd.push("resume", o.resume);
   return [...cmd, "-"];
+}
+
+/** `text` with the values of the run's secret variables (REMI_TOKEN, …) masked: the command line goes to the log. */
+export function redact(text: string, env: Record<string, string> = {}): string {
+  for (const [k, v] of Object.entries(env)) if (v && /TOKEN|SECRET|KEY/i.test(k) && !/^GIT_CONFIG_KEY_/.test(k)) text = text.split(v).join("***");
+  return text;
 }
 
 /** Starts `command` with the prompt on stdin, turns each JSON line of its output into RunEvents with `parse`, and
@@ -178,7 +196,7 @@ export function jsonlRun(bin: string, command: (o: RunOptions) => string[], pars
     if (o.logFile) {
       try {
         if (!existsSync(dirname(o.logFile))) mkdirSync(dirname(o.logFile), { recursive: true });
-        writeFileSync(o.logFile, `$ ${cmd.join(" ")}\n(exit ${exitCode}${stopped ? `, stopped: ${stopped}` : ""})\n\n${log}\n[stderr]\n${stderr}`);
+        writeFileSync(o.logFile, `$ ${redact(cmd.join(" "), o.env)}\n(exit ${exitCode}${stopped ? `, stopped: ${stopped}` : ""})\n\n${log}\n[stderr]\n${stderr}`);
       } catch {}
     }
     if (exitCode && !error && !killed && !stopped) error = stderr.trim().split("\n").slice(-3).join("\n") || `${bin} exited ${exitCode}`;

@@ -1,0 +1,189 @@
+# Remi 快速上手
+
+Remi 让一个团队的人和 AI Agent 在同一个地方干活：在频道里 @ 一个 Agent 说一句话，它在某台电脑上用 Codex、Claude Code 或 Pi 把事做完，结果、要人拍板的问题和 PR 都回到频道的线程里。整套东西部署在自己的内网，服务端是一个 Go 程序加一个 SQLite 文件。
+
+这篇按顺序走一遍：部署服务端 → 加入团队 → 接入机器 → 建 Agent → 派出第一个任务。
+
+- **管理员**从第 1 步开始。
+- **同事**（服务端已经有了）从第 2 步开始。
+- 想先了解它为什么这样设计、适合做什么，看 [理念和使用场景](why-remi.md)。
+- 只想在自己一台 Mac 上先玩一下，看 [README 的「在一台电脑上先跑通」](../README.md#在一台电脑上先跑通)。
+
+## 先认识几个词
+
+| 词 | 意思 |
+| --- | --- |
+| **频道 / 线程** | 和聊天软件一样。在频道里交代事情，每件事在自己的线程里往下聊。 |
+| **Agent** | 团队里的一个 AI 同事，有名字、@名、主人（或负责人）和自己的记忆（`memory.md`）。它不绑定仓库。 |
+| **机器** | 跑 Agent 的电脑，上面装着 Remi 的守护进程。机器是权限的边界：同一台机器上的 Agent 共用它的 Runtime、仓库和 Git 凭证。机器只往外连服务端，服务端不用访问机器。 |
+| **团队机器 / 团队 Agent** | 一台常开的机器，由管理员设为「团队机器」。上面的团队 Agent 谁都能 @，不用等谁确认。 |
+| **Runtime** | 真正干活的编程助手：Codex、Claude Code 或 Pi，装在机器上并已登录。用哪个模型是 Runtime 自己的事。 |
+| **任务** | 要动手的事（改代码、开 PR、产出文件）会变成任务，有任务卡，编号形如 `T-0012`。只是问个问题就不算任务，Agent 在线程里直接回答。 |
+| **任务状态** | 只有 5 个：待办、进行中、待验收、完成、关闭。要人出手时任务上多一个「需要你」标记。 |
+| **待你决定** | 左侧栏里的收件箱：等你确认开工、回答 Agent 的问题、做决定、验收、审批入队申请的事都在这里。 |
+| **球在谁手里** | 每个没结束的任务都标着现在在等谁：等某人确认、回答、验收，还是 Agent 自己在做。 |
+
+两条不变的规矩：
+
+1. **代码只经过 PR。** Agent 在 `agent/T-xxxx` 分支的独立 worktree 里干活，机器只推 `agent/` 开头的分支并开 PR，合并永远由人来做。PR 合并后任务自动变成「完成」。
+2. **Agent 的主人决定谁能给它派活**：只有主人、频道里的人或整个团队；另外可以要求「需要我确认」（个人 Agent 默认要确认）。
+
+## 1. 部署服务端（管理员）
+
+找一台内网里大家都能访问到的机器，装好 Go 1.26+。
+
+```sh
+git clone https://github.com/Sailfishc/noop remi && cd remi/server
+go build -o remi-server ./cmd/remi-server
+```
+
+想用浏览器访问（不装 App 也能用），顺便构建 Web 客户端，需要先装 [`nsh`](https://github.com/longbridge/nsh)（`scripts/install-nsh.sh` 能在 Linux x86_64 上装好）：
+
+```sh
+cd ../app && ./build-web.sh        # 产物在 app/dist/web/noop
+```
+
+生成第一个管理员的邀请链接，然后启动：
+
+```sh
+export REMI_PUBLIC_URL=http://remi.内网域名:8080      # 同事访问这台服务器用的地址
+export REMI_GIT_WEBHOOK_SECRET=一串随机字符             # 收 Git webhook 用，可以以后再加
+
+./remi-server invite -data /var/lib/remi -email 你@公司.com -role admin
+./remi-server -addr :8080 -data /var/lib/remi -static ../app/dist/web/noop
+```
+
+几点要注意：
+
+- **一定设 `REMI_PUBLIC_URL`（或 `-public-url`）。** 邀请链接、登录链接、机器接入命令都用这个地址。不设的话 App 用自己连服务器的地址，如果那是 `127.0.0.1`（比如走 SSH 隧道），发出去的链接别人连不上。
+- 用 systemd 或 launchd 托管，开机自启。一个最简单的 systemd 服务：
+
+  ```ini
+  # /etc/systemd/system/remi.service
+  [Service]
+  User=remi
+  Environment=REMI_PUBLIC_URL=http://remi.内网域名:8080
+  Environment=REMI_GIT_WEBHOOK_SECRET=一串随机字符
+  ExecStart=/opt/remi/remi-server -addr :8080 -data /var/lib/remi -static /opt/remi/web
+  Restart=always
+  [Install]
+  WantedBy=multi-user.target
+  ```
+
+- 所有数据都在数据目录的 `hub.db` 里，备份它就行。
+- 默认是 http，适合可信内网。要给 Android 用或要过不可信网络，改成 https：`-tls-cert` / `-tls-key`，或者前面放 Caddy、Nginx。详见 [server/README.md](../server/README.md#http-还是-https)。
+
+一台服务端就是一个团队，没有多租户。
+
+## 2. 装客户端，加入团队
+
+**装客户端**：桌面 App 用一行命令安装，之后会自己更新：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Sailfishc/noop/main/install-client.sh | bash
+```
+
+不要用上游 noop 官网的安装包，那里没有 Remi 的界面。也可以不装，直接用浏览器打开服务端地址（服务端要带 `-static` 启动）。自己从源码构建见 [README](../README.md#2-客户端)。
+
+**加入团队**，三种方式任选：
+
+- **有邀请链接**：打开 App，选「我有邀请」，粘贴链接，填名字和 @名。管理员在「设置 › 成员与邀请」里生成邀请链接。第 1 步打印出来的就是第一个管理员的邀请链接。
+- **申请加入**：登录页选「申请加入」，填服务器地址、名字、@名、邮箱和一句说明。管理员在「待你决定」或「设置 › 成员与邀请」里通过后，这台设备自动登录。管理员可以在「成员与邀请 › 团队」里关掉自助申请、改团队名字。
+- **换一台设备**：在已登录的设备上点用户菜单的「在其他设备登录」，拿到一个一次性登录码（15 分钟有效），在新设备上输入。设备丢了找管理员要一个登录链接（一天有效）。
+
+## 3. 接入机器
+
+每台要跑 Agent 的电脑做一次。机器上需要：git，以及装好并登录的 Codex、Claude Code 或 Pi 之一；要开 GitHub PR 的话再 `gh auth login`。
+
+1. 在 App 的「设置 › 我的机器」里点「添加机器」，复制那一行命令：
+
+   ```sh
+   curl -fsSL http://remi.内网域名:8080/api/v1/install.sh | bash -s -- http://remi.内网域名:8080 tj_…
+   ```
+
+2. 在那台电脑的终端里运行。它会按需装 Bun，把守护进程装到 `~/.noop/app`，用一次性接入码换到这台机器的令牌，最后装成后台服务（macOS 用 launchd，Linux 用 systemd --user），开机自启。
+3. 几秒后机器以主机名出现在「我的机器」里，可以在卡片上改名。
+
+接入码一小时内有效，同一条命令可以接你的多台电脑；同一台电脑再跑一次就是重新接入，原来的 Agent 都在。
+
+**Git 凭证**：要推分支、开 PR，在 `~/.noop/data/config.local.toml` 里写上（GitHub 不填就用 `gh auth token`）：
+
+```toml
+[git.github]
+token = "…"
+
+[[git.gitlab]]              # 公司内部基于 GitLab 的平台
+host = "code.公司.com"
+token = "…"                 # 对仓库至少要有 Developer 权限
+```
+
+**检查**：运行 `bun ~/.noop/app/src/cli.ts doctor`，它会逐项检查能不能连上服务端、令牌对不对、各个 Runtime 有没有登录、Git 凭证是谁，不对的地方会写明怎么修。
+
+**仓库**：机器会在 `~/code`、`~/work`、`~/src`、`~/projects` 等目录（往下三层）找本地仓库，只把远端地址报给服务端。本机没有的仓库，任务要用时机器会用自己的凭证克隆。要加别的目录，在 `config.local.toml` 里写：
+
+```toml
+[remi]
+roots = ["~/somewhere"]
+```
+
+## 4. 建一个 Agent
+
+「设置 › 我的 Agent › 新建」：
+
+- **名字和 @名**：按用途起，比如「订单助手」`@orders`。
+- **机器和 Runtime**：选刚接入的机器，再选它上面登录好的 Runtime，可以顺便选模型。
+- **谁能派活**：只有我 / 频道成员 / 整个团队，以及「需要我确认」开关。
+- **描述**：写它擅长什么，别人 @ 它之前能看到。
+
+不用给 Agent 指定仓库，仓库跟着任务走（见下一步）。Agent 的记忆（`memory.md`）可以在它的页面上编辑：它每次开工前会读，学到以后用得上的东西会自己写进去。
+
+然后建一个频道（左侧栏「新建频道」），把 Agent 和同事拉进来。
+
+## 5. 派出第一个任务
+
+在频道里发：
+
+> @orders 在 https://github.com/acme/orders 里给下单接口加一个金额上限校验，超过 10 万返回 400
+
+接下来会发生：
+
+1. **认领**。Agent 判断这要动手，就认领成任务，频道里出现任务卡。只是提问的话它直接在线程里回答。想一开始就当任务，发送前勾输入框的「作为任务」；事后也能在消息上点「转为任务」。
+2. **确认**（如果需要）。别人给你的 Agent 派活、而它要求确认时，你会在「待你决定」里看到它，点「确认开工」。主人自己派活不用确认。
+3. **干活**。任务卡从「等机器认领」变成「进行中」。仓库这样定：消息里写了仓库地址，或同一线程之前的任务用过仓库，就从那里开始；否则 Agent 判断需要改代码时自己用 `remi repo owner/name` 声明，可以声明多个。频道的「常用仓库」只是给 Agent 的提示。任务开始前，发起人也可以在任务卡上换仓库。
+4. **中途插话**。发起人、处理人、Agent 主人在任务线程里说的话，Agent 做完当前这一步就会收到，在同一个会话里接着做。其他人在线程里聊天不会打扰它，要它听就 @它。
+5. **Agent 问你**。它有问题时用 `remi ask @你` 在线程里问，问题同时出现在你的「待你决定」里；它把事情交给你时用 `remi handoff`。你在线程里回复，它就接着做。
+6. **验收**。做完后任务变成「待验收」，线程里有总结和 PR 链接。合并 PR，任务自动完成；不用 PR 的任务在任务卡上点「验收通过」。想让它再改，直接在线程里回复。
+
+Agent 放在工作目录 `out/` 里的文件会作为产出传上来，在任务卡上能预览和下载；你发消息带的附件会放进它的 `in/`。
+
+**接上 webhook（推荐）**：PR 合并后任务马上完成，触发器也靠它。在仓库里加 webhook，密钥填 `REMI_GIT_WEBHOOK_SECRET`：
+
+- 基于 GitLab 的平台：`http://remi.内网域名:8080/api/v1/hooks/gitlab`，勾选 PullRequest 和 Push。
+- GitHub：`http://remi.内网域名:8080/api/v1/hooks/github`，Content type 选 `application/json`，事件选 Pull requests 和 Pushes。
+
+不配也能用，机器每两分钟会查一次 PR 和 CI，只是慢一点。
+
+## 6. 团队一起用
+
+跑通之后，这些功能让 Agent 从「我的助手」变成「团队的同事」：
+
+- **团队机器和团队 Agent**：管理员把一台常开的机器设为团队机器（机器卡片上的「设为团队机器」），在上面建谁都能 @、不用确认的团队 Agent，用机器人账号的令牌开 PR。完整步骤见 [docs/team-agent.md](team-agent.md)。
+- **团队配置仓库**：「设置 › 团队配置」里填一个 Git 仓库，里面的 `AGENTS.md`（团队约定）、`skills/`、`mcp.json` 会同步到团队机器；个人机器由主人自己决定要不要同步。这个仓库的主分支要设保护，改动走 PR。
+- **频道约定**：频道「成员」面板里写这个频道的规矩，Agent 先读频道的，再读团队的。
+- **触发器**：同一个面板里给 Agent 设触发器：定时（每天、工作日、每周）、有人开 PR、或者有推送。主人确认一次后，每次触发直接开工；上一个任务没结束时这次会跳过。
+- **接手和交接**：发起人不在时，频道里的人可以在任务线程里点「接手」。Agent 之间用 `remi handoff @另一个Agent` 交接，要人点一下交接卡才生效，一条链最多 3 个 Agent。
+- **仓库准备脚本**：仓库里的 `.remi/setup.sh` 会在机器为任务新开 worktree 时跑一次，适合装依赖、生成代码。
+- **协作数据**：「设置 › 协作数据」能看到 Agent 的任务来自几个人、人回复要多久、每个任务跑了几轮。
+
+## 出问题时
+
+| 现象 | 先看这里 |
+| --- | --- |
+| 同事打不开邀请链接，或接入命令里是 `127.0.0.1` | 服务端没设 `REMI_PUBLIC_URL` / `-public-url` |
+| 接入命令报码无效 | 接入码一小时过期，再点一次「添加机器」；离线机器的卡片上有「接入命令」专门重新接入那一台 |
+| 任务一直「等机器认领」 | 机器离线（Agent 名字旁的点是灰色）。在那台机器上跑 `doctor`，看日志：macOS `~/.noop/data/logs/daemon.log`，Linux `journalctl --user -u noop -f` |
+| Agent 状态点是橙色 | Runtime 登录过期或执行出错，机器卡片和任务线程里会写原因 |
+| 没开出 PR | 机器上缺这个平台的 Git 凭证，或令牌权限不够（至少 Developer）；`doctor` 和「设置 › Git 平台」能看到 |
+| PR 合并了任务还没完成 | 没配 webhook 时最多等两分钟 |
+
+更多：[理念和使用场景](why-remi.md)、[README](../README.md)（总体介绍和完整部署）、[server/README.md](../server/README.md)（服务端参数和接口）、[docs/team-agent.md](team-agent.md)（团队 Agent）、[docs/architecture.md](architecture.md)（架构）。

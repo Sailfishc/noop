@@ -12,25 +12,38 @@ import { TaskCard, TrackLink, shownAsTask } from "./taskcard";
 /** @handles in a message: a custom node, shown in the accent color when it names someone. */
 const MENTION: MarkdownExtension[] = [{ name: "mention", pattern: "@[a-z][a-z0-9_-]{1,31}" }];
 
+/**
+ * A document's mention nodes as spans of its own text: a known one is a `highlight` (styled as a mention below),
+ * any other `@word` plain text. Not `renderCustom`: that makes each mention an inline attachment, a view of its own
+ * on the line, which the macOS app sometimes left blank (the thread panel showed a gap where "@cindy" was, the text
+ * after it pushed right of the reactions under it). Spans are drawn with the line.
+ */
+function withMentions(node: any, known: Set<string>): any {
+  if (Array.isArray(node)) return node.map((n) => withMentions(n, known));
+  if (!node || typeof node !== "object") return node;
+  if (node.type === "custom" && node.name === "mention") {
+    const text = node.text ?? "";
+    return known.has(text) ? { type: "highlight", content: [{ type: "text", text }] } : { type: "text", text };
+  }
+  const out: any = {};
+  for (const k of Object.keys(node)) out[k] = withMentions(node[k], known);
+  return out;
+}
+
 /** A message's text as Markdown (what the formatting buttons write), its @mentions highlighted. */
 function MessageText(props: { text: string; mentions: readonly Mention[] | null }) {
   const known = () => new Set((props.mentions ?? []).map((m) => `@${m.handle}`));
   return (
     <TextView
       testID="message-text"
-      document={TextView.parse(props.text, { math: false, html: false }, MENTION)}
+      document={withMentions(TextView.parse(props.text, { math: false, html: false }, MENTION), known())}
       selectable
       onLinkPress={({ url }) => { if (/^(https?|mailto):/i.test(url)) void openUrl(url).catch(() => {}); }}
-      renderCustom={(n) => (
-        // An inline custom node is an attachment of its paragraph: its own layout root (it inherits neither size nor
-        // color) whose bottom sits on the baseline unless told otherwise. Same size as the text, and text-bottom, so
-        // the mention's baseline is the line's (nsh docs/dev/text.md, "Inline attachments").
-        <Text style={{ fontSize: 15, verticalAlign: "text-bottom", color: known().has(n.text ?? "") ? colors.accent : colors.text, fontWeight: known().has(n.text ?? "") ? "500" : "400" }}>{n.text}</Text>
-      )}
       styles={{
         root: { gap: 6, fontSize: 15, lineHeight: 22, color: colors.text },
         code: { fontFamily: "monospace", fontSize: 13.5, color: colors.text, backgroundColor: alpha(colors.text, 0.07) },
         link: { color: colors.accent },
+        highlight: { color: colors.accent, fontWeight: "500", backgroundColor: "transparent" },
       }}
     />
   );
