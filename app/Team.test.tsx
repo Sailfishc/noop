@@ -1228,9 +1228,12 @@ describe("passing the ball", () => {
     await app.press("id:trigger-kind-pr");
     await app.type("id:trigger-repo", "https://github.com/acme/pay");
     await app.type("id:trigger-text", "review 这个 PR");
+    await app.clear("id:trigger-max");
+    await app.type("id:trigger-max", "3");
     await app.press("id:trigger-save");
     await app.waitUntil(() => log.created.length === 1);
-    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "" } });
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
+    expect(app.shows("text:每天最多 3 次；上一个任务没结束时跳过")).toBe(true);
   });
 });

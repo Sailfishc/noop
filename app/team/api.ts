@@ -98,7 +98,9 @@ export type Handoff = { id: string; to: string; what: string; message: string; a
 export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
-  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number };
+  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
+  /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
+  max_per_day?: number; skipped?: number; last_task?: string };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** Handoff cards still waiting for a person. */
@@ -702,10 +704,10 @@ export function createTeam(s: Session) {
   const teamConfig = () => api("GET", "/api/v1/team/config");
   /** A channel's triggers (teamtriggers.go). */
   const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
-  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string }) =>
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number }) =>
     api("POST", "/api/v1/triggers", body);
   const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
-  const patchTrigger = (id: string, enabled: boolean) => api("PATCH", `/api/v1/triggers/${id}`, { enabled });
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
