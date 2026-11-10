@@ -21,7 +21,7 @@ export REMI_PUBLIC_URL=http://remi.内网域名:8080   # 别人访问这台服�
 | `-addr` / `REMI_ADDR` | 监听地址，默认 `:8080` |
 | `-public-url` / `REMI_PUBLIC_URL` | 别人访问服务器用的地址（如 `http://remi.内网域名:8080`）。App 生成的邀请链接、登录链接、机器安装命令，以及 Agent 等待外部结果用的回调地址都用它。不设置时，App 用自己连接服务器的地址；如果那个地址是 `127.0.0.1`（比如走 SSH 隧道），发出去的链接别人就连不上 |
 | `-data` / `REMI_DATA` | 数据目录，数据库文件是 `hub.db` |
-| `-git-webhook-secret` / `REMI_GIT_WEBHOOK_SECRET` | Ant Code（GitLab）webhook 的密钥。为空时不收 webhook |
+| `-git-webhook-secret` / `REMI_GIT_WEBHOOK_SECRET` | GitLab 和 GitHub webhook 的密钥。为空时不收 webhook |
 | `-static` / `REMI_STATIC` | Web 客户端目录（`app/dist/web/noop`）。为空时只提供 API |
 | `-tls-cert`、`-tls-key` / `REMI_TLS_CERT`、`REMI_TLS_KEY` | 证书和私钥文件（PEM）。两个都设置时服务端直接提供 https，不设置时是 http |
 
@@ -44,33 +44,25 @@ export REMI_PUBLIC_URL=http://remi.内网域名:8080   # 别人访问这台服�
 ## 怎么用起来
 
 1. **加入团队**：管理员在 App 的「Agent 与机器」里生成邀请链接发给同事。对方打开 App，选「我有邀请」，填名字和 @名就登录了。换设备时在已登录的设备上生成一次性登录码（15 分钟有效）；设备丢了由管理员生成登录链接（一天有效）。
-2. **接入机器**：在「我的机器」里添加一台，把显示的几行写进那台电脑的 `~/.noop/data/config.local.toml`，然后在仓库目录里运行（或重启）`bun run daemon`：
-
-   ```toml
-   [cloud]
-   url = "http://remi.内网域名:8080"
-   [server]
-   token = "tam_…"
-   ```
-
-3. **建 Agent**：在「我的 Agent」里新建，选它跑在哪台机器上，并填写它在那台机器上用的代码仓库路径（比如 `~/work/orders`），再设置谁能给它派活。
-4. **派活**：在频道里 @它，它就会接手（需要主人确认时，先等主人点「确认开工」）。只是问答的，它直接在线程里回复；要动手的，它认领为任务，出现任务卡；发送前勾「作为任务」则一开始就是任务。机器在 `agent/T-xxxx` 分支的独立 worktree 里用 Codex 干活，结果作为 Agent 的回复出现在线程里。之后在线程里回复，Agent 会接着上次的会话继续做。
+2. **接入机器**：在「设置 › 我的机器」里点「添加机器」，把给出的一行命令拿到那台电脑上运行：它装好守护进程、用一次性接入码换到令牌、装成后台服务，机器以主机名出现在列表里。也可以点「手动配置」，把显示的 `[cloud]`、`[server]` 几行写进 `~/.noop/data/config.local.toml`，再在仓库目录里运行 `bun run daemon`。
+3. **建 Agent**：在「我的 Agent」里新建，选它跑在哪台机器、用哪个 Runtime（Codex、Claude Code、Pi），再设置谁能给它派活。Agent 不绑定仓库：消息里写的仓库地址、同一线程用过的仓库，或者 Agent 用 `remi repo` 声明的仓库，决定任务在哪个仓库里做。
+4. **派活**：在频道里 @它，它就会接手（需要主人确认时，先等主人点「确认开工」）。只是问答的，它直接在线程里回复；要动手的，它认领为任务，出现任务卡；发送前勾「作为任务」则一开始就是任务。机器在 `agent/T-xxxx` 分支的独立 worktree 里用 Agent 的 Runtime 干活，结果作为 Agent 的回复出现在线程里。之后在线程里回复，Agent 会接着上次的会话继续做。
 
    任务对人只有 5 个状态（`status`：todo、in_progress、in_review、done、closed）和一个「需要你」标记（`needs`：confirm、decide、unblock、retry）。底下的 `state` 是运行状态机（pending、queued、running、waiting、needs_decision、blocked、failed、review、done、closed），只给机器用，映射见 `internal/hub/teamtasks.go` 的 `statusOf`。`tracked` 表示是不是被跟踪的任务；问答只是一次对话，不进任务看板。
 
    Agent 运行时可以用 `remi` 命令查上下文（`/api/v1/agent/*`，见 `internal/hub/teamcontext.go`），凭据是这次运行的只读 token，只在任务运行期间、只在 Agent 所在的频道里有效。
-5. **PR**：Agent 自己不能推送代码。由机器把 `agent/T-xxxx` 推上去，并在 GitHub 或 Ant Code 开 PR。合并永远由人来做。机器侧要有平台凭证：
+5. **PR**：Agent 自己不能推送代码。由机器把 `agent/T-xxxx` 推上去，并在 GitHub 或基于 GitLab 的平台上开 PR。合并永远由人来做。机器侧要有平台凭证：
 
    ```toml
    [git.github]
    token = "…"                     # 不填就用 gh auth token
-   [[git.gitlab]]                  # Ant Code 等基于 GitLab 的平台
+   [[git.gitlab]]                  # 基于 GitLab 的平台
    host = "code.公司.com"
    token = "…"
    # api = "https://code.公司.com/api/v4"   # 默认就是这个
    ```
 
-   在 Ant Code 的集成服务里加一个 webhook，地址填 `http://remi.内网域名:8080/api/v1/hooks/gitlab`，密钥填 `-git-webhook-secret` 的值，勾选 PullRequest 事件。PR 合并后，对应的任务会自动变成「已完成」。CI 状态由机器每两分钟查询一次。
+   在基于 GitLab 的平台的集成服务里加一个 webhook，地址填 `http://remi.内网域名:8080/api/v1/hooks/gitlab`，密钥填 `-git-webhook-secret` 的值，勾选 PullRequest 事件。PR 合并后，对应的任务会自动变成「已完成」。CI 状态由机器每两分钟查询一次。
 
 ## 接口
 
