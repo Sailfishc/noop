@@ -72,6 +72,9 @@ type machineView struct {
 	// Team: a team Computer (an always-on box with a bot account): any admin may put agents on it and look after
 	// them, not only the person who added it.
 	Team bool `json:"team"`
+	// SyncTeamConfig: a person's own machine takes the team config repository too: its MCP commands run there and
+	// its skills show up in the person's own runtimes, so only its owner turns this on. Team machines always do.
+	SyncTeamConfig bool `json:"sync_team_config"`
 	machineInfo
 }
 
@@ -104,7 +107,7 @@ type gitCred struct {
 	Via        string `json:"via"` // token | gh
 }
 
-const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}'), team"
+const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}'), team, sync_team_config"
 
 func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	if err != nil {
@@ -115,7 +118,7 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	for rows.Next() {
 		var m machineView
 		var rt, info string
-		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info, &m.Team); err != nil {
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info, &m.Team, &m.SyncTeamConfig); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(rt), &m.Runtimes)
@@ -600,8 +603,12 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
 	h.broadcastPeople(obj{"type": "machine", "machine": m})
 	h.resumeAgents(q.who.machineID, info.RuntimeInfo)
+	cfg := teamConfig{} // "": the daemon clears what it synced before
+	if m.Team || m.SyncTeamConfig {
+		cfg = h.teamConfig()
+	}
 	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID)),
-		"team_config": h.teamConfig()})
+		"team_config": cfg})
 }
 
 // ---------------------------------------------------------------- agents

@@ -1108,11 +1108,17 @@ describe("team ownership", () => {
     expect(app.shows("text:MCP jira")).toBe(true);
     expect(app.shows("text:/团队配置 abc1234/")).toBe(true);
     expect(app.shows("text:/没有 WIKI_TOKEN/")).toBe(true);
-    await app.press("id:machine-team-m_1");
+    expect(app.shows("text:/团队配置仓库默认不同步到这里/")).toBe(true);
+    await app.press("id:machine-syncconfig-m_1");
     await app.waitUntil(() => log.patches.length === 1);
-    expect(log.patches[0]).toEqual({ machine: { team: true } });
+    expect(log.patches[0]).toEqual({ machine: { sync_team_config: true } });
+    await app.waitFor("text:停止同步");
+    await app.press("id:machine-team-m_1");
+    await app.waitUntil(() => log.patches.length === 2);
+    expect(log.patches[1]).toEqual({ machine: { team: true } });
     await app.waitFor("text:取消团队机器");
     expect(app.shows("text:团队机器")).toBe(true);
+    expect(app.shows("id:machine-syncconfig-m_1")).toBe(false);
   });
 
   test("a team agent: any admin changes it, and picks its responsible person", async () => {

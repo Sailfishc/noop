@@ -36,10 +36,20 @@ func TestTeamConfigAndReport(t *testing.T) {
 	check(t, "nonsense is refused", e.do("PUT", "/api/v1/team/config", e.zw.session, map[string]any{"repo": "config"}).status == 400)
 	r := e.do("PUT", "/api/v1/team/config", e.zw.session, map[string]any{"repo": "https://github.com/acme/remi-config"})
 	check(t, "an admin sets the team config repository", r.status == 200 && r.body["repo"] == "https://github.com/acme/remi-config", r)
-	r = e.do("PUT", "/api/v1/machine", e.token, map[string]any{"os": "darwin", "runtimes": []string{"claude"},
-		"skills": []string{"release-notes", "release-notes", "sql-review"}, "mcp": []string{"jira"},
-		"team_config": map[string]any{"repo": "https://github.com/acme/remi-config", "commit": "abc123", "synced": 5, "instructions": true}})
-	check(t, "machines are told where it is", r.body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config", r)
+	report := func() resp {
+		return e.do("PUT", "/api/v1/machine", e.token, map[string]any{"os": "darwin", "runtimes": []string{"claude"},
+			"skills": []string{"release-notes", "release-notes", "sql-review"}, "mcp": []string{"jira"},
+			"team_config": map[string]any{"repo": "https://github.com/acme/remi-config", "commit": "abc123", "synced": 5, "instructions": true}})
+	}
+	r = report()
+	check(t, "王磊's own Mac is not told (it would run the repository's MCP commands there)", r.body["team_config"].(map[string]any)["repo"] == "", r)
+	check(t, "an admin can't turn it on for him", e.do("PATCH", "/api/v1/machines/"+e.mid, e.zw.session, map[string]any{"sync_team_config": true}).status == 403)
+	check(t, "he can", e.do("PATCH", "/api/v1/machines/"+e.mid, e.wl.session, map[string]any{"sync_team_config": true}).body["machine"].(map[string]any)["sync_team_config"] == true)
+	r = report()
+	check(t, "then it is told where it is", r.body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config", r)
+	e.do("PATCH", "/api/v1/machines/"+e.mid, e.wl.session, map[string]any{"sync_team_config": false})
+	e.do("PATCH", "/api/v1/machines/"+e.mid, e.zw.session, map[string]any{"team": true})
+	check(t, "a team machine always is", report().body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config")
 	m := r.body["machine"].(map[string]any)
 	check(t, "and report what their agents can use and how the sync went", len(m["skills"].([]any)) == 2 && m["mcp"].([]any)[0] == "jira" &&
 		m["team_config"].(map[string]any)["commit"] == "abc123", r)

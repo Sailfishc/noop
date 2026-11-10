@@ -18,6 +18,8 @@ export type Machine = {
   repos?: RepoRef[] | null;
   /** A team machine: any admin may put agents on it and look after them. */
   team?: boolean;
+  /** A person's own machine that takes the team config repository too (its owner turned it on; team machines always do). */
+  sync_team_config?: boolean;
   /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
   skills?: string[] | null; mcp?: string[] | null;
   /** How the team config repository last synced there. */
@@ -661,7 +663,7 @@ export function createTeam(s: Session) {
     return patchMachine(id, { name });
   }
   /** name; team (admins): make it a team machine or no longer one. */
-  async function patchMachine(id: string, patch: { name?: string; team?: boolean }) {
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean }) {
     const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
