@@ -22,6 +22,19 @@ Fix what it reports. Put what it lists as NOT RUN in the PR.
 - Many sessions branch from `main` at once. Before you push, `git fetch origin main` and rebase or merge, and
   look at main's last CI run: if main is already red, say so instead of chasing a failure you did not cause.
 
+## Trying a change end to end: `scripts/dev.sh`
+
+Tests use a pretend server (`app/fixtures.ts`, kept honest by `scripts/check-contract.ts`). To see the real thing,
+`scripts/dev.sh` starts remi-server with the web client, seeds a small team (张伟 admin, 王磊, agents @acha with
+an orders repo and @notes, #支付后端) and runs this repository's daemon as their machine, with
+`scripts/fake-codex.ts` as Codex: no model, no keys. Everything lives in `.dev/`; `--fresh` starts over.
+
+- It prints login links and a curl line. Run it in the background, then drive it through the API
+  (`.dev/state.json` holds the sessions) and look with `node scripts/dev-shot.cjs [--as wl] [--size 390x844]
+  [--click x,y] out.png`, a screenshot of the web client signed in against the real server.
+- In a request, `[decide]`, `[block]`, `[fail]` and `[slow]` make the fake Codex ask, get stuck, fail or take
+  its time; otherwise it commits a file (repository task) or writes `out/notes.md` (general task) and reports review.
+
 ## Workflow for Small Fixes
 
 For small fixes with clear scope and acceptance criteria, make the change directly and verify it. Do not create design documents, specs, implementation plans, or extra approval checkpoints. Use a full design and planning workflow only when the change affects architecture or public APIs, spans multiple subsystems, or has materially ambiguous requirements.
