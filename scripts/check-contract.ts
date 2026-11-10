@@ -38,7 +38,8 @@ const uses: { file: string; method: string; path: string }[] = [];
 for (const file of appFiles("app")) {
   const src = readFileSync(join(ROOT, file), "utf8");
   // the client: api("GET", `/api/v1/...`) and fetch(`${url}/api/v1/...`, { method: "POST" ... })
-  for (const m of src.matchAll(/\(\s*"(GET|POST|PUT|PATCH|DELETE)",\s*[`"](\/api\/v1\/[^`"]*)[`"]/g)) uses.push({ file, method: m[1]!, path: norm(m[2]!) });
+  // (a template may hold quotes inside ${…}: `/signups/${id}/${ok ? "approve" : "reject"}`)
+  for (const m of src.matchAll(/\(\s*"(GET|POST|PUT|PATCH|DELETE)",\s*(?:"(\/api\/v1\/[^"]*)"|`(\/api\/v1\/(?:\$\{[^}]*\}|[^`$])*)`)/g)) uses.push({ file, method: m[1]!, path: norm(m[2] ?? m[3]!) });
   for (const m of src.matchAll(/fetch\(`\$\{[^}]+\}(\/api\/v1\/[^`]*)`,\s*\{\s*method:\s*"(GET|POST|PUT|PATCH|DELETE)"/g)) uses.push({ file, method: m[2]!, path: norm(m[1]!) });
   // the pretend server: [`POST ${URL}/api/v1/...`]
   for (const m of src.matchAll(/`(GET|POST|PUT|PATCH|DELETE) \$\{URL\}(\/api\/v1\/[^`]*)`/g)) uses.push({ file, method: m[1]!, path: norm(m[2]!) });
