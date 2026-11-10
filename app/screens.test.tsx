@@ -60,9 +60,17 @@ describe("screens", () => {
     const app = await start();
     // Press the tab only once the channel has loaded: an earlier press can land on a channel view that the
     // first load then replaces, and the board never opens (seen once in headless Chromium).
+    // Even then CI's Chromium once kept the conversation (main, 2026-11-09): press again until the board opens.
     await app.waitFor("text:今天下午三点发版，大家注意一下");
-    await app.press("id:channel-tab-tasks");
-    await app.waitFor("id:tasks-board");
+    for (let i = 0; ; i++) {
+      await app.press("id:channel-tab-tasks");
+      try {
+        await app.waitFor("id:tasks-board", { timeout: 3000 });
+        break;
+      } catch (e) {
+        if (i >= 3) throw e;
+      }
+    }
     await shot(app, "tasks-board");
   });
 

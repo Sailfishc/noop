@@ -42,7 +42,11 @@ const heard: TeamMessage[] = [];
 onAgentMessage((m) => { heard.push(m); });
 const cfg = { cloud: { url: BASE }, server: { token }, host: { max_parallel: 2 } };
 let ta = startTeamAgent(cfg, { stateFile: join(W, "state.json"), log: () => {} })!;
-await until("machine online", async () => (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((m: any) => m.id === mid)?.online === true);
+// online comes with the socket; the machine's report (PUT /machine) can land a moment later
+await until("machine online and reported", async () => {
+  const m = (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((m: any) => m.id === mid);
+  return m?.online === true && m.os !== "";
+});
 const m = (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((x: any) => x.id === mid);
 check("machine reported its sessions", m.max_sessions === 2, JSON.stringify(m));
 await until("daemon knows its agent", () => ta.agents().some((a) => a.handle === "acha"));

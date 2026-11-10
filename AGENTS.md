@@ -1,3 +1,27 @@
+# Working in this repository
+
+Remi: a self-hosted place where a team's people and agents work together. Three parts in one repository
+(map and data flow: [docs/architecture.md](docs/architecture.md); commands: [CONTRIBUTING.md](CONTRIBUTING.md)):
+
+| Part | Where | Language | Checked by |
+|---|---|---|---|
+| Server | `server/` (API in `internal/hub/v1.go`) | Go, one SQLite file | `gofmt`, `go vet`, `go test -race` |
+| Machine daemon | `src/` (tests in `test/`) | Bun / TypeScript | `bunx tsc --noEmit`, `bun test` |
+| Client app | `app/` (`team/` screens, `ui/` shared) | NSH TSX | `nsh check app`, `nsh test`, layout, screenshots |
+| Both ends together | `server/test/e2e-*.ts` | Bun against a real server | `scripts/e2e.sh` |
+
+## Before you push: `scripts/check.sh`
+
+It runs what CI runs for the parts your change touches (compared with `origin/main`) and prints one summary;
+`scripts/check.sh all` runs everything (about 3 minutes), `scripts/check.sh app server` runs those parts.
+Fix what it reports. Put what it lists as NOT RUN in the PR.
+
+- `nsh`: cloud sessions get it from `.claude/hooks/session-start.sh`, but that hook only runs when the session
+  starts inside this repository. If `nsh` is missing, `scripts/check.sh` installs it, or run
+  `export PATH="$(scripts/install-nsh.sh):$PATH"` (Linux x86_64, about 30 s).
+- Many sessions branch from `main` at once. Before you push, `git fetch origin main` and rebase or merge, and
+  look at main's last CI run: if main is already red, say so instead of chasing a failure you did not cause.
+
 ## Workflow for Small Fixes
 
 For small fixes with clear scope and acceptance criteria, make the change directly and verify it. Do not create design documents, specs, implementation plans, or extra approval checkpoints. Use a full design and planning workflow only when the change affects architecture or public APIs, spans multiple subsystems, or has materially ambiguous requirements.
@@ -6,7 +30,7 @@ For small fixes with clear scope and acceptance criteria, make the change direct
 
 The client is NSH TSX. Before writing it, read the NSH skill (`.claude/skills/nsh`, vendored at the pinned commit) and NSH's docs for the components you touch: NSH is not React Native or the web, and props that look familiar can behave differently. Example: a horizontal `Scroll` needs one row `View` as its child, or its children stack (the task board shipped like that in #41).
 
-After changing `app/`, run these and fix what they report before opening a PR. Cloud sessions get `nsh` from `.claude/hooks/session-start.sh`; CI runs the same steps.
+After changing `app/`, `scripts/check.sh` runs these; what each one is for:
 
 - `nsh check app`: the real type check (the root `bunx tsc` does not cover `app/`).
 - `cd app && nsh test`: the UI tests, including `screens.test.tsx`.
@@ -15,7 +39,14 @@ After changing `app/`, run these and fix what they report before opening a PR. C
 
 In the PR, say which screens changed, attach or describe the screenshots you looked at, and list anything you could not run.
 
-## Update Noop on the user's iPhone
+## Changing the client without running it
+
+Only if `nsh` really can't be installed (`scripts/install-nsh.sh` failed, or a platform it has no build for), client changes are unverified until someone opens the app. Then:
+
+- Use only nsh components and props that already work elsewhere in `app/`. A prop that appears nowhere else is unproven: `<Scroll horizontal>` stacked a task board's columns vertically on the Mac (fixed in #43). For side-by-side layout, put a `flexDirection: "row"` View inside a plain Scroll.
+- Say in the PR which screens changed and that they were not run, so the person checks those screens before merging.
+
+## Update the app on the user's iPhone (local Mac sessions only)
 
 When asked to update Noop on the user's iPhone, build the current working-tree app, install it over Wi-Fi, and verify that it launches. The paired iPhone is `00008150-001603543C08401C`; the app bundle ID is `dev.noop.app`. Use `xcrun devicectl list devices` and device details to check connectivity.
 
@@ -24,10 +55,3 @@ The existing device build is `app/.nsh/out/noop.app`. Its embedded provisioning 
 Prefer `nsh package app --target ios --sign <identity> --profile <profile>` when the iOS runtime can be built. Copy the embedded profile to a temporary location first so it survives replacement of the output app. If the runtime build is blocked, the following workflow was verified with the existing runtime: `nsh build app --release -o <temporary-bundle>`, copy the existing app to a temporary `.app`, replace its `nsh/bundle.nshc`, `nsh/app.json`, and `nsh/capabilities.json` with the freshly built files, then sign the copy using the existing `app/.nsh/out/noop.entitlements`. This fallback reuses the existing native runtime; if native runtime changes are needed, build a fresh package instead.
 
 Verify the signature with `codesign --verify --strict`, install with `xcrun devicectl device install app --device 00008150-001603543C08401C <app-path>`, then launch with `xcrun devicectl device process launch --device 00008150-001603543C08401C dev.noop.app`. Preserve the bundle ID so the installation updates the existing app and retains its data. Report any build, signing, connection, or launch failure accurately.
-
-## Changing the client without running it
-
-Only if `nsh` really can't be installed (`scripts/install-nsh.sh` failed, or a platform it has no build for), client changes are unverified until someone opens the app. Then:
-
-- Use only nsh components and props that already work elsewhere in `app/`. A prop that appears nowhere else is unproven: `<Scroll horizontal>` stacked a task board's columns vertically on the Mac (fixed in #43). For side-by-side layout, put a `flexDirection: "row"` View inside a plain Scroll.
-- Say in the PR which screens changed and that they were not run, so the person checks those screens before merging.

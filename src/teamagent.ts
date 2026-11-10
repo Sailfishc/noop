@@ -155,7 +155,9 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   // a message can come twice (live on the socket and in a catch-up page at the same moment): once is enough
   const seen = new Set<string>();
   const deliver = async (m: TeamMessage) => {
-    if (seen.has(m.id)) return;
+    // after stop(), a catch-up still in flight (it waits for the machine report) must not hand messages over:
+    // the next start catches them up again, and the agent would hear them twice
+    if (stopped || seen.has(m.id)) return;
     seen.add(m.id);
     if (seen.size > 2000) seen.delete(seen.values().next().value!);
     if (m.seq > after) { after = m.seq; save(); }

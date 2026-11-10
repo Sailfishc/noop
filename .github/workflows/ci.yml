@@ -78,17 +78,10 @@ jobs:
         run: npm install -g "bun@$(node -p "require('./package.json').packageManager.split('@')[1]")"
       - run: bun install --frozen-lockfile
         working-directory: .
-      - run: |
-          go build -o /tmp/remi-server ./cmd/remi-server
-          CODE=$(/tmp/remi-server invite -data /tmp/ta-team -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
-          /tmp/remi-server -addr 127.0.0.1:18081 -data /tmp/ta-team &
-          sleep 1
-          bun test/e2e-team.ts http://127.0.0.1:18081 "$CODE"
-          CODE=$(/tmp/remi-server invite -data /tmp/ta-dispatch -email zhang@corp.com | tail -1 | sed 's|.*/invite/||')
-          /tmp/remi-server -addr 127.0.0.1:18082 -data /tmp/ta-dispatch &
-          sleep 1
-          git config --global user.name ci && git config --global user.email ci@ci
-          bun test/e2e-dispatch.ts http://127.0.0.1:18082 "$CODE"
+      # Two throwaway servers, with the daemon's code as the machine (also run by scripts/check.sh).
+      - run: scripts/e2e.sh
+        working-directory: .
+
   # The NSH CLI the client is built with (app/nsh-version), built once per pinned commit
   # the way NSH's own release does (`cargo xtask dist`) and kept in the Actions cache.
   # A push also publishes it as the release `nsh-<commit>`, which Claude Code cloud
