@@ -540,7 +540,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         </Panel>
       </If>
 
-      <Panel title={L("Runs on", "运行在")}>
+      <Panel title={L("Runs on", "运行在")} testID={`agent-runs-${a().handle}`} note={L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
           <Dot on={!!machine()?.online} />
           <View style={{ flex: 1 }}>
@@ -572,10 +572,9 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <Label text={L("Model", "模型")} note={modelsOn(machine(), a().runtime).length ? L(`What ${machine()?.name ?? "its machine"} offers for ${runtimeLabel(a().runtime)}, or any name it accepts.`, `${machine()?.name ?? "机器"} 上 ${runtimeLabel(a().runtime)} 可用的模型，也可以填它认的其他名字。`) : L("Its machine listed none; the runtime’s default, or a name it accepts.", "机器没有列出模型：用 Runtime 默认，或填它认的模型名。")} />
         <ModelPicker testID={`agent-model-${a().handle}`} models={modelsOn(machine(), a().runtime)} value={a().model ?? ""} onChange={(v) => void patch({ model: v })} />
         <AgentRepo team={t} agent={a()} />
-        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}</Text>
       </Panel>
 
-      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")}>
+      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}>
         <AgentMemory team={t} agent={a()} />
       </Panel>
 
@@ -648,8 +647,7 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
         onChange={({ value: v }) => { value.set(v); saved.set(false); }}
         style={{ minHeight: 96, maxHeight: 260, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
       />
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}</Text>
+      <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
       </View>
     </View>
@@ -670,14 +668,17 @@ function AgentRepo(props: { team: Team; agent: Agent }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Label text={L("Fallback checkout on its machine (optional)", "本机默认仓库（可选）")} />
+      <Label
+        text={L("Fallback checkout on its machine (optional)", "本机默认仓库（可选）")}
+        testID={`agent-repo-${props.agent.handle}-label`}
+        note={L("Usually empty: the repository comes with the task (an address in the message, or one the agent checks out when the work needs it) and the machine finds or clones it. This path is used only when a task names none.", "一般不用填：仓库跟着任务走（消息里写的地址，或者 Agent 判断要改代码时自己检出的），机器会自己找到或克隆。只有任务没指定仓库时才用这里的路径。")}
+      />
       <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
         <View style={{ flex: 1 }}>
           <Field value={value()} onChange={(v) => { value.set(v); saved.set(false); }} onSubmit={save} placeholder="~/work/orders" testID={`agent-repo-${props.agent.handle}`} />
         </View>
         <Btn small testID={`agent-repo-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
       </View>
-      <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("Usually empty: the repository comes with the task (an address in the message, or one the agent checks out when the work needs it) and the machine finds or clones it. This path is used only when a task names none.", "一般不用填：仓库跟着任务走（消息里写的地址，或者 Agent 判断要改代码时自己检出的），机器会自己找到或克隆。只有任务没指定仓库时才用这里的路径。")}</Text>
     </View>
   );
 }
