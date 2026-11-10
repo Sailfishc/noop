@@ -6,6 +6,7 @@ Remi 让一个团队的人和 AI Agent 在同一个地方干活：在频道里 @
 
 - **管理员**从第 1 步开始。
 - **同事**（服务端已经有了）从第 2 步开始。
+- 想先了解它为什么这样设计、适合做什么，看 [理念和使用场景](why-remi.md)。
 - 只想在自己一台 Mac 上先玩一下，看 [README 的「在一台电脑上先跑通」](../README.md#在一台电脑上先跑通)。
 
 ## 先认识几个词
@@ -185,4 +186,4 @@ Agent 放在工作目录 `out/` 里的文件会作为产出传上来，在任务
 | 没开出 PR | 机器上缺这个平台的 Git 凭证，或令牌权限不够（至少 Developer）；`doctor` 和「设置 › Git 平台」能看到 |
 | PR 合并了任务还没完成 | 没配 webhook 时最多等两分钟 |
 
-更多：[README](../README.md)（总体介绍和完整部署）、[server/README.md](../server/README.md)（服务端参数和接口）、[docs/team-agent.md](team-agent.md)（团队 Agent）、[docs/architecture.md](architecture.md)（架构）。
+更多：[理念和使用场景](why-remi.md)、[README](../README.md)（总体介绍和完整部署）、[server/README.md](../server/README.md)（服务端参数和接口）、[docs/team-agent.md](team-agent.md)（团队 Agent）、[docs/architecture.md](architecture.md)（架构）。

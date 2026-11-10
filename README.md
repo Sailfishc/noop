@@ -4,7 +4,7 @@
 
 Remi（原名 TeamAgent）是从 [huacnlee/noop](https://github.com/huacnlee/noop)（MIT）分出来的实验项目。noop 是「一个人 + 一队 Agent」，Remi 改成「多个人 + 多个 Agent」：频道里的人可以 @ 某人的 Agent 派活，Agent 在主人的电脑或团队的常开机器上用 Codex、Claude Code 或 Pi 干活，结果、需要人拍板的决定和 PR 都回到频道的线程里。整套东西自己部署在公司内网，不依赖 Cloudflare 或任何 SaaS。
 
-**第一次用？看 [快速上手](docs/quickstart.md)**：部署服务端、加入团队、接入机器、建 Agent、派出第一个任务。
+**第一次用？看 [快速上手](docs/quickstart.md)**：部署服务端、加入团队、接入机器、建 Agent、派出第一个任务。想先知道它为什么这样设计、适合拿来做什么，看 [理念和使用场景](docs/why-remi.md)。
 
 产品名已改为 Remi。命令和环境变量也随之改名（`remi-server`、`REMI_*`、配置节 `[remi]`、Agent 用的 `remi read`），旧名 `TEAMAGENT_*`、`[teamagent]`、`teamagent` 命令仍然可用，已有的部署不用改。
 
