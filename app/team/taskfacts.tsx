@@ -5,7 +5,7 @@ import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, radius } from "../ui";
 import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
-import { Btn, ErrorNote, failed, RuntimeBadge, time } from "./ui";
+import { Btn, ErrorNote, failed, growing, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
 
 const minutes = (ms: number) => {
@@ -230,6 +230,7 @@ function Acceptance(props: { team: Team; task: Task }) {
   const t = props.team;
   const editing = signal(false);
   const draft = signal("");
+  const grow = growing({ min: 64, max: 160, pad: 22, line: 20 });
   const busy = signal(false);
   const error = signal("");
   const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
@@ -265,7 +266,8 @@ function Acceptance(props: { team: Team; task: Task }) {
             placeholder={L("One per line, e.g. P99 under 200 ms; no table locks", "一行一条，比如：P99 低于 200ms；上线不锁表")}
             class="placeholder:text-faint"
             onChange={({ value }) => draft.set(value)}
-            style={{ minHeight: 64, maxHeight: 160, padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, lineHeight: 20, color: colors.text }}
+            onContentSizeChange={grow.onContentSizeChange}
+            style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, lineHeight: 20, color: colors.text }}
           />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
