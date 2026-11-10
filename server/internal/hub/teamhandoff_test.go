@@ -144,30 +144,55 @@ func TestTriggers(t *testing.T) {
 	ts = e.do("GET", "/api/v1/tasks", e.zw.session, nil).body["tasks"].([]any)
 	check(t, "three tasks in all", len(ts) == 3, resp{raw: []byte(time.Now().String())})
 
-	// it does not pile up: skipped while its last task is open, and at most max_per_day a day
+	// a pull request is never skipped because the last one's task is still open (each PR is its own thing to look at);
+	// at most max_per_day a day
 	r = gh("pull_request", pr("feature/more"))
-	check(t, "another PR while its task is still open: skipped", r.body["fired"] == float64(0), r)
-	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
-	check(t, "counted as skipped, in a row, and why", tv["id"] == prTrg && tv["skipped"] == float64(1) && tv["fires"] == float64(1) &&
-		tv["skipped_run"] == float64(1) && tv["skip_reason"] == "busy", resp{raw: []byte(fmt.Sprint(tv))})
-	last := tv["last_task"].(string)
-	e.do("POST", "/api/v1/tasks/"+last+"/claim", e.token, nil)
-	e.do("POST", "/api/v1/tasks/"+last+"/report", e.token, map[string]any{"state": "review", "summary": "报告好了"})
-	check(t, "its last task waits for someone to accept it: that doesn't hold the next one back", gh("pull_request", pr("feature/more")).body["fired"] == float64(1))
-	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
-	check(t, "firing ends the run of skips", tv["skipped_run"] == float64(0) && tv["skip_reason"] == nil, resp{raw: []byte(fmt.Sprint(tv))})
-	done := func() {
-		id := e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)["last_task"].(string)
-		check(t, "its task is cancelled", e.do("POST", "/api/v1/tasks/"+id+"/cancel", e.wl.session, nil).status == 200)
-	}
-	done()
-	check(t, "once it ended, the next PR fires", gh("pull_request", pr("feature/more")).body["fired"] == float64(1))
+	check(t, "another PR while its task is still open: it fires too", r.body["fired"] == float64(1), r)
 	check(t, "a bystander can't change the limit", e.do("PATCH", "/api/v1/triggers/"+prTrg, e.ll.session, map[string]any{"max_per_day": 1}).status == 403)
 	check(t, "nor set it to nonsense", e.do("PATCH", "/api/v1/triggers/"+prTrg, e.wl.session, map[string]any{"max_per_day": 0}).status == 400)
 	r = e.do("PATCH", "/api/v1/triggers/"+prTrg, e.wl.session, map[string]any{"max_per_day": 2})
 	check(t, "its owner sets 2 a day", r.status == 200 && r.body["max_per_day"] == float64(2), r)
-	done()
 	check(t, "the day's limit reached: skipped", gh("pull_request", pr("feature/third")).body["fired"] == float64(0))
+	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
+	check(t, "counted as skipped, in a row, and why", tv["id"] == prTrg && tv["skipped"] == float64(1) && tv["fires"] == float64(2) &&
+		tv["skipped_run"] == float64(1) && tv["skip_reason"] == "limit", resp{raw: []byte(fmt.Sprint(tv))})
 	e.advance(24 * time.Hour)
 	check(t, "the next day it fires again", gh("pull_request", pr("feature/third")).body["fired"] == float64(1))
+	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
+	check(t, "firing ends the run of skips", tv["skipped_run"] == float64(0) && tv["skip_reason"] == nil, resp{raw: []byte(fmt.Sprint(tv))})
+
+	// a schedule is skipped while its last task is still queued or running; queued for half an hour means no machine
+	// takes it, and the person who set it up is told once
+	sched := func() map[string]any {
+		return e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[0].(map[string]any)
+	}
+	tick := func() { e.advance(72 * time.Hour); e.h.Tick() } // three days always hold a weekday
+	stuckNotes := func(task string) int {
+		th := e.task(task)["thread_id"].(string)
+		n := 0
+		for _, m := range e.do("GET", "/api/v1/messages/"+th+"/thread", e.zw.session, nil).body["replies"].([]any) {
+			if txt := m.(map[string]any)["text"].(string); strings.Contains(txt, "没有机器接手") && strings.Contains(txt, "@zhangwei") {
+				n++
+			}
+		}
+		return n
+	}
+	tv = sched()
+	first := tv["last_task"].(string)
+	check(t, "the schedule's first task is still queued", tv["id"] == trg && e.task(first)["state"] == "queued", resp{raw: []byte(fmt.Sprint(tv))})
+	tick()
+	tv = sched()
+	check(t, "its next time is skipped: busy", tv["skip_reason"] == "busy" && tv["skipped_run"] == float64(1) && tv["last_task"] == first, resp{raw: []byte(fmt.Sprint(tv))})
+	check(t, "张伟 is told in the queued task's thread that no machine takes it", stuckNotes(first) == 1)
+	tick()
+	check(t, "skipped again, and not told twice", sched()["skipped_run"] == float64(2) && stuckNotes(first) == 1)
+	e.do("POST", "/api/v1/tasks/"+first+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+first+"/report", e.token, map[string]any{"state": "blocked", "summary": "没有数据库权限"})
+	tick()
+	tv = sched()
+	check(t, "a task handed to a person does not hold the next one back", tv["skipped_run"] == float64(0) && tv["last_task"] != first, resp{raw: []byte(fmt.Sprint(tv))})
+	second := tv["last_task"].(string)
+	e.do("POST", "/api/v1/tasks/"+second+"/claim", e.token, nil)
+	tick()
+	check(t, "a running one does, without a note", sched()["skip_reason"] == "busy" && stuckNotes(second) == 0)
 }
