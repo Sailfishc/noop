@@ -554,7 +554,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
-	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消")})
+	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)

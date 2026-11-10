@@ -1,8 +1,9 @@
 // Runtime adapters: one way to start an agent engine headless on this machine, follow what it does, and resume its
 // session for the next turn: Codex (`codex exec --json`), Claude Code (`claude -p --output-format stream-json`) and pi
 // (`pi -p --mode json`).
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { DEFAULT_GATES } from "./gates";
 import { addUsage, type Usage } from "./runfail";
 
@@ -244,14 +245,36 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
   return null;
 }
 
-/** Tools a Claude Code run may use without asking (nobody is there to answer), and what it may never run. */
-const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit"];
+/** Tools a Claude Code run may use without asking (nobody is there to answer), and what it may never run. Skill: the
+ * skills installed on the machine (~/.claude/skills, the team config repo) and in the repository. */
+const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit", "Skill"];
 
-/** The command line of a Claude Code run: print mode, JSON stream, edits accepted, the listed tools allowed, the gates
- * denied; its own attribution lines off (the task's PR says who did it). */
-export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model">): string[] {
+/** The MCP servers Claude Code would load in `cwd`: the user's (~/.claude.json mcpServers), the local ones of `cwd` and
+ * the folders above it (~/.claude.json projects), and the repository's .mcp.json. In print mode a tool that is not
+ * allowed is simply refused, and `--allowedTools` takes no wildcard over servers ("mcp__*" matches nothing), so each
+ * server is allowed by name ("mcp__github" allows all of its tools). Servers come from the machine's own config: what
+ * someone installed on this Computer is what its agents may use. */
+export function claudeMcpServers(cwd: string, home = homedir()): string[] {
+  const names = new Set<string>();
+  const add = (servers: unknown) => {
+    if (servers && typeof servers === "object") for (const k of Object.keys(servers)) names.add(k);
+  };
+  const read = (path: string): any => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
+  const user = read(join(home, ".claude.json"));
+  add(user?.mcpServers);
+  for (const [dir, p] of Object.entries<any>(user?.projects ?? {})) {
+    if (cwd === dir || cwd.startsWith(dir.endsWith("/") ? dir : dir + "/")) add(p?.mcpServers);
+  }
+  add(read(join(cwd, ".mcp.json"))?.mcpServers);
+  // Claude Code names a server's tools mcp__<name>__<tool>, with what is not a letter, digit, _ or - turned into _
+  return [...names].map((n) => "mcp__" + n.replace(/[^A-Za-z0-9_-]/g, "_")).sort();
+}
+
+/** The command line of a Claude Code run: print mode, JSON stream, edits accepted, the listed tools and the machine's
+ * MCP servers allowed, the gates denied; its own attribution lines off (the task's PR says who did it). */
+export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model"> & { mcp?: string[] }): string[] {
   const cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
-    "--allowedTools", CLAUDE_TOOLS.join(","), "--disallowedTools", ...DEFAULT_GATES,
+    "--allowedTools", [...CLAUDE_TOOLS, ...(o.mcp ?? [])].join(","), "--disallowedTools", ...DEFAULT_GATES,
     "--settings", JSON.stringify({ attribution: { commit: "", pr: "" }, includeCoAuthoredBy: false })];
   for (const d of o.writable ?? []) cmd.push("--add-dir", d);
   if (o.model) cmd.push("--model", o.model);
@@ -262,7 +285,8 @@ export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model
 export const claude: Runtime = {
   name: "claude",
   available: () => onPath("claude"),
-  start: (o) => jsonlRun("claude", claudeCommand, claudeEvent, { ...o, env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0", ...o.env } }),
+  start: (o) => jsonlRun("claude", (r) => claudeCommand({ ...r, mcp: claudeMcpServers(r.cwd) }), claudeEvent,
+    { ...o, env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0", ...o.env } }),
 };
 
 // ---------------------------------------------------------------- pi

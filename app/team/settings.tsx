@@ -12,11 +12,11 @@ import { notifyOn, notifyPermission, setNotify } from "./notify";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
-  type Agent, type Autonomy, type Device, type Dispatch, type GitCred, type GitPlatform, type GitSettings, type Machine, type Team,
+  type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team,
 } from "./api";
 import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
 
-export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git";
+export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "metrics";
 
 export const DISPATCH: { value: Dispatch; label: () => string; note: () => string }[] = [
   { value: "owner", label: () => L("Only me", "只有我"), note: () => L("Only you can hand it work.", "只有你能给它派活。") },
@@ -110,12 +110,14 @@ const NAV: { group: () => string; items: { tab: SettingsTab; icon: IconName; lab
   { group: () => L("Team · admin", "团队 · 管理员"), items: [
     { tab: "people", icon: "mail", label: () => L("Members & invites", "成员与邀请") },
     { tab: "git", icon: "merge", label: () => L("Git platforms", "Git 平台") },
+    { tab: "metrics", icon: "sliders", label: () => L("How we work", "协作数据") },
   ] },
 ];
 
 const TITLES: Record<SettingsTab, () => string> = {
   account: () => L("Account", "账号"), general: () => L("General", "通用"), agents: () => L("My agents", "我的 Agent"),
   machines: () => L("My machines", "我的机器"), people: () => L("Members & invites", "成员与邀请"), git: () => L("Git platforms", "Git 平台"),
+  metrics: () => L("How we work", "协作数据"),
 };
 
 /** The settings page. Wide: the nav beside the content. Narrow: the nav, then one section with a back button. */
@@ -181,6 +183,7 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
       case "machines": return <MachinesSection team={t} onNewAgent={(id) => creating.set({ machine: id })} onAgent={(h) => props.onTab("agents", h)} />;
       case "people": return <PeopleSection team={t} />;
       case "git": return <GitSection team={t} />;
+      case "metrics": return <MetricsSection team={t} />;
     }
   };
 
@@ -1269,6 +1272,95 @@ function GitSection(props: { team: Team }) {
         </>
       )}
     </If>
+  );
+}
+
+// ---------------------------------------------------------------- 协作数据
+
+/** A wait as people say it: "4 分钟", "2.5 小时", "3 天". */
+export function span(ms: number): string {
+  const m = ms / 60_000;
+  if (m < 1) return L("under a minute", "不到 1 分钟");
+  if (m < 60) return L(`${Math.round(m)} min`, `${Math.round(m)} 分钟`);
+  const h = m / 60;
+  if (h < 24) return L(`${+h.toFixed(1)} h`, `${+h.toFixed(1)} 小时`);
+  return L(`${+(h / 24).toFixed(1)} d`, `${+(h / 24).toFixed(1)} 天`);
+}
+
+const REPLY_KINDS: { key: keyof Metrics["reply_by"]; label: () => string }[] = [
+  { key: "confirm", label: () => L("Start it", "确认开工") },
+  { key: "decide", label: () => L("Decide", "做决定") },
+  { key: "accept", label: () => L("Accept", "验收") },
+  { key: "unblock", label: () => L("Unblock", "解除阻塞") },
+  { key: "retry", label: () => L("Retry", "失败重试") },
+];
+
+/** The dogfood numbers: how fast people answer what waits for them, how many runs a task takes, how many tasks were
+ * cancelled and asked again; and which agents people go to. */
+function MetricsSection(props: { team: Team }) {
+  const t = props.team;
+  const days = signal<"7" | "30">("7");
+  const data = signal<Metrics | null>(null);
+  const error = signal("");
+  effect(() => {
+    const d = Number(days());
+    void untracked(() => t.metrics(d)).then((r) => (r.ok ? data.set(r.data as Metrics) : error.set(failed(r))));
+  });
+  const waits = (s: DurationStats | undefined) =>
+    !s || s.count === 0 ? L("none answered yet", "还没有") : L(`median ${span(s.median)} · 90% within ${span(s.p90)} · ${s.count} times`, `中位 ${span(s.median)} · 90% 在 ${span(s.p90)}内 · 共 ${s.count} 次`);
+  const row = (label: string, value: string, testID?: string) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 3 }}>
+      <Text style={{ width: 120, fontSize: 13.5, color: colors.muted }}>{label}</Text>
+      <Text testID={testID} style={{ flex: 1, fontSize: 13.5, color: colors.text }}>{value}</Text>
+    </View>
+  );
+  return (
+    <>
+      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+        {L("Three numbers to watch while the team tries working with agents. Everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这三个数。全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
+      </Text>
+      <Choice testID="metrics-days" options={[{ value: "7", label: L("Last 7 days", "最近 7 天") }, { value: "30", label: L("Last 30 days", "最近 30 天") }]} value={days()} onChange={(v) => days.set(v)} />
+      <ErrorNote text={error()} />
+      <If when={data()} else={<If when={!error()}><Spinner size={16} tint={colors.muted} /></If>}>
+        {(d) => (
+          <>
+            <Panel title={L("How fast people answer", "人回复「待你处理」要多久")}>
+              {row(L("All", "全部"), waits(d().reply), "metrics-reply")}
+              <Each of={REPLY_KINDS.filter((k) => d().reply_by[k.key])} key={(k) => k.key}>
+                {(k) => row(k().label(), waits(d().reply_by[k().key]))}
+              </Each>
+              <If when={d().reply.open}>
+                <Text style={{ fontSize: 12.5, color: colors.warn }}>{L(`${d().reply.open} still waiting, the oldest for ${span(d().reply.oldest)}.`, `还有 ${d().reply.open} 件在等，最久的已经等了 ${span(d().reply.oldest)}。`)}</Text>
+              </If>
+            </Panel>
+            <Panel title={L("Runs per task", "每个任务跑了几轮")}>
+              {row(L("Tasks", "任务"), d().runs.tasks ? L(`${d().runs.tasks}, mean ${d().runs.mean.toFixed(1)} runs, median ${d().runs.median}, most ${d().runs.max}`, `${d().runs.tasks} 个，平均 ${d().runs.mean.toFixed(1)} 轮，中位 ${d().runs.median}，最多 ${d().runs.max}`) : L("none yet", "还没有"), "metrics-runs")}
+              {row(L("3 runs or more", "3 轮及以上"), String(d().runs.three_plus))}
+            </Panel>
+            <Panel title={L("Cancelled and asked again", "取消后重来")}>
+              {row(L("Cancelled", "被取消"), String(d().cancelled))}
+              {row(L("Asked again", "其中重新派了"), String(d().redone), "metrics-redone")}
+              <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Asked again: the same person asked in the same channel within a day.", "重新派：同一个人在同一个频道一天内又派了一次。")}</Text>
+            </Panel>
+            <Panel title={L("Which agents people go to", "大家找哪个 Agent")}>
+              <Each of={d().agents.filter((a) => a.tasks > 0)} key={(a) => a.agent_id}>
+                {(a) => {
+                  const ag = () => t.agents().find((x) => x.id === a().agent_id);
+                  return (
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 3 }}>
+                      <Text style={{ width: 120, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{ag() ? `@${ag()!.handle}` : a().agent_id}</Text>
+                      <If when={a().team}><Tag label={L("Team", "团队")} tone="accent" /></If>
+                      <Text style={{ flex: 1, fontSize: 13.5, color: colors.muted }}>{L(`${a().tasks} tasks from ${a().people} people (${a().others} not its owner)`, `${a().tasks} 个任务，来自 ${a().people} 个人（${a().others} 个不是主人派的）`)}</Text>
+                    </View>
+                  );
+                }}
+              </Each>
+              <If when={!d().agents.some((a) => a.tasks > 0)}><Text style={{ fontSize: 13, color: colors.faint }}>{L("No tasks yet.", "还没有任务。")}</Text></If>
+            </Panel>
+          </>
+        )}
+      </If>
+    </>
   );
 }
 
