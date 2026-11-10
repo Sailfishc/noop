@@ -102,7 +102,9 @@ export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "han
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
   /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
-  max_per_day?: number; skipped?: number; last_task?: string };
+  max_per_day?: number; skipped?: number; last_task?: string;
+  /** skipped in a row since it last fired, and why the last one was: busy (last_task is not over) | limit (the day's) */
+  skipped_run?: number; skip_reason?: "busy" | "limit" };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** Handoff cards still waiting for a person. */

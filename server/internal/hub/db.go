@@ -133,6 +133,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN last_task TEXT",                              // the task it opened last
 		"ALTER TABLE triggers ADD COLUMN day TEXT NOT NULL DEFAULT ''",                // the day day_fires counts (2006-01-02, the server's zone)
 		"ALTER TABLE triggers ADD COLUMN day_fires INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE triggers ADD COLUMN skipped_run INTEGER NOT NULL DEFAULT 0", // skipped in a row since it last fired
+		"ALTER TABLE triggers ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''",   // why the last one was: busy (its last task is open) | limit
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

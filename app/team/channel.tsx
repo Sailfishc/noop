@@ -269,6 +269,13 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
                     (x().skipped ? L(` · skipped ${x().skipped} times`, ` · 跳过过 ${x().skipped} 次`) : "")}
                 </Text>
               </If>
+              <If when={x().skipped_run}>
+                <Text testID={`trigger-stuck-${x().id}`} style={{ fontSize: 12, color: colors.warn }}>
+                  {x().skip_reason === "limit"
+                    ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
+                    : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} isn’t over`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还没结束`)}
+                </Text>
+              </If>
               <View style={{ flexDirection: "row", gap: 6 }}>
                 <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void run(t.confirmTrigger(x().id))} /></If>
                 <If when={x().confirmed_by}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void run(t.patchTrigger(x().id, { enabled: !x().enabled }))} /></If>

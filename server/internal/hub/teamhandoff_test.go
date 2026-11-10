@@ -148,7 +148,14 @@ func TestTriggers(t *testing.T) {
 	r = gh("pull_request", pr("feature/more"))
 	check(t, "another PR while its task is still open: skipped", r.body["fired"] == float64(0), r)
 	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
-	check(t, "counted as skipped", tv["id"] == prTrg && tv["skipped"] == float64(1) && tv["fires"] == float64(1), resp{raw: []byte(fmt.Sprint(tv))})
+	check(t, "counted as skipped, in a row, and why", tv["id"] == prTrg && tv["skipped"] == float64(1) && tv["fires"] == float64(1) &&
+		tv["skipped_run"] == float64(1) && tv["skip_reason"] == "busy", resp{raw: []byte(fmt.Sprint(tv))})
+	last := tv["last_task"].(string)
+	e.do("POST", "/api/v1/tasks/"+last+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+last+"/report", e.token, map[string]any{"state": "review", "summary": "报告好了"})
+	check(t, "its last task waits for someone to accept it: that doesn't hold the next one back", gh("pull_request", pr("feature/more")).body["fired"] == float64(1))
+	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
+	check(t, "firing ends the run of skips", tv["skipped_run"] == float64(0) && tv["skip_reason"] == nil, resp{raw: []byte(fmt.Sprint(tv))})
 	done := func() {
 		id := e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)["last_task"].(string)
 		check(t, "its task is cancelled", e.do("POST", "/api/v1/tasks/"+id+"/cancel", e.wl.session, nil).status == 200)

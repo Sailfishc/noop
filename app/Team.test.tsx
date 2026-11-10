@@ -1222,11 +1222,13 @@ describe("passing the ball", () => {
   test("a channel's triggers: one waits for the owner's yes; a new one is added from the members panel", async () => {
     const log = newLog();
     const waitingOne = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0 };
-    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne] }) });
+    const stuck = { ...waitingOne, id: "trg_9", confirmed_by: "u_1", fires: 5, fired: T0, max_per_day: 10, skipped: 4, skipped_run: 3, skip_reason: "busy", last_task: "T-0007" };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne, stuck] }) });
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_1");
     expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
+    expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还没结束")).toBe(true);
     await app.press("id:trigger-confirm-trg_1");
     await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
     await app.waitFor("text:还没触发过");

@@ -66,7 +66,7 @@ describe("screens", () => {
 
   test("members", async () => {
     const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: { ...net(), [`GET ${URL}/api/v1/triggers?*`]: { body: { triggers: [
-      { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总一下昨晚的告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 4, created: T0, max_per_day: 10, skipped: 2 },
+      { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总一下昨晚的告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 4, created: T0, max_per_day: 10, skipped: 2, skipped_run: 2, skip_reason: "busy", last_task: "T-0003" },
       { id: "trg_2", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "pr", text: "review 这个 PR", repo: "github.com/acme/pay", confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0, max_per_day: 10, skipped: 0 },
     ] } } } });
     await app.waitFor("id:channel-members");

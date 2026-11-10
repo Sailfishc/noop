@@ -55,14 +55,16 @@ type triggerView struct {
 	Fires       int64   `json:"fires"`
 	Created     int64   `json:"created"`
 	MaxPerDay   int64   `json:"max_per_day"`
-	Skipped     int64   `json:"skipped"`             // firings skipped: its last task still open, or the day's limit reached
-	LastTask    *string `json:"last_task,omitempty"` // the task it opened last
+	Skipped     int64   `json:"skipped"`               // firings skipped: its last task still open, or the day's limit reached
+	LastTask    *string `json:"last_task,omitempty"`   // the task it opened last
+	SkippedRun  int64   `json:"skipped_run"`           // skipped in a row since it last fired, so people see it is stuck
+	SkipReason  string  `json:"skip_reason,omitempty"` // busy (last_task is not over) | limit (the day's)
 	day         string
 	dayFires    int64
 }
 
 const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created, " +
-	"max_per_day, skipped, last_task, day, day_fires"
+	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason"
 
 func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	if err != nil {
@@ -73,7 +75,7 @@ func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	for rows.Next() {
 		var t triggerView
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
-			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires); err != nil {
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason); err != nil {
 			panic(err)
 		}
 		out = append(out, t)
@@ -307,14 +309,19 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	if t.day == today {
 		fires = t.dayFires
 	}
-	busy := false
+	// its last task still open: skip. One waiting for someone to accept it (review) has done its part (a daily
+	// report nobody clicked 验收 on), so the next one goes ahead; the day's limit still holds.
+	reason := ""
 	if t.LastTask != nil {
-		if last, ok := h.task(*t.LastTask); ok && last.State != taskDone && last.State != taskClosed {
-			busy = true
+		if last, ok := h.task(*t.LastTask); ok && last.State != taskDone && last.State != taskClosed && last.State != taskReview {
+			reason = "busy"
 		}
 	}
-	if busy || fires >= t.MaxPerDay {
-		h.must(h.db.Exec("UPDATE triggers SET skipped = skipped + 1 WHERE id = ?", t.ID))
+	if reason == "" && fires >= t.MaxPerDay {
+		reason = "limit"
+	}
+	if reason != "" {
+		h.must(h.db.Exec("UPDATE triggers SET skipped = skipped + 1, skipped_run = skipped_run + 1, skip_reason = ? WHERE id = ?", reason, t.ID))
 		return "skipped"
 	}
 	text := "⚡ @" + a.Handle + " " + t.Text
@@ -323,7 +330,7 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	}
 	m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
 	id := h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
-	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ? WHERE id = ?",
+	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
 		h.nowMs(), id, today, fires+1, t.ID))
 	return "fired"
 }
