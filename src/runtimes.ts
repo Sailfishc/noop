@@ -1,7 +1,7 @@
 // Runtime adapters: one way to start an agent engine headless on this machine, follow what it does, and resume its
 // session for the next turn: Codex (`codex exec --json`), Claude Code (`claude -p --output-format stream-json`) and pi
 // (`pi -p --mode json`).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEFAULT_GATES } from "./gates";
@@ -138,10 +138,36 @@ export function redact(text: string, env: Record<string, string> = {}): string {
   return text;
 }
 
+/** A line of the run's output as the log keeps it: images (a screenshot the agent read comes back as base64, twice in
+ * Claude Code's stream) become `[image/png, N bytes omitted]`, so one screenshot is not a 500 KB log line. Only the log
+ * changes; parsing sees the line as it was. Lines without base64 or that are not JSON are kept byte for byte. */
+export function stripImages(line: string): string {
+  if (!line.includes("base64") && line.length < 20_000) return line;
+  let v: unknown;
+  try { v = JSON.parse(line); } catch { return line; }
+  let changed = false;
+  const omit = (data: string, type?: unknown) => { changed = true; return `[${typeof type === "string" ? type : "image"}, ${data.length} bytes omitted]`; };
+  const walk = (x: any): any => {
+    if (Array.isArray(x)) return x.map(walk);
+    if (!x || typeof x !== "object") return x;
+    const out: any = {};
+    for (const [k, val] of Object.entries(x)) {
+      if (typeof val === "string" && val.length > 256 && (k === "base64" || (k === "data" && (x.type === "base64" || x.media_type)) || (val.length > 10_000 && /^[A-Za-z0-9+/=\s]+$/.test(val.slice(0, 2000)))))
+        out[k] = omit(val, x.media_type ?? x.mime_type ?? x.type);
+      else out[k] = walk(val);
+    }
+    return out;
+  };
+  const w = walk(v);
+  return changed ? JSON.stringify(w) : line;
+}
+
 /** Starts `command` with the prompt on stdin, turns each JSON line of its output into RunEvents with `parse`, and
  * collects the session, the last message and the error. Shared by the adapters below.
  * The run gets its own process group, so stopping it also stops what it started (a test run, a dev server). A
- * watchdog stops it when it prints nothing for `stallMs`, or runs past `timeoutMs`. */
+ * watchdog stops it when it prints nothing for `stallMs`, or runs past `timeoutMs`.
+ * The log (`logFile`) grows while the run goes, so a long run killed with the daemon still leaves its transcript; at
+ * the end it is rewritten with the exit code and stderr. */
 export function jsonlRun(bin: string, command: (o: RunOptions) => string[], parse: (line: string) => RunEvent | RunEvent[] | null, o: RunOptions): RunHandle {
   const cmd = command(o);
   const proc = Bun.spawn(cmd, {
@@ -161,12 +187,23 @@ export function jsonlRun(bin: string, command: (o: RunOptions) => string[], pars
     if (stopped) { clearInterval(watch); stop(); }
   }, Math.max(50, Math.min(30_000, (o.stallMs || o.timeoutMs || 30_000) / 4))) : undefined;
   const started = Date.now();
+  const head = `$ ${redact(cmd.join(" "), o.env)}\n`;
+  let logOk = false;
+  if (o.logFile) {
+    try {
+      if (!existsSync(dirname(o.logFile))) mkdirSync(dirname(o.logFile), { recursive: true });
+      writeFileSync(o.logFile, `${head}(running)\n\n`);
+      logOk = true;
+    } catch {}
+  }
   const done = (async (): Promise<RunResult> => {
     let session = o.resume ?? "", text = "", error: string | undefined, buf = "", log = "", usage: Usage | undefined, steps = 0;
     const dec = new TextDecoder();
     const onLine = (line: string) => {
       if (!line.trim()) return;
-      log += line + "\n";
+      const kept = stripImages(line) + "\n";
+      log += kept;
+      if (logOk) try { appendFileSync(o.logFile!, kept); } catch { logOk = false; }
       const got = parse(line);
       for (const ev of got ? (Array.isArray(got) ? got : [got]) : []) {
         if (ev.kind === "session") session = ev.id;
@@ -196,7 +233,7 @@ export function jsonlRun(bin: string, command: (o: RunOptions) => string[], pars
     if (o.logFile) {
       try {
         if (!existsSync(dirname(o.logFile))) mkdirSync(dirname(o.logFile), { recursive: true });
-        writeFileSync(o.logFile, `$ ${redact(cmd.join(" "), o.env)}\n(exit ${exitCode}${stopped ? `, stopped: ${stopped}` : ""})\n\n${log}\n[stderr]\n${stderr}`);
+        writeFileSync(o.logFile, `${head}(exit ${exitCode}${stopped ? `, stopped: ${stopped}` : ""})\n\n${log}\n[stderr]\n${stderr}`);
       } catch {}
     }
     if (exitCode && !error && !killed && !stopped) error = stderr.trim().split("\n").slice(-3).join("\n") || `${bin} exited ${exitCode}`;

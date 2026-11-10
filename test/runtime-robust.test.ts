@@ -1,11 +1,11 @@
 // How runs that go wrong are handled: failure categories on recorded runtime output, token usage, the watchdog and
 // process-group stop of a real child process, and the worker's retry / fresh session / continue / block decisions.
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify, planFor } from "../src/runfail";
-import { claudeEvent, codexEvent, jsonlRun, piEvent, type RunOptions, type RunResult, type Runtime } from "../src/runtimes";
+import { claudeEvent, codexEvent, jsonlRun, piEvent, stripImages, type RunOptions, type RunResult, type Runtime } from "../src/runtimes";
 import { createWorker, RESULT_ONLY, type Claim } from "../src/teamwork";
 
 test("failures are told apart by what the runtime said", () => {
@@ -256,4 +256,37 @@ test("a report refused for good (a stale run) is dropped, not sent forever", asy
   await w.flush();
   expect(tries).toBe(1);
   rmSync(W, { recursive: true, force: true });
+});
+
+test("Codex out of OpenAI credits is a billing block, not a retry", () => {
+  const f = classify({ error: "You have no credits remaining. Add credits to continue.", exitCode: 1 });
+  expect(f).toBe("billing");
+});
+
+test("the run log keeps no screenshots, and it grows while the run goes", async () => {
+  const png = "iVBORw0KGgo" + "A".repeat(5000);
+  const line = JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png } }] }] }, tool_use_result: { file: { base64: png, type: "image/png" } } });
+  const kept = stripImages(line);
+  expect(kept).not.toContain(png);
+  expect(kept).toContain("[image/png, 5011 bytes omitted]");
+  expect(stripImages('{"type":"assistant","text":"hi"}')).toBe('{"type":"assistant","text":"hi"}');
+  expect(stripImages("not json base64")).toBe("not json base64");
+
+  const W = mkdtempSync(join(tmpdir(), "remi-log-"));
+  try {
+    const logFile = join(W, "logs", "T-1.jsonl");
+    const script = `echo '{"type":"thread.started","thread_id":"s1"}'; echo '${line}'; sleep 0.4; echo '{"type":"turn.completed"}'`;
+    const h = jsonlRun("fake", () => ["sh", "-c", script], codexEvent, { cwd: W, prompt: "", logFile });
+    await Bun.sleep(250);
+    const [, during] = readFileSync(logFile, "utf8").split("\n(running)\n"); // the script line itself holds the image
+    expect(during).toBeDefined();
+    expect(during).toContain("thread.started");
+    expect(during).not.toContain(png);
+    await h.done;
+    const [, after] = readFileSync(logFile, "utf8").split("\n(exit 0)\n");
+    expect(after).toBeDefined();
+    expect(after).not.toContain(png);
+    expect(after).toContain("turn.completed");
+    expect(after).toContain("bytes omitted");
+  } finally { rmSync(W, { recursive: true, force: true }); }
 });
