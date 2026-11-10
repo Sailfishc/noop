@@ -1108,11 +1108,17 @@ describe("team ownership", () => {
     expect(app.shows("text:MCP jira")).toBe(true);
     expect(app.shows("text:/团队配置 abc1234/")).toBe(true);
     expect(app.shows("text:/没有 WIKI_TOKEN/")).toBe(true);
-    await app.press("id:machine-team-m_1");
+    expect(app.shows("text:/团队配置仓库默认不同步到这里/")).toBe(true);
+    await app.press("id:machine-syncconfig-m_1");
     await app.waitUntil(() => log.patches.length === 1);
-    expect(log.patches[0]).toEqual({ machine: { team: true } });
+    expect(log.patches[0]).toEqual({ machine: { sync_team_config: true } });
+    await app.waitFor("text:停止同步");
+    await app.press("id:machine-team-m_1");
+    await app.waitUntil(() => log.patches.length === 2);
+    expect(log.patches[1]).toEqual({ machine: { team: true } });
     await app.waitFor("text:取消团队机器");
     expect(app.shows("text:团队机器")).toBe(true);
+    expect(app.shows("id:machine-syncconfig-m_1")).toBe(false);
   });
 
   test("a team agent: any admin changes it, and picks its responsible person", async () => {
@@ -1167,6 +1173,21 @@ describe("team ownership", () => {
     expect(app.shows("text:/张伟 在 .* 从 王磊 手里接手/")).toBe(true);
     expect(app.shows("id:task-T-0001-takeover")).toBe(false);
   });
+
+  test("someone asked to take over a task of an agent that needs its owner's yes: the owner says yes", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: server(log, {}, [task({ created_by: "u_1", state: "running", runs: 1, tracked: true,
+        mandate: { by: "u_1", takeovers: [{ from: "u_1", to: "u_2", at: T0, pending: true }] } })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-takeover-approve");
+    expect(app.shows("text:/王磊 在 .* 想接手，等 @.* 同意/")).toBe(true);
+    await app.press("id:task-T-0001-takeover-approve");
+    await app.waitUntil(() => log.acts.includes("T-0001 takeover"));
+    await app.waitUntil(() => app.shows("text:/王磊 在 .* 从 张伟 手里接手/"));
+    expect(app.shows("id:task-T-0001-takeover-approve")).toBe(false);
+  });
 });
 
 describe("passing the ball", () => {
@@ -1201,11 +1222,13 @@ describe("passing the ball", () => {
   test("a channel's triggers: one waits for the owner's yes; a new one is added from the members panel", async () => {
     const log = newLog();
     const waitingOne = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0 };
-    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne] }) });
+    const stuck = { ...waitingOne, id: "trg_9", confirmed_by: "u_1", fires: 5, fired: T0, max_per_day: 10, skipped: 4, skipped_run: 3, skip_reason: "busy", last_task: "T-0007" };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne, stuck] }) });
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_1");
     expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
+    expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还没结束")).toBe(true);
     await app.press("id:trigger-confirm-trg_1");
     await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
     await app.waitFor("text:还没触发过");
@@ -1213,9 +1236,12 @@ describe("passing the ball", () => {
     await app.press("id:trigger-kind-pr");
     await app.type("id:trigger-repo", "https://github.com/acme/pay");
     await app.type("id:trigger-text", "review 这个 PR");
+    await app.clear("id:trigger-max");
+    await app.type("id:trigger-max", "3");
     await app.press("id:trigger-save");
     await app.waitUntil(() => log.created.length === 1);
-    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "" } });
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
+    expect(app.shows("text:每天最多 3 次；上一个任务没结束时跳过")).toBe(true);
   });
 });

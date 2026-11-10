@@ -814,7 +814,9 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		errJSON(w, 409, "任务现在是 "+t.State+"，不能认领")
 		return
 	}
-	if !h.mayRun(w, t, a, mine) {
+	// claimed again by its own machine: a restart of the daemon (counted), unless it stopped the run to take up news
+	// (a reply, an answer, a repository it asked for): that is the run going on, not dying
+	if !h.mayRun(w, t, a, mine && !t.News) {
 		return
 	}
 	fresh := h.unseen(t)

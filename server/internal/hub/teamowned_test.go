@@ -36,10 +36,20 @@ func TestTeamConfigAndReport(t *testing.T) {
 	check(t, "nonsense is refused", e.do("PUT", "/api/v1/team/config", e.zw.session, map[string]any{"repo": "config"}).status == 400)
 	r := e.do("PUT", "/api/v1/team/config", e.zw.session, map[string]any{"repo": "https://github.com/acme/remi-config"})
 	check(t, "an admin sets the team config repository", r.status == 200 && r.body["repo"] == "https://github.com/acme/remi-config", r)
-	r = e.do("PUT", "/api/v1/machine", e.token, map[string]any{"os": "darwin", "runtimes": []string{"claude"},
-		"skills": []string{"release-notes", "release-notes", "sql-review"}, "mcp": []string{"jira"},
-		"team_config": map[string]any{"repo": "https://github.com/acme/remi-config", "commit": "abc123", "synced": 5, "instructions": true}})
-	check(t, "machines are told where it is", r.body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config", r)
+	report := func() resp {
+		return e.do("PUT", "/api/v1/machine", e.token, map[string]any{"os": "darwin", "runtimes": []string{"claude"},
+			"skills": []string{"release-notes", "release-notes", "sql-review"}, "mcp": []string{"jira"},
+			"team_config": map[string]any{"repo": "https://github.com/acme/remi-config", "commit": "abc123", "synced": 5, "instructions": true}})
+	}
+	r = report()
+	check(t, "王磊's own Mac is not told (it would run the repository's MCP commands there)", r.body["team_config"].(map[string]any)["repo"] == "", r)
+	check(t, "an admin can't turn it on for him", e.do("PATCH", "/api/v1/machines/"+e.mid, e.zw.session, map[string]any{"sync_team_config": true}).status == 403)
+	check(t, "he can", e.do("PATCH", "/api/v1/machines/"+e.mid, e.wl.session, map[string]any{"sync_team_config": true}).body["machine"].(map[string]any)["sync_team_config"] == true)
+	r = report()
+	check(t, "then it is told where it is", r.body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config", r)
+	e.do("PATCH", "/api/v1/machines/"+e.mid, e.wl.session, map[string]any{"sync_team_config": false})
+	e.do("PATCH", "/api/v1/machines/"+e.mid, e.zw.session, map[string]any{"team": true})
+	check(t, "a team machine always is", report().body["team_config"].(map[string]any)["repo"] == "https://github.com/acme/remi-config")
 	m := r.body["machine"].(map[string]any)
 	check(t, "and report what their agents can use and how the sync went", len(m["skills"].([]any)) == 2 && m["mcp"].([]any)[0] == "jira" &&
 		m["team_config"].(map[string]any)["commit"] == "abc123", r)
@@ -74,4 +84,32 @@ func TestTakeover(t *testing.T) {
 	check(t, "their words now reach the agent", e.task(id)["news"] == true)
 	out := e.join("out@corp.com", "outsider", "member", e.zw.session)
 	check(t, "not someone outside the channel", e.do("POST", "/api/v1/tasks/"+id+"/takeover", out.session, nil).status == 403)
+}
+
+func TestTakeoverFollowsTheAgentsRules(t *testing.T) {
+	// an agent that needs its owner (王磊) to confirm: someone else taking a task over asks him first
+	e := newTaskEnv(t, "channel", true)
+	m := e.post(e.wl.session, "@acha 查下退款", "")
+	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.wl.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r := e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.ll.session, nil)
+	tk := r.body
+	check(t, "asked, not taken yet", r.status == 200 && tk["created_by"] == e.wl.id &&
+		tk["mandate"].(map[string]any)["takeovers"].([]any)[0].(map[string]any)["pending"] == true, r)
+	e.post(e.ll.session, "先只看 /refunds", m["id"].(string))
+	check(t, "her words don't steer it meanwhile", e.task(id)["news"] == false)
+	check(t, "only the owner says yes", e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.ll.session, map[string]any{"approve": true}).status == 403)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.wl.session, map[string]any{"approve": true})
+	check(t, "the owner says yes: hers now", r.status == 200 && r.body["created_by"] == e.ll.id &&
+		r.body["mandate"].(map[string]any)["takeovers"].([]any)[0].(map[string]any)["pending"] == nil, r)
+	check(t, "nothing left to confirm", e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.wl.session, map[string]any{"approve": true}).status == 409)
+
+	// the owner turns one down
+	e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.zw.session, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.wl.session, map[string]any{"approve": false})
+	check(t, "turned down: it stays hers", r.status == 200 && r.body["created_by"] == e.ll.id && len(r.body["mandate"].(map[string]any)["takeovers"].([]any)) == 1, r)
+
+	// an owner-only agent: nobody else can take its work over
+	e.do("PATCH", "/api/v1/agents/"+e.aid, e.wl.session, map[string]any{"dispatch": "owner"})
+	check(t, "owner-only: refused", e.do("POST", "/api/v1/tasks/"+id+"/takeover", e.zw.session, nil).status == 403)
 }

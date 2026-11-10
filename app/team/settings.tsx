@@ -1079,6 +1079,17 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <If when={m().team_config}>
         {(c) => <TeamConfigLine status={c()} testID={`machine-${m().id}-teamconfig`} />}
       </If>
+      <If when={!m().team && t.me()?.id === m().owner_id}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <Text testID={`machine-${m().id}-syncconfig-note`} style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.muted }}>
+            {m().sync_team_config
+              ? L("This machine takes the team config repository too: its MCP commands run here, and its skills show up in your own Claude Code, Codex and Pi.", "这台机器也同步团队配置仓库：仓库里的 MCP 命令会在这里执行，skills 会出现在你本机的 Claude Code、Codex 和 Pi 里。")
+              : L("Your own machine: the team config repository is not synced here. Turned on, its MCP commands run on this machine and its skills show up in your own Claude Code, Codex and Pi.", "这是你自己的机器，团队配置仓库默认不同步到这里。开启后，仓库里的 MCP 命令会在这台机器上执行，skills 会出现在你本机的 Claude Code、Codex 和 Pi 里。")}
+          </Text>
+          <Btn small kind="ghost" testID={`machine-syncconfig-${m().id}`} label={m().sync_team_config ? L("Stop syncing", "停止同步") : L("Sync the team config", "同步团队配置")}
+            onPress={async () => { const r = await t.patchMachine(m().id, { sync_team_config: !m().sync_team_config }); if (!r.ok) joinError.set(failed(r)); }} />
+        </View>
+      </If>
 
       <Label text={L("Agents on this machine", "跑在这台机器上的 Agent")} />
       <Each of={agents()} key={(a) => a.id}>

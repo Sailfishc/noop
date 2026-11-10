@@ -182,9 +182,13 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const busy = signal("");
   const error = signal("");
   /** Someone else in the channel can take it over (its asker is away): it goes on in their name. */
-  const canTakeOver = () => !!me() && me()!.id !== task().created_by && !["done", "closed"].includes(task().state) &&
-    (me()!.role === "admin" || !!t.channels().find((c) => c.id === task().channel_id)?.members.some((m) => m.kind === "user" && m.id === me()!.id));
   const lastTakeover = () => task().mandate?.takeovers?.at(-1);
+  /** Taking it over is asking the agent in one's own name: an owner-only agent's work can't be; one that needs its
+   * owner's yes waits for it (pendingTakeover). */
+  const canTakeOver = () => !!me() && me()!.id !== task().created_by && !["done", "closed"].includes(task().state) &&
+    (me()!.id === agent()?.owner_id || agent()?.dispatch !== "owner") && !(lastTakeover()?.pending && lastTakeover()!.to === me()!.id) &&
+    (me()!.role === "admin" || !!t.channels().find((c) => c.id === task().channel_id)?.members.some((m) => m.kind === "user" && m.id === me()!.id));
+  const pendingTakeover = () => (lastTakeover()?.pending && !["done", "closed"].includes(task().state) ? lastTakeover()! : null);
   const st = () => statusOf(task().state);
   const label = () => STATUS[st().status];
   const needs = () => waitsOn(t, task());
@@ -382,6 +386,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         <If when={props.detail && canTakeOver()}>
           <Btn small kind="ghost" testID={`task-${task().id}-takeover`} label={L("Take it over", "接手")} busy={busy() === "takeover"} onPress={() => act("takeover")} />
         </If>
+        <If when={props.detail && pendingTakeover() && isOwner()}>
+          <Btn small testID={`task-${task().id}-takeover-approve`} label={L("Let them take it over", "同意接手")} busy={busy() === "takeover"} onPress={() => act("takeover", { approve: true })} />
+          <Btn small kind="ghost" testID={`task-${task().id}-takeover-reject`} label={L("Don’t", "不同意")} onPress={() => act("takeover", { approve: false })} />
+        </If>
         <If when={party() && ["done", "closed"].includes(task().state)}>
           <Btn small kind="ghost" testID={`task-${task().id}-reopen`} label={L("Reopen", "重新打开")} busy={busy() === "reopen"} onPress={() => act("reopen")} />
         </If>
@@ -393,8 +401,11 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={props.detail ? lastTakeover() : null}>
         {(x) => (
           <Text testID={`task-${task().id}-takeover-note`} style={{ fontSize: 12.5, color: colors.muted }}>
-            {L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} took it over from ${t.users().find((u) => u.id === x().from)?.name ?? "?"} ${time(x().at)}`,
-              `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 从 ${t.users().find((u) => u.id === x().from)?.name ?? "?"} 手里接手`)}
+            {x().pending
+              ? L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} asked to take it over ${time(x().at)}; waiting for @${owner()?.handle ?? "?"} to say yes`,
+                `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 想接手，等 @${owner()?.handle ?? "?"} 同意`)
+              : L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} took it over from ${t.users().find((u) => u.id === x().from)?.name ?? "?"} ${time(x().at)}`,
+                `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 从 ${t.users().find((u) => u.id === x().from)?.name ?? "?"} 手里接手`)}
           </Text>
         )}
       </If>

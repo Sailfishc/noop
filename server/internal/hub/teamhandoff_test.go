@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +75,10 @@ func TestHandoffAndHolder(t *testing.T) {
 
 	check(t, "an agent can't @ another agent through a reminder", e.do("POST", "/api/v1/agent/remind", tok,
 		bytes.NewBufferString("2h @bei 写发布说明"), "content-type", "text/plain").status == 400)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("1m 请 @bei 写发布说明"), "content-type", "text/plain")
+	check(t, "nor by reminding itself with the other agent's @ in the text", r.status == 400 && strings.Contains(string(r.raw), "remi handoff @bei"), r)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("1m 问 @liuli 发布说明写好没"), "content-type", "text/plain")
+	check(t, "a person's @ in its own reminder is fine", r.status == 200, r)
 }
 
 func TestRemiSubmit(t *testing.T) {
@@ -111,7 +116,8 @@ func TestTriggers(t *testing.T) {
 
 	// pull requests and pushes (the owner sets these up: confirmed at once)
 	r = e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "pr", "repo": "https://github.com/acme/pay", "text": "review 这个 PR"})
-	check(t, "a PR trigger", r.status == 200 && r.body["confirmed_by"] == e.wl.id, r)
+	check(t, "a PR trigger", r.status == 200 && r.body["confirmed_by"] == e.wl.id && r.body["max_per_day"] == float64(defaultMaxPerDay), r)
+	prTrg := r.body["id"].(string)
 	e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "push", "repo": "https://code.corp.com/fin/ledger", "branch": "main", "text": "跑一下冒烟测试"})
 	e.h.cfg.GitWebhookSecret = "s3cret"
 	gh := func(event string, body any) resp {
@@ -137,4 +143,31 @@ func TestTriggers(t *testing.T) {
 	check(t, "not a push to another branch", r.body["fired"] == float64(0), r)
 	ts = e.do("GET", "/api/v1/tasks", e.zw.session, nil).body["tasks"].([]any)
 	check(t, "three tasks in all", len(ts) == 3, resp{raw: []byte(time.Now().String())})
+
+	// it does not pile up: skipped while its last task is open, and at most max_per_day a day
+	r = gh("pull_request", pr("feature/more"))
+	check(t, "another PR while its task is still open: skipped", r.body["fired"] == float64(0), r)
+	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
+	check(t, "counted as skipped, in a row, and why", tv["id"] == prTrg && tv["skipped"] == float64(1) && tv["fires"] == float64(1) &&
+		tv["skipped_run"] == float64(1) && tv["skip_reason"] == "busy", resp{raw: []byte(fmt.Sprint(tv))})
+	last := tv["last_task"].(string)
+	e.do("POST", "/api/v1/tasks/"+last+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+last+"/report", e.token, map[string]any{"state": "review", "summary": "报告好了"})
+	check(t, "its last task waits for someone to accept it: that doesn't hold the next one back", gh("pull_request", pr("feature/more")).body["fired"] == float64(1))
+	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)
+	check(t, "firing ends the run of skips", tv["skipped_run"] == float64(0) && tv["skip_reason"] == nil, resp{raw: []byte(fmt.Sprint(tv))})
+	done := func() {
+		id := e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[1].(map[string]any)["last_task"].(string)
+		check(t, "its task is cancelled", e.do("POST", "/api/v1/tasks/"+id+"/cancel", e.wl.session, nil).status == 200)
+	}
+	done()
+	check(t, "once it ended, the next PR fires", gh("pull_request", pr("feature/more")).body["fired"] == float64(1))
+	check(t, "a bystander can't change the limit", e.do("PATCH", "/api/v1/triggers/"+prTrg, e.ll.session, map[string]any{"max_per_day": 1}).status == 403)
+	check(t, "nor set it to nonsense", e.do("PATCH", "/api/v1/triggers/"+prTrg, e.wl.session, map[string]any{"max_per_day": 0}).status == 400)
+	r = e.do("PATCH", "/api/v1/triggers/"+prTrg, e.wl.session, map[string]any{"max_per_day": 2})
+	check(t, "its owner sets 2 a day", r.status == 200 && r.body["max_per_day"] == float64(2), r)
+	done()
+	check(t, "the day's limit reached: skipped", gh("pull_request", pr("feature/third")).body["fired"] == float64(0))
+	e.advance(24 * time.Hour)
+	check(t, "the next day it fires again", gh("pull_request", pr("feature/third")).body["fired"] == float64(1))
 }

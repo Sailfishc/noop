@@ -18,6 +18,8 @@ export type Machine = {
   repos?: RepoRef[] | null;
   /** A team machine: any admin may put agents on it and look after them. */
   team?: boolean;
+  /** A person's own machine that takes the team config repository too (its owner turned it on; team machines always do). */
+  sync_team_config?: boolean;
   /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
   skills?: string[] | null; mcp?: string[] | null;
   /** How the team config repository last synced there. */
@@ -54,7 +56,7 @@ export type PR = { provider: "github" | "gitlab"; url: string; number: number; t
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
   /** People in the channel who took it over from the one who asked; by is the last. */
-  takeovers?: { from: string; to: string; at: number }[] | null;
+  takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
   /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
   via?: string[] | null; parent?: string; trigger?: string };
 export type Task = {
@@ -98,7 +100,11 @@ export type Handoff = { id: string; to: string; what: string; message: string; a
 export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
-  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number };
+  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
+  /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
+  max_per_day?: number; skipped?: number; last_task?: string;
+  /** skipped in a row since it last fired, and why the last one was: busy (last_task is not over) | limit (the day's) */
+  skipped_run?: number; skip_reason?: "busy" | "limit" };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** Handoff cards still waiting for a person. */
@@ -659,7 +665,7 @@ export function createTeam(s: Session) {
     return patchMachine(id, { name });
   }
   /** name; team (admins): make it a team machine or no longer one. */
-  async function patchMachine(id: string, patch: { name?: string; team?: boolean }) {
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean }) {
     const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
@@ -702,14 +708,14 @@ export function createTeam(s: Session) {
   const teamConfig = () => api("GET", "/api/v1/team/config");
   /** A channel's triggers (teamtriggers.go). */
   const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
-  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string }) =>
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number }) =>
     api("POST", "/api/v1/triggers", body);
   const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
-  const patchTrigger = (id: string, enabled: boolean) => api("PATCH", `/api/v1/triggers/${id}`, { enabled });
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name). */
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one). */
   async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {

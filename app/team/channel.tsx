@@ -222,6 +222,7 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
   const repeat = signal("weekdays");
   const repo = signal("");
   const branch = signal("");
+  const perDay = signal("10");
   const load = async () => { const r = await t.triggers(props.channelId); if (r.ok) list.set(r.data.triggers as Trigger[]); };
   void load();
   async function run(p: Promise<{ ok: boolean; status: number; data: any }>) {
@@ -234,7 +235,8 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
   async function add() {
     busy.set(true);
     const ok = await run(t.createTrigger({ channel_id: props.channelId, agent: agent() || props.agents[0]?.id || "", kind: kind(), text: text().trim(),
-      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat() } : { repo: repo().trim(), branch: branch().trim() }) }));
+      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat() } : { repo: repo().trim(), branch: branch().trim() }),
+      ...(perDay().trim() && perDay().trim() !== "10" ? { max_per_day: Number(perDay().trim()) } : {}) }));
     busy.set(false);
     if (ok) { adding.set(false); text.set(""); }
   }
@@ -261,9 +263,22 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
                 {!x().confirmed_by ? L(`Waits for @${t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?"} to confirm once`, `等 @${t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?"} 确认一次`)
                   : !x().enabled ? L("Paused", "已暂停") : x().fires ? L(`Fired ${x().fires} times, last ${time(x().fired!)}`, `触发过 ${x().fires} 次，上次 ${time(x().fired!)}`) : L("Not fired yet", "还没触发过")}
               </Text>
+              <If when={x().max_per_day}>
+                <Text testID={`trigger-limits-${x().id}`} style={{ fontSize: 12, color: colors.faint }}>
+                  {L(`At most ${x().max_per_day} a day; skipped while its last task is open`, `每天最多 ${x().max_per_day} 次；上一个任务没结束时跳过`) +
+                    (x().skipped ? L(` · skipped ${x().skipped} times`, ` · 跳过过 ${x().skipped} 次`) : "")}
+                </Text>
+              </If>
+              <If when={x().skipped_run}>
+                <Text testID={`trigger-stuck-${x().id}`} style={{ fontSize: 12, color: colors.warn }}>
+                  {x().skip_reason === "limit"
+                    ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
+                    : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} isn’t over`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还没结束`)}
+                </Text>
+              </If>
               <View style={{ flexDirection: "row", gap: 6 }}>
                 <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void run(t.confirmTrigger(x().id))} /></If>
-                <If when={x().confirmed_by}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void run(t.patchTrigger(x().id, !x().enabled))} /></If>
+                <If when={x().confirmed_by}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void run(t.patchTrigger(x().id, { enabled: !x().enabled }))} /></If>
                 <Btn small kind="ghost" testID={`trigger-remove-${x().id}`} label={L("Remove", "删除")} onPress={() => void run(t.deleteTrigger(x().id))} />
               </View>
             </View>
@@ -283,6 +298,7 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
             <Choice testID="trigger-repeat" options={Object.keys(REPEAT).map((k) => ({ value: k, label: REPEAT[k]!() }))} value={repeat()} onChange={(v) => repeat.set(v)} />
             <Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID="trigger-when" />
           </If>
+          <Field label={L("At most a day", "每天最多触发（次）")} value={perDay()} onChange={(v) => perDay.set(v)} placeholder="10" testID="trigger-max" />
           <Field label={L("What to ask", "让它做什么")} value={text()} onChange={(v) => text.set(v)} placeholder={L("Summarize last night’s alerts", "汇总一下昨晚的告警")} testID="trigger-text" />
           <View style={{ flexDirection: "row", gap: 6 }}>
             <Btn small kind="primary" testID="trigger-save" label={L("Add", "添加")} busy={busy()} disabled={!text().trim()} onPress={() => void add()} />

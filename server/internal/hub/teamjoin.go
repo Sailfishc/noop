@@ -56,13 +56,23 @@ func (h *Hub) v1MachinePatch(w http.ResponseWriter, q *request) {
 		return
 	}
 	var b struct {
-		Name *string `json:"name"`
-		Team *bool   `json:"team"`
+		Name           *string `json:"name"`
+		Team           *bool   `json:"team"`
+		SyncTeamConfig *bool   `json:"sync_team_config"`
 	}
 	_ = q.json(&b)
 	if b.Team != nil && !h.isAdmin(q.who.userID) {
 		errJSON(w, 403, "只有管理员能把机器设成团队机器")
 		return
+	}
+	if b.SyncTeamConfig != nil {
+		var owner string
+		_ = h.db.QueryRow("SELECT owner_id FROM machines WHERE id = ?", id).Scan(&owner)
+		if owner != q.who.userID { // it runs the repository's commands on someone's own computer: theirs to say
+			errJSON(w, 403, "只有机器的主人能决定要不要同步团队配置")
+			return
+		}
+		h.must(h.db.Exec("UPDATE machines SET sync_team_config = ? WHERE id = ?", boolInt(*b.SyncTeamConfig), id))
 	}
 	if b.Name != nil {
 		name := trimmed(*b.Name, 60)

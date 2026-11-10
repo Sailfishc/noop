@@ -17,6 +17,10 @@ import (
 // It is confirmed once, by the agent's owner when the agent asks for that, and then each firing is a task at once (no
 // "确认开工" every morning), in the name of the person who set it up, said in the channel as them with a ⚡.
 // Branches of agents' own tasks (agent/…) never fire a trigger: agents don't set each other off.
+//
+// It does not pile up: while the task it opened last is still open, a firing is skipped (counted, nothing said), and
+// it fires at most max_per_day times a day (default 10, changeable). Each firing is its own thread in the channel (a
+// thread holds one task per agent); skipping is what keeps a busy repository from flooding the channel.
 
 const triggersSchema = `
 CREATE TABLE IF NOT EXISTS triggers (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_by TEXT NOT NULL,
@@ -26,7 +30,11 @@ CREATE TABLE IF NOT EXISTS triggers (id TEXT PRIMARY KEY, channel_id TEXT NOT NU
 CREATE INDEX IF NOT EXISTS triggers_channel ON triggers (channel_id);
 `
 
-const maxTriggers = 20 // per channel
+const (
+	maxTriggers      = 20  // per channel
+	defaultMaxPerDay = 10  // firings a day
+	ceilingMaxPerDay = 100 // the most anyone can set
+)
 
 var triggerKinds = map[string]bool{"schedule": true, "pr": true, "push": true}
 
@@ -46,9 +54,17 @@ type triggerView struct {
 	Fired       *int64  `json:"fired"`
 	Fires       int64   `json:"fires"`
 	Created     int64   `json:"created"`
+	MaxPerDay   int64   `json:"max_per_day"`
+	Skipped     int64   `json:"skipped"`               // firings skipped: its last task still open, or the day's limit reached
+	LastTask    *string `json:"last_task,omitempty"`   // the task it opened last
+	SkippedRun  int64   `json:"skipped_run"`           // skipped in a row since it last fired, so people see it is stuck
+	SkipReason  string  `json:"skip_reason,omitempty"` // busy (last_task is not over) | limit (the day's)
+	day         string
+	dayFires    int64
 }
 
-const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created"
+const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created, " +
+	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason"
 
 func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	if err != nil {
@@ -59,7 +75,7 @@ func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	for rows.Next() {
 		var t triggerView
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
-			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created); err != nil {
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason); err != nil {
 			panic(err)
 		}
 		out = append(out, t)
@@ -109,9 +125,18 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		Repeat    string `json:"repeat"`
 		Repo      string `json:"repo"`
 		Branch    string `json:"branch"`
+		MaxPerDay *int64 `json:"max_per_day"`
 	}
 	_ = q.json(&b)
 	me := q.who.userID
+	perDay := int64(defaultMaxPerDay)
+	if b.MaxPerDay != nil {
+		if *b.MaxPerDay < 1 || *b.MaxPerDay > ceilingMaxPerDay {
+			errJSON(w, 400, fmt.Sprintf("每天最多触发 1 到 %d 次", ceilingMaxPerDay))
+			return
+		}
+		perDay = *b.MaxPerDay
+	}
 	c, ok := h.channel(b.ChannelID)
 	if !ok {
 		errJSON(w, 404, "没有这个频道")
@@ -174,8 +199,8 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		confirmed = me
 	}
 	id := newID("trg_")
-	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs()))
+	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs(), perDay))
 	t, _ := h.trigger(id)
 	if confirmed == nil {
 		if o, ok := h.user(a.OwnerID); ok {
@@ -233,16 +258,24 @@ func (h *Hub) v1TriggerConfirm(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
-// v1TriggerPatch: {enabled}.
+// v1TriggerPatch: {enabled?, max_per_day?}.
 func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 	t, _, ok := h.mayManageTrigger(w, q)
 	if !ok {
 		return
 	}
 	var b struct {
-		Enabled *bool `json:"enabled"`
+		Enabled   *bool  `json:"enabled"`
+		MaxPerDay *int64 `json:"max_per_day"`
 	}
 	_ = q.json(&b)
+	if b.MaxPerDay != nil {
+		if *b.MaxPerDay < 1 || *b.MaxPerDay > ceilingMaxPerDay {
+			errJSON(w, 400, fmt.Sprintf("每天最多触发 1 到 %d 次", ceilingMaxPerDay))
+			return
+		}
+		h.must(h.db.Exec("UPDATE triggers SET max_per_day = ? WHERE id = ?", *b.MaxPerDay, t.ID))
+	}
 	if b.Enabled != nil {
 		h.must(h.db.Exec("UPDATE triggers SET enabled = ? WHERE id = ?", boolInt(*b.Enabled), t.ID))
 	}
@@ -262,22 +295,44 @@ func (h *Hub) v1TriggerDelete(w http.ResponseWriter, q *request) {
 }
 
 // fire: the trigger asks its agent, in its channel, in its person's name; a task at once. extra: what happened (the
-// PR, the push). False when it can no longer fire (the person left, the agent is gone): it is turned off.
-func (h *Hub) fire(t triggerView, extra string) bool {
+// PR, the push). It says "fired", "skipped" (its last task is still open, or it fired max_per_day times today), or
+// "off" when it can no longer fire (the person left, the agent is gone): it is turned off.
+func (h *Hub) fire(t triggerView, extra string) string {
 	a, ok := h.agent(t.AgentID)
 	c, okc := h.channel(t.ChannelID)
 	if !ok || !okc || c.Archived || !h.isMember(c.ID, "user", t.CreatedBy) || !h.isMember(c.ID, "agent", a.ID) {
 		h.must(h.db.Exec("UPDATE triggers SET enabled = 0 WHERE id = ?", t.ID))
-		return false
+		return "off"
+	}
+	today := h.now().Format("2006-01-02")
+	fires := int64(0)
+	if t.day == today {
+		fires = t.dayFires
+	}
+	// its last task still open: skip. One waiting for someone to accept it (review) has done its part (a daily
+	// report nobody clicked 验收 on), so the next one goes ahead; the day's limit still holds.
+	reason := ""
+	if t.LastTask != nil {
+		if last, ok := h.task(*t.LastTask); ok && last.State != taskDone && last.State != taskClosed && last.State != taskReview {
+			reason = "busy"
+		}
+	}
+	if reason == "" && fires >= t.MaxPerDay {
+		reason = "limit"
+	}
+	if reason != "" {
+		h.must(h.db.Exec("UPDATE triggers SET skipped = skipped + 1, skipped_run = skipped_run + 1, skip_reason = ? WHERE id = ?", reason, t.ID))
+		return "skipped"
 	}
 	text := "⚡ @" + a.Handle + " " + t.Text
 	if extra != "" {
 		text += "\n\n" + extra
 	}
 	m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
-	h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
-	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1 WHERE id = ?", h.nowMs(), t.ID))
-	return true
+	id := h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
+		h.nowMs(), id, today, fires+1, t.ID))
+	return "fired"
 }
 
 // fireTriggers: the scheduled ones that are due. Tick calls it.
@@ -303,7 +358,7 @@ func (h *Hub) gitTriggers(kind, remote, branch, extra string) int {
 		if t.Branch != "" && t.Branch != branch {
 			continue
 		}
-		if h.fire(t, extra) {
+		if h.fire(t, extra) == "fired" {
 			n++
 		}
 		h.triggerChanged(t, false)

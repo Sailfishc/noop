@@ -51,8 +51,15 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
     [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
-    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t) => {
-      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...(t.mandate?.takeovers ?? []), { from: t.created_by, to: "u_1", at: T0 }] };
+    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t, b) => {
+      const xs = [...(t.mandate?.takeovers ?? [])];
+      if (b.approve !== undefined) { // the agent's owner on a pending takeover
+        const x = xs.pop();
+        if (b.approve) { xs.push({ from: x.from, to: x.to, at: x.at }); t.created_by = x.to; }
+        t.mandate = { ...t.mandate, by: t.created_by, takeovers: xs };
+        return;
+      }
+      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...xs, { from: t.created_by, to: "u_1", at: T0 }] };
       t.created_by = "u_1";
     }),
     [`POST ${URL}/api/v1/tasks/*/handoff`]: act("handoff", (t, b) => {
@@ -64,7 +71,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       const b = JSON.parse(r.body!);
       log.created.push({ trigger: b });
       const x = { id: `trg_${triggers.length + 1}`, channel_id: b.channel_id, agent_id: b.agent, created_by: "u_1", kind: b.kind, text: b.text, repeat: b.repeat ?? "",
-        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0 };
+        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0 };
       triggers.push(x);
       return { body: x };
     },
