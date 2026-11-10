@@ -50,6 +50,16 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
     [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
+    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t) => {
+      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...(t.mandate?.takeovers ?? []), { from: t.created_by, to: "u_1", at: T0 }] };
+      t.created_by = "u_1";
+    }),
+    [`GET ${URL}/api/v1/team/config`]: { body: { repo: "" } },
+    [`PUT ${URL}/api/v1/team/config`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.patches.push({ team_config: b });
+      return { body: { repo: b.repo } };
+    },
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
@@ -95,7 +105,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`PATCH ${URL}/api/v1/channels/c_1`]: (r: { body?: string | null }) => {
       const b = JSON.parse(r.body!);
       log.patches.push({ channel: b });
-      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, "") } };
+      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, ""), conventions: b.conventions ?? "" } };
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },

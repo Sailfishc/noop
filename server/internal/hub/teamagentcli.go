@@ -30,7 +30,10 @@ func (h *Hub) v1AgentChannel(w http.ResponseWriter, q *request) {
 		fmt.Fprintf(&b, "purpose: %s\n", c.Topic)
 	}
 	if c.Repo != "" {
-		fmt.Fprintf(&b, "default repository: %s\n", c.Repo)
+		fmt.Fprintf(&b, "usual repository: %s\n", c.Repo)
+	}
+	if c.Conventions != "" {
+		fmt.Fprintf(&b, "conventions (the members' rules for working here; follow them):\n%s\n", c.Conventions)
 	}
 	rows, err := h.db.Query("SELECT kind, member_id FROM channel_members WHERE channel_id = ? ORDER BY kind DESC, member_id", c.ID)
 	if err != nil {

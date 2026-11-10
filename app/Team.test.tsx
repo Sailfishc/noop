@@ -1087,3 +1087,84 @@ describe("tasks", () => {
     expect(app.shows("text:acme/pay")).toBe(true);
   });
 });
+
+describe("team ownership", () => {
+  const settings = async (app: any, tab: string) => {
+    await app.press("id:user-menu");
+    await app.press("id:menu-settings");
+    await app.waitFor("id:settings");
+    await app.press(`id:settings-nav-${tab}`);
+  };
+
+  test("an admin makes a machine a team machine; its card shows its Git identity, skills, MCP and the team config sync", async () => {
+    const log = newLog();
+    const box = { ...mac, git: [{ provider: "gitlab", host: "code.corp.com", configured: true, user: "remi-bot", via: "token" }], skills: ["release-notes"], mcp: ["jira"],
+      team_config: { repo: "git@code.corp.com:team/remi-config.git", commit: "abc1234", synced: T0, instructions: true, error: "MCP wiki：这台机器没有 WIKI_TOKEN" } };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } } } });
+    await settings(app, "machines");
+    await app.waitFor("id:machine-m_1-git");
+    expect(app.shows("text:code.corp.com · remi-bot")).toBe(true);
+    expect(app.shows("text:release-notes")).toBe(true);
+    expect(app.shows("text:MCP jira")).toBe(true);
+    expect(app.shows("text:/团队配置 abc1234/")).toBe(true);
+    expect(app.shows("text:/没有 WIKI_TOKEN/")).toBe(true);
+    await app.press("id:machine-team-m_1");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ machine: { team: true } });
+    await app.waitFor("text:取消团队机器");
+    expect(app.shows("text:团队机器")).toBe(true);
+  });
+
+  test("a team agent: any admin changes it, and picks its responsible person", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900,
+      network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [{ ...mac, team: true }] } } } });
+    await app.press("id:user-menu");
+    await app.press("id:menu-agents");
+    await app.waitFor("id:agent-owner-acha-u_2");
+    expect(app.shows("text:/跑在团队机器 张伟的 Mac 上/")).toBe(true);
+    await app.press("id:agent-owner-acha-u_2");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ owner_id: "u_2" });
+  });
+
+  test("团队配置: an admin names the repository; what goes in it; how each machine synced", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log) });
+    await settings(app, "teamconfig");
+    await app.waitFor("id:teamconfig-repo");
+    expect(app.shows("text:AGENTS.md")).toBe(true);
+    expect(app.shows("text:/还没同步|—/")).toBe(true);
+    await app.type("id:teamconfig-repo", "git@code.corp.com:team/remi-config.git");
+    await app.press("id:teamconfig-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ team_config: { repo: "git@code.corp.com:team/remi-config.git" } });
+  });
+
+  test("a channel's conventions are written in its members panel", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-conventions");
+    expect(app.shows("id:channel-conventions-save")).toBe(false);
+    await app.type("id:channel-conventions-input", "PR 标题用中文");
+    await app.press("id:channel-conventions-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ channel: { conventions: "PR 标题用中文" } });
+  });
+
+  test("someone in the channel takes over a task whose asker is away", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: server(log, {}, [task({ created_by: "u_2", state: "running", runs: 1, tracked: true })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-takeover");
+    await app.press("id:task-T-0001-takeover");
+    await app.waitUntil(() => log.acts.includes("T-0001 takeover"));
+    await app.waitFor("id:task-T-0001-takeover-note");
+    expect(app.shows("text:/张伟 在 .* 从 王磊 手里接手/")).toBe(true);
+    expect(app.shows("id:task-T-0001-takeover")).toBe(false);
+  });
+});

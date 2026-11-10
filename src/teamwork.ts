@@ -8,6 +8,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
 import { addUsage, classify, FAILURE_TEXT, type Failure, planFor, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
+import type { TeamContext } from "./teamconfig";
 
 export type Decision = { question: string; options: string[]; recommendation?: string; answer?: string };
 export type PR = { provider: string; url: string; number: number; title?: string; state: string; checks: string; repo?: string };
@@ -35,7 +36,8 @@ export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boo
 export type Claim = {
   task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string };
   /** repo: the channel's usual repository, a hint (the agent declares a repository itself with `remi repo`). */
-  channel: { id: string; name: string; topic: string; repo?: string };
+  /** conventions: how the channel works, written by its members. */
+  channel: { id: string; name: string; topic: string; repo?: string; conventions?: string };
   recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
   creator: { name: string; handle: string }; resumed: boolean;
   /** Why a waiting task woke (and what a callback posted). */
@@ -66,7 +68,8 @@ export type TaskResult = {
 /** Where a task runs. `repo` is the checkout this worktree belongs to. `files`: in/ (what people attached) and out/
  * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task.
  * `extra`: worktrees of the repositories the agent declared while it worked (remote → its worktree). */
-export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string; extra?: Record<string, Workdir> };
+/** setup: what came of the repository's .remi/setup.sh when the worktree was made ("" when it has none). */
+export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string; extra?: Record<string, Workdir>; setup?: string };
 
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
@@ -152,14 +155,19 @@ const FILES = (wd: Workdir) => wd.files
 
 /** The repositories the agent declared, ready as worktrees. */
 const EXTRA = (wd: Workdir) => Object.entries(wd.extra ?? {}).map(([remote, x]) =>
-  `\n- ${remote} is checked out at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch.`).join("");
+  `\n- ${remote} is checked out at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch.${SETUP(x)}`).join("");
+
+/** What came of the repository's setup script in a fresh worktree. */
+export const SETUP = (x: Workdir) => !x.setup ? "" : x.setup === "ok"
+  ? ` Its ${SETUP_SCRIPT} already ran there (dependencies are installed).`
+  : ` Its ${SETUP_SCRIPT} ${x.setup}: fix or work around that first, and say so in the summary.`;
 
 /** How to get a repository when the work turns out to need one. */
 const DECLARE = (c?: Claim) => `\n- If the request needs changes in a repository, first declare it with \`remi repo owner/name\` (or its address)${c?.channel.repo ? `; this channel usually works in ${c.channel.repo}` : ""}: your machine checks it out on your task branch and resumes you with its path. Do not clone repositories yourself to change them.`;
 
 const RULES = (wd: Workdir, c?: Claim) => wd.repo
   ? `# Rules (enforced: breaking them fails)
-- Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${EXTRA(wd)}
+- Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${SETUP(wd)}${EXTRA(wd)}
 - Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
 - Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${FILES(wd)}`
   : `# Rules
@@ -181,8 +189,12 @@ function mandateLine(c: Claim): string {
 }
 
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
-export function taskPrompt(c: Claim, wd: Workdir): string {
+export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): string {
   const a = c.agent, t = c.task;
+  const conventions = [
+    team?.instructions ? `# Team conventions (the team's AGENTS.md; they hold in every channel)\n${team.instructions}\n\n` : "",
+    c.channel.conventions ? `# How #${c.channel.name} works (its members wrote this; it comes before the team's conventions)\n${c.channel.conventions}\n\n` : "",
+  ].join("");
   return `You are ${a.name} (@${a.handle}), an AI teammate in a Remi workspace, running headless on your owner's machine.
 ${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a channel with requests; this is one of them. Many are questions: just answer them.
 
@@ -191,7 +203,7 @@ ${a.memory?.trim() || "(empty)"}
 
 ${RULES(wd, c)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
-# Channel #${c.channel.name}
+${conventions}# Channel #${c.channel.name}
 ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`remi read\` for more):
 ${quote(c, c.recent) || "(none)"}
 
@@ -256,7 +268,7 @@ ${RESULT_SPEC}`;
 /** Resuming a run that was stopped between two tool calls because news came: what people said, the repositories
  * that are ready now. The agent goes on with the same task in the same session. */
 export function steerPrompt(c: Claim, ready: Record<string, Workdir>, problem = ""): string {
-  const repos = Object.entries(ready).map(([remote, x]) => `- ${remote} is ready at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch (the machine pushes it and opens the pull request after you stop).`);
+  const repos = Object.entries(ready).map(([remote, x]) => `- ${remote} is ready at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch (the machine pushes it and opens the pull request after you stop).${SETUP(x)}`);
   if (problem) repos.push(`- The machine could not check out a repository you declared: ${problem}`);
   return `The machine paused you between two steps because something new came in while you worked.
 ${c.new.length ? `\nPeople in the task's thread said:\n${quote(c, c.new)}\n` : ""}${repos.length ? `\nRepositories you declared:\n${repos.join("\n")}\n` : ""}
@@ -331,6 +343,8 @@ export type WorkerOptions = {
   pauseMs?: (ms: number) => number;
   /** When news comes during a tool call, how long to let the call finish before stopping the run anyway (ms; default 3 minutes). */
   steerWaitMs?: number;
+  /** What the team config repository gives the runs (teamconfig.ts): conventions, MCP servers. */
+  team?: () => TeamContext | null;
 };
 
 const expand = (p: string) => (p.startsWith("~") ? join(homedir(), p.slice(1)) : resolve(p));
@@ -361,16 +375,16 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
     throw new Error(`@${c.agent.handle} 的仓库 ${c.agent.repo} 在这台机器上不存在或不是 git 仓库`);
   }
   const branch = c.task.branch || `agent/${c.task.id}`;
-  const { base, common } = await worktree(repoPath, dir, branch);
+  const { base, common, setup } = await worktree(repoPath, dir, branch);
   const files = join(root, `${c.task.id}.files`);
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
-  return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
+  return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files, ...(setup ? { setup } : {}) };
 }
 
 /** A worktree of the checkout at `repoPath` in `dir` on `branch` (made from the default branch the first time, kept
  * after), and the checkout's git directory (the run must be able to write it to commit). */
-async function worktree(repoPath: string, dir: string, branch: string): Promise<{ base: string; common: string }> {
+async function worktree(repoPath: string, dir: string, branch: string): Promise<{ base: string; common: string; setup: string }> {
   const common = (await git(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
   await git(repoPath, "fetch", "--quiet", "origin").catch(() => null);
   let base = (await git(repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")).out;
@@ -380,8 +394,18 @@ async function worktree(repoPath: string, dir: string, branch: string): Promise<
     const exists = (await git(repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).ok;
     const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, base);
     if (!r.ok) throw new Error(`开 worktree 失败：${r.out}`);
+    return { base, common, setup: await runSetup(dir) };
   }
-  return { base, common };
+  return { base, common, setup: "" };
+}
+
+/** The repository's own preparation of a fresh worktree (install dependencies, generate code): .remi/setup.sh, run
+ * once when the worktree is made, with the agents' git limits, at most 10 minutes. What came of it goes in the prompt. */
+export const SETUP_SCRIPT = ".remi/setup.sh";
+async function runSetup(dir: string): Promise<string> {
+  if (!existsSync(join(dir, SETUP_SCRIPT))) return "";
+  const r = await sh(`sh ${SETUP_SCRIPT}`, dir, { ...gateEnv({ cwd: dir, writable: [] }), REMI_WORKTREE: dir }, 10 * 60_000);
+  return r.code === 0 ? "ok" : `failed (exit ${r.code}): ${r.out.slice(0, 300)}`;
 }
 
 /** Worktrees of the repositories the agent declared (`remi repo`), beside the task's directory in <id>.repos/, on
@@ -394,8 +418,8 @@ export async function prepareDeclared(c: Claim, root: string, wd: Workdir, resol
     const repoPath = await resolve(remote);
     const dir = join(root, `${c.task.id}.repos`, remote.replace(/[^\w.-]+/g, "_"));
     const branch = c.task.branch || `agent/${c.task.id}`;
-    const { base, common } = await worktree(repoPath, dir, branch);
-    const x: Workdir = { cwd: dir, repo: repoPath, base, branch, writable: [] };
+    const { base, common, setup } = await worktree(repoPath, dir, branch);
+    const x: Workdir = { cwd: dir, repo: repoPath, base, branch, writable: [], ...(setup ? { setup } : {}) };
     wd.extra = { ...wd.extra, [remote]: x };
     wd.writable.push(dir, common);
     made[remote] = x;
@@ -691,7 +715,7 @@ export function createWorker(o: WorkerOptions) {
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
     const resume = t.session;
-    const prompt = !resume ? taskPrompt(c, wd) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -727,9 +751,11 @@ export function createWorker(o: WorkerOptions) {
     };
     const stallMs = o.stallMs ?? 20 * 60_000, timeoutMs = o.timeoutMs ?? 60 * 60_000;
     let usage: Usage | undefined, cancelled = false, wakeUp = () => {};
+    const tc = o.team?.(), teamMcp = tc && Object.keys(tc.mcp).length ? { servers: tc.mcp, file: tc.mcpFile } : null;
     const go = async (resumeId: string, text: string): Promise<RunResult> => {
       const h = rt.start({
         cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined, stallMs, timeoutMs,
+        ...(teamMcp ? { mcp: teamMcp } : {}),
         env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
       });
       handle = h;
@@ -759,7 +785,7 @@ export function createWorker(o: WorkerOptions) {
         try { ready = await prepareDeclared(c, root, wd, o.resolveRepo); } catch (e) { problem = e instanceof Error ? e.message : String(e); }
         log(`${t.id} 有新消息，在同一会话里续跑${Object.keys(ready).length ? `（仓库 ${Object.keys(ready).join(" ")} 已就绪）` : ""}`);
         const session = r.session || resume;
-        r = session ? await go(session, steerPrompt(c, ready, problem)) : await go("", taskPrompt(c, wd));
+        r = session ? await go(session, steerPrompt(c, ready, problem)) : await go("", taskPrompt(c, wd, o.team?.()));
         resumed = !!session;
         continue;
       }
@@ -782,7 +808,7 @@ export function createWorker(o: WorkerOptions) {
       if (plan.act === "fresh" && !fresh) {
         fresh = true;
         log(`${t.id} ${FAILURE_TEXT[f]}，换新会话重来`);
-        r = await go("", taskPrompt(c, wd));
+        r = await go("", taskPrompt(c, wd, o.team?.()));
         resumed = false;
         continue;
       }

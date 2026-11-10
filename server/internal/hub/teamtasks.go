@@ -117,6 +117,8 @@ type mandateView struct {
 	Branch   string `json:"branch"`           // the only branch it may push; changes go to a PR, never straight in
 	Runtime  string `json:"runtime"`
 	Model    string `json:"model,omitempty"`
+	// Takeovers: people in the channel who took it over from the one who asked (teamowned.go); By is the last.
+	Takeovers []takeoverView `json:"takeovers,omitempty"`
 }
 
 type taskView struct {
@@ -824,7 +826,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		}
 	}
 	creator, _ := h.user(t.CreatedBy)
-	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo},
+	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo, "conventions": c.Conventions},
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
 		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID)})
 }

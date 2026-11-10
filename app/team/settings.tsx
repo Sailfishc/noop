@@ -1,7 +1,9 @@
 // TeamAgent settings: a page of its own (bottom-left menu, or ⌘,), in three groups:
 //   个人: 账号 (profile, sign in on another device, signed-in devices, sign out), 通用 (language)
 //   Agent 工作: 我的 Agent (list + detail; New agent picks a machine, then a runtime on it), 我的机器 (runtimes, Git credentials, agents)
-//   团队·管理员: 成员与邀请, Git 平台 (the team's platforms, the GitLab webhook, each machine's credentials)
+//   团队·管理员: 成员与邀请, Git 平台 (the team's platforms, the GitLab webhook, each machine's credentials), 团队配置
+//   (the team config repository), 协作数据
+// Admins also look after the team machines and the agents on them (teamowned.go), beside their own.
 // An agent = one machine + one runtime on it + who can hand it work + its memory. A machine hosts many agents; the
 // repository follows the task (a channel's default, or one named in the message), not the agent.
 import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
@@ -12,12 +14,18 @@ import { notifyOn, notifyPermission, setNotify } from "./notify";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
-  type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team,
+  type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { SignupSection } from "./signups";
 import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
 
-export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "metrics";
+export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
+
+const isAdmin = (t: Team) => t.me()?.role === "admin";
+/** The machines I look after: mine, and (admins) the team machines. */
+const myMachinesOf = (t: Team) => t.machines().filter((m) => m.owner_id === t.me()?.id || (!!m.team && isAdmin(t)));
+/** The agents I look after: mine, and (admins) the ones on team machines. */
+const myAgentsOf = (t: Team) => t.agents().filter((a) => a.owner_id === t.me()?.id || (isAdmin(t) && !!t.machines().find((m) => m.id === a.machine_id)?.team));
 
 export const DISPATCH: { value: Dispatch; label: () => string; note: () => string }[] = [
   { value: "owner", label: () => L("Only me", "只有我"), note: () => L("Only you can hand it work.", "只有你能给它派活。") },
@@ -111,6 +119,7 @@ const NAV: { group: () => string; items: { tab: SettingsTab; icon: IconName; lab
   { group: () => L("Team · admin", "团队 · 管理员"), items: [
     { tab: "people", icon: "mail", label: () => L("Members & invites", "成员与邀请") },
     { tab: "git", icon: "merge", label: () => L("Git platforms", "Git 平台") },
+    { tab: "teamconfig", icon: "storage", label: () => L("Team config", "团队配置") },
     { tab: "metrics", icon: "sliders", label: () => L("How we work", "协作数据") },
   ] },
 ];
@@ -118,6 +127,7 @@ const NAV: { group: () => string; items: { tab: SettingsTab; icon: IconName; lab
 const TITLES: Record<SettingsTab, () => string> = {
   account: () => L("Account", "账号"), general: () => L("General", "通用"), agents: () => L("My agents", "我的 Agent"),
   machines: () => L("My machines", "我的机器"), people: () => L("Members & invites", "成员与邀请"), git: () => L("Git platforms", "Git 平台"),
+  teamconfig: () => L("Team config", "团队配置"),
   metrics: () => L("How we work", "协作数据"),
 };
 
@@ -127,10 +137,10 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
   const wide = computed(() => windowSize().width >= WIDE);
   const me = () => t.me();
   const mineCount = (tab: SettingsTab) =>
-    tab === "agents" ? t.agents().filter((a) => a.owner_id === me()?.id).length : tab === "machines" ? t.machines().filter((m) => m.owner_id === me()?.id).length : 0;
+    tab === "agents" ? myAgentsOf(t).length : tab === "machines" ? myMachinesOf(t).length : 0;
   // a New agent dialog asked from elsewhere (a machine's "New agent on this machine")
   /** Narrow windows: the agent whose own page is open (list, then one agent). */
-  const openAgent = () => (!wide() && props.tab === "agents" && props.agent ? t.agents().find((a) => a.handle === props.agent && a.owner_id === me()?.id) : undefined);
+  const openAgent = () => (!wide() && props.tab === "agents" && props.agent ? myAgentsOf(t).find((a) => a.handle === props.agent) : undefined);
   const creating = signal<{ machine?: string } | null>(null);
 
   const nav = () => (
@@ -184,6 +194,7 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
       case "machines": return <MachinesSection team={t} onNewAgent={(id) => creating.set({ machine: id })} onAgent={(h) => props.onTab("agents", h)} />;
       case "people": return <PeopleSection team={t} />;
       case "git": return <GitSection team={t} />;
+      case "teamconfig": return <TeamConfigSection team={t} />;
       case "metrics": return <MetricsSection team={t} />;
     }
   };
@@ -405,7 +416,7 @@ function NotifyPanel() {
 
 function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle: string) => void; onNew: () => void; onMachines: () => void }) {
   const t = props.team;
-  const mine = () => t.agents().filter((a) => a.owner_id === t.me()?.id);
+  const mine = () => myAgentsOf(t);
   const current = () => mine().find((a) => a.handle === props.selected) ?? mine()[0];
   const split = () => windowSize().width >= 1080;
   /** Phones: the list, or one agent's page (never both). */
@@ -481,8 +492,9 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
 function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }) {
   const t = props.team;
   const a = () => props.agent;
-  const myMachines = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
+  const myMachines = () => myMachinesOf(t);
   const machine = () => t.machines().find((m) => m.id === a().machine_id);
+  const owner = () => t.users().find((u) => u.id === a().owner_id);
   const st = () => agentState(t, a());
   const error = signal("");
   const moving = signal(false);
@@ -516,6 +528,17 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         </View>
       </View>
       <AgentText team={t} agent={a()} field="description" label={L("What it does", "职责")} placeholder={L("e.g. writes and fixes tests for the payments backend", "比如：给支付后端补测试、修测试")} />
+      <If when={machine()?.team}>
+        <Panel title={L("Team agent", "团队 Agent")}>
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>
+            {L(`It runs on the team machine ${machine()!.name}; any admin can change it. Its responsible person answers for it and confirms its work when asked.`, `它跑在团队机器 ${machine()!.name} 上，管理员都能改它的设置。负责人对它负责，需要确认时由负责人确认。`)}
+          </Text>
+          <Label text={L("Responsible person", "负责人")} />
+          <If when={isAdmin(t)} else={<Text testID={`agent-owner-${a().handle}`} style={{ fontSize: 14, color: colors.text }}>{owner()?.name ?? "—"}</Text>}>
+            <Choice testID={`agent-owner-${a().handle}`} options={t.users().filter((u) => !u.disabled).map((u) => ({ value: u.id, label: u.name }))} value={a().owner_id} onChange={(v) => void patch({ owner_id: v })} />
+          </If>
+        </Panel>
+      </If>
 
       <Panel title={L("Runs on", "运行在")}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
@@ -673,7 +696,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
   const model = signal("");
   const error = signal("");
   const busy = signal(false);
-  const mine = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
+  const mine = () => myMachinesOf(t);
   // each opening starts fresh, on the machine it was opened for (or the first online one)
   effect(() => {
     if (!props.open) return;
@@ -799,7 +822,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
 
 function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) => void; onAgent: (handle: string) => void }) {
   const t = props.team;
-  const mine = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
+  const mine = () => myMachinesOf(t);
   /** The command that adds my computers: they report in by themselves. */
   const code = signal("");
   const adding = () => !!code() || manual();
@@ -951,6 +974,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
           <If when={renaming()} else={
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text testID={`machine-name-${m().id}`} style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>{m().name}</Text>
+              <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
               <Btn small kind="ghost" testID={`machine-rename-${m().id}`} label={L("Rename", "改名")} onPress={() => { newName.set(m().name); renaming.set(true); }} />
             </View>
           }>
@@ -969,6 +993,10 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
             </Text>
           </View>
         </View>
+        <If when={isAdmin(t)}>
+          <Btn small kind="ghost" testID={`machine-team-${m().id}`} label={m().team ? L("Not a team machine", "取消团队机器") : L("Make it a team machine", "设为团队机器")}
+            onPress={async () => { const r = await t.patchMachine(m().id, { team: !m().team }); if (!r.ok) joinError.set(failed(r)); }} />
+        </If>
         <If when={!m().online && !join()}>
           <Btn small kind="ghost" testID={`machine-join-${m().id}`} label={L("Install command", "接入命令")} onPress={() => void newCode()} />
         </If>
@@ -1030,6 +1058,26 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
             {(r) => <Tag label={repoLabel(r().remote)} />}
           </Each>
         </View>
+      </If>
+
+      <Label text={L("Git identity", "Git 身份")} note={L("Who its agents’ pull requests come from (the tokens stay on the machine).", "它的 Agent 开的 PR 以谁的名义提交（令牌不离开机器）。")} />
+      <If when={(m().git ?? []).some((g) => g.configured)} else={<Text testID={`machine-${m().id}-git-none`} style={{ fontSize: 13, color: colors.faint }}>{reported() ? L("No Git credentials: its agents’ branches can’t be pushed.", "没有 Git 凭证：它的 Agent 的分支推不上去。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
+        <View testID={`machine-${m().id}-git`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          <Each of={(m().git ?? []).filter((g) => g.configured)} key={(g) => g.host}>
+            {(g) => <Tag label={`${g().host} · ${g().user || L("unknown user", "未知用户")}`} />}
+          </Each>
+        </View>
+      </If>
+
+      <Label text={L("Skills and MCP", "技能与 MCP")} note={L("What its agents can use beyond the runtime, by name.", "它的 Agent 除了 Runtime 本身还能用的东西（只显示名字）。")} />
+      <If when={(m().skills ?? []).length || (m().mcp ?? []).length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("None reported.", "没有上报。")}</Text>}>
+        <View testID={`machine-${m().id}-tools`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+          <Each of={m().skills ?? []}>{(n) => <Tag label={n()} />}</Each>
+          <Each of={m().mcp ?? []}>{(n) => <Tag label={`MCP ${n()}`} tone="accent" />}</Each>
+        </View>
+      </If>
+      <If when={m().team_config}>
+        {(c) => <TeamConfigLine status={c()} testID={`machine-${m().id}-teamconfig`} />}
       </If>
 
       <Label text={L("Agents on this machine", "跑在这台机器上的 Agent")} />
@@ -1195,7 +1243,7 @@ function GitSection(props: { team: Team }) {
   const platforms = () => data()?.platforms ?? [];
   // GitHub always shows: machines push there with their own token or gh, configured or not
   const shown = () => (platforms().some((p) => p.kind === "github") ? platforms() : [...platforms(), { kind: "github", name: "GitHub", host: "github.com", api: "https://api.github.com" } as GitPlatform]);
-  const myMachines = () => t.machines().filter((m) => m.owner_id === t.me()?.id);
+  const myMachines = () => myMachinesOf(t);
   async function save(list: GitPlatform[]) {
     busy.set(true);
     error.set("");
@@ -1400,6 +1448,82 @@ function MetricsSection(props: { team: Team }) {
           </>
         )}
       </If>
+    </>
+  );
+}
+
+/** How the team config repository last synced on a machine. */
+function TeamConfigLine(props: { status: TeamConfigStatus; testID: string }) {
+  const c = () => props.status;
+  return (
+    <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: c().error ? colors.warn : colors.muted }}>
+      {[L(`Team config ${c().commit || "?"}, synced ${time(c().synced)}`, `团队配置 ${c().commit || "?"}，${time(c().synced)} 同步`), c().instructions ? "" : L("no AGENTS.md", "没有 AGENTS.md"), c().error ?? ""].filter(Boolean).join(" · ")}
+    </Text>
+  );
+}
+
+// ---------------------------------------------------------------- 团队配置
+
+function TeamConfigSection(props: { team: Team }) {
+  const t = props.team;
+  const repo = signal("");
+  const saved = signal<string | null>(null);
+  const error = signal("");
+  const busy = signal(false);
+  void t.teamConfig().then((r) => {
+    if (!r.ok) return error.set(failed(r));
+    saved.set(r.data.repo ?? "");
+    repo.set(r.data.repo ?? "");
+  });
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.saveTeamConfig(repo().trim());
+    busy.set(false);
+    if (!r.ok) return error.set(failed(r));
+    saved.set(r.data.repo);
+  }
+  const line = (path: string, what: string) => (
+    <View style={{ flexDirection: "row", gap: 10 }}>
+      <Text style={{ width: 92, fontSize: 13, color: colors.text, ...mono }}>{path}</Text>
+      <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: colors.muted }}>{what}</Text>
+    </View>
+  );
+  return (
+    <>
+      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+        {L("One git repository with what every agent in the team should have. Every machine keeps a copy (checked every 10 minutes) and gives it to its agents; editing the team’s ways is a commit there.", "一个 Git 仓库，放全队 Agent 都该有的东西。每台机器都同步一份（每 10 分钟看一次）交给它的 Agent；改团队的规矩就是往这个仓库提交。")}
+      </Text>
+      <Panel title={L("Repository", "仓库")}>
+        <Field label={L("Address (every machine must be able to clone it)", "地址（每台机器都要能克隆）")} value={repo()} onChange={(v) => repo.set(v)} onSubmit={save}
+          placeholder="git@code.corp.com:team/remi-config.git" testID="teamconfig-repo" />
+        <ErrorNote text={error()} />
+        <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+          <Btn small kind="primary" testID="teamconfig-save" label={L("Save", "保存")} busy={busy()} disabled={!isAdmin(t) || saved() === null || repo().trim() === saved()} onPress={() => void save()} />
+          <If when={!isAdmin(t)}><Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Only admins change it.", "只有管理员能改。")}</Text></If>
+        </View>
+      </Panel>
+      <Panel title={L("What goes in it", "仓库里放什么")}>
+        {line("AGENTS.md", L("The team’s conventions; every agent reads them when it starts a task. A channel’s own conventions come first.", "团队约定：每个 Agent 开始任务时都会读。频道自己的约定优先。"))}
+        {line("skills/", L("One folder per skill, with its SKILL.md; linked for Claude Code, Codex and pi.", "一个技能一个文件夹（含 SKILL.md），给 Claude Code、Codex 和 pi 都链接好。"))}
+        {line("mcp.json", L("MCP servers as Claude Code writes them. Put secrets as ${NAME}: each machine fills them from its environment or [remi.env], so they never go in the repository.", "MCP 服务器，格式同 Claude Code。密钥写成 ${NAME}：每台机器从自己的环境变量或 [remi.env] 里填，密钥不进仓库。"))}
+      </Panel>
+      <Panel title={L("On the machines", "各机器的同步情况")}>
+        <Each of={t.machines()} key={(m) => m.id}>
+          {(m) => (
+            <View style={{ gap: 2, paddingVertical: 3 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Dot on={m().online} />
+                <Text style={{ fontSize: 13.5, color: colors.text }}>{m().name}</Text>
+                <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
+              </View>
+              <If when={m().team_config} else={<Text style={{ fontSize: 12.5, color: colors.faint }}>{saved() ? L("Not synced yet (or an older daemon).", "还没同步（或者守护进程版本较旧）。") : "—"}</Text>}>
+                {(c) => <TeamConfigLine status={c()} testID={`teamconfig-machine-${m().id}`} />}
+              </If>
+            </View>
+          )}
+        </Each>
+      </Panel>
     </>
   );
 }

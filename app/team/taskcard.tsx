@@ -169,6 +169,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const party = () => isParty(task(), me(), agent());
   const busy = signal("");
   const error = signal("");
+  /** Someone else in the channel can take it over (its asker is away): it goes on in their name. */
+  const canTakeOver = () => !!me() && me()!.id !== task().created_by && !["done", "closed"].includes(task().state) &&
+    (me()!.role === "admin" || !!t.channels().find((c) => c.id === task().channel_id)?.members.some((m) => m.kind === "user" && m.id === me()!.id));
+  const lastTakeover = () => task().mandate?.takeovers?.at(-1);
   const st = () => statusOf(task().state);
   const label = () => STATUS[st().status];
   const needs = () => waitsOn(t, task());
@@ -184,7 +188,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -329,6 +333,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
             <Btn small kind="ghost" testID={`task-${task().id}-done`} label={L("Mark done", "标为完成")} busy={busy() === "accept"} onPress={() => act("accept")} />
           </If>
         </If>
+        <If when={props.detail && canTakeOver()}>
+          <Btn small kind="ghost" testID={`task-${task().id}-takeover`} label={L("Take it over", "接手")} busy={busy() === "takeover"} onPress={() => act("takeover")} />
+        </If>
         <If when={party() && ["done", "closed"].includes(task().state)}>
           <Btn small kind="ghost" testID={`task-${task().id}-reopen`} label={L("Reopen", "重新打开")} busy={busy() === "reopen"} onPress={() => act("reopen")} />
         </If>
@@ -337,6 +344,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         </If>
       </View>
       <ErrorNote text={error()} testID={`task-${task().id}-error`} />
+      <If when={props.detail ? lastTakeover() : null}>
+        {(x) => (
+          <Text testID={`task-${task().id}-takeover-note`} style={{ fontSize: 12.5, color: colors.muted }}>
+            {L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} took it over from ${t.users().find((u) => u.id === x().from)?.name ?? "?"} ${time(x().at)}`,
+              `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 从 ${t.users().find((u) => u.id === x().from)?.name ?? "?"} 手里接手`)}
+          </Text>
+        )}
+      </If>
       <If when={props.detail}>
         <TaskFacts team={t} task={task()} />
       </If>

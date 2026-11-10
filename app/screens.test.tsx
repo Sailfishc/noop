@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { m1, msg, r1, SESSION, server, newLog, task, URL, zw } from "./fixtures";
+import { m1, mac, msg, r1, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
 //
@@ -34,7 +34,12 @@ const messages = [
   msg({ id: "msg_3", seq: 3, text: "今天下午三点发版，大家注意一下" }),
   msg({ id: "msg_4", seq: 4, author: { kind: "user", id: "u_1" }, text: "收到 👍" }),
 ];
+const box = { ...mac, team: true, git: [{ provider: "gitlab", host: "code.corp.com", configured: true, user: "remi-bot", via: "token" }],
+  repos: [{ remote: "github.com/acme/pay", name: "pay" }], skills: ["release-notes", "sql-review"], mcp: ["jira"],
+  runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }],
+  team_config: { repo: "git@code.corp.com:team/remi-config.git", commit: "abc1234", synced: T0, instructions: true } };
 const net = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, tasks);
@@ -97,6 +102,12 @@ describe("screens", () => {
     await app.press("id:settings-nav-metrics");
     await app.waitFor("id:metrics-redone");
     await shot(app, "settings-metrics");
+    await app.press("id:settings-nav-teamconfig");
+    await app.waitFor("id:teamconfig-repo");
+    await shot(app, "settings-teamconfig");
+    await app.press("id:settings-nav-machines");
+    await app.waitFor("id:machine-m_1-git");
+    await shot(app, "settings-machines");
   });
 
   test("signin-ask", async () => {
