@@ -140,8 +140,9 @@ at a known time): you stop now and are woken when it is time, in the same sessio
 asked someone with \`remi ask\` and nothing else is left to do before their answer: their reply wakes you (or after a
 day you are woken to decide). Do not wait in place for more than
 about 10 minutes. If the person's goal does not depend on the result, or you cannot find any way to see it, do not wait:
-report review with result unconfirmed. At most 3 submissions to outside services per task: after 3 unsuccessful ones,
-stop with needs_decision (try again / another way / cancel). Before submitting again after no result, cancel the earlier
+report review with result unconfirmed. At most 3 submissions to outside services per task: run \`remi submit WHAT\` right
+before each one (the server counts them; failures and timeouts count too). When it refuses, do not submit: stop with
+needs_decision (try again / another way / cancel). Before submitting again after no result, cancel the earlier
 job if you can. review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
 failed = it cannot be done. When the task has acceptance criteria, say in the summary how each one is met (or which is
@@ -550,11 +551,13 @@ export const REMI_CLI = `#!/bin/sh
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
 #   remi ask @WHO QUESTION                                 ask someone in the thread and go on; their answer reaches you
 #   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
+#   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent once a person agrees
+#   remi submit WHAT                                       count a submission to an outside service (at most 3 per task)
 #   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
 #                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,17p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -562,9 +565,11 @@ case "$1" in
   who) [ -n "$2" ] || usage; exec curl -sS -G "$api/who" -H "$auth" --data-urlencode "handle=$2" ;;
   file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
   memory) exec curl -sS "$api/memory" -H "$auth" ;;
-  say) shift; [ -n "$*" ] || usage; exec curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
-  remind) shift; [ -n "$*" ] || usage; exec curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
-  ask) shift; [ -n "$*" ] || usage; exec curl -sS "$api/ask" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  say) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  remind) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  ask) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/ask" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  handoff) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/handoff" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  submit) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/submit" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   repo) [ -n "$2" ] || usage; exec curl -sS "$api/repo" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$2" ;;
   upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
   *) usage ;;
@@ -609,7 +614,10 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 Look up only what the request needs. When you need someone's answer to go on (a choice only they can make, a fact
 only they know), ask with \`remi ask @WHO QUESTION\` and keep working on what does not depend on it: their reply
 reaches you in this session. Ask only what you cannot find out yourself. When the work needs changes in a repository
-you do not have here, declare it with \`remi repo owner/name\` first. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
+you do not have here, declare it with \`remi repo owner/name\` first. When part of the work is someone else's to do (a
+person must do or check something; another agent is the right one for the next step), pass it on with
+\`remi handoff @WHO WHAT\`: a person gets the ball at once, another agent only once a person agrees on the card. Do not
+@-mention agents to make them work. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
 most every 5 minutes, only when people would want to know), and hand over a file before you stop with
 \`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
 2 minutes", "remind me on Friday…", "every morning…"), always set it with

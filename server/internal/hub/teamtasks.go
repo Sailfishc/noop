@@ -119,6 +119,11 @@ type mandateView struct {
 	Model    string `json:"model,omitempty"`
 	// Takeovers: people in the channel who took it over from the one who asked (teamowned.go); By is the last.
 	Takeovers []takeoverView `json:"takeovers,omitempty"`
+	// Via: the agents it came through, oldest first, when an agent handed it on ("@who via @A"); Parent: the task it was
+	// handed on from; Trigger: the trigger that started it (teamtriggers.go).
+	Via     []string `json:"via,omitempty"`
+	Parent  string   `json:"parent,omitempty"`
+	Trigger string   `json:"trigger,omitempty"`
 }
 
 type taskView struct {
@@ -157,6 +162,9 @@ type taskView struct {
 	News        bool          `json:"news"`         // something new for its running agent: the machine resumes it with that (teamsteer.go)
 	Asked       []askedView   `json:"asked"`        // questions its agent put to people while it worked (remi ask)
 	Repos       []string      `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
+	Handoffs    []handoffView `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
+	Submits     []submitView  `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
+	Holder      *holderView   `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
 	Created     int64         `json:"created"`
 	Updated     int64         `json:"updated"`
 	seenSeq     int64
@@ -164,7 +172,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -174,16 +182,19 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait, usage, asked, repos string
+		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
 		t.Asked, t.Repos = []askedView{}, []string{}
 		_ = json.Unmarshal([]byte(asked), &t.Asked)
 		_ = json.Unmarshal([]byte(repos), &t.Repos)
+		t.Handoffs, t.Submits = []handoffView{}, []submitView{}
+		_ = json.Unmarshal([]byte(handoffs), &t.Handoffs)
+		_ = json.Unmarshal([]byte(submits), &t.Submits)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
@@ -386,16 +397,35 @@ func takerOf(t taskView) string {
 }
 
 func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bool) {
+	h.createTaskWith(m, root, agentID, joined, tracked, taskOrigin{})
+}
+
+// taskOrigin: a task not made by a person's own @: handed on by an agent (a handoff card someone clicked) or started
+// by a trigger. By: the person it is in the name of (else the message's author); Confirmed: a person already said yes
+// for the agent's owner (no "确认开工" again).
+type taskOrigin struct {
+	By        string
+	Via       []string
+	Parent    string
+	Trigger   string
+	Confirmed bool
+}
+
+func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracked bool, o taskOrigin) string {
 	a, ok := h.agent(agentID)
 	if !ok {
-		return
+		return ""
+	}
+	by := m.Author.ID
+	if o.By != "" {
+		by = o.By
 	}
 	state, summary := taskQueued, ""
 	switch {
-	case m.Author.ID == a.OwnerID:
+	case by == a.OwnerID:
 	case a.Dispatch == "owner":
 		state, summary = taskClosed, "@"+a.Handle+" 只接主人派的活"
-	case a.Confirm:
+	case a.Confirm && !o.Confirmed:
 		state = taskPending
 	}
 	var n int64
@@ -410,16 +440,17 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bo
 	}
 	repo := h.taskRepo(m.Text, root)
 	branch := "agent/" + id
-	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
-		Branch: branch, Runtime: a.Runtime, Model: a.Model}
+	mandate := mandateView{By: by, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
+		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, tracked, handler, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, m.Author.ID,
+		branch, repo, tracked, handler, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
 		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now))
 	h.noteStatus(id, state)
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
 	}
 	h.taskChanged(id)
+	return id
 }
 
 // followUp: a person said something in the task's thread.
@@ -504,7 +535,9 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
 			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me))
+		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
+			AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?))))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me))
 	out := obj{"tasks": h.withOutputs(ts)}
 	if h.isAdmin(me) { // people asking to join wait for an admin
 		out["signups"] = h.pendingSignups()
@@ -1047,21 +1080,43 @@ func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
 			Title        string `json:"title"`
 			Ref          string `json:"ref"`
 			Status       string `json:"status"`
+			Action       string `json:"action"`
+			TargetBranch string `json:"target_branch"`
 		} `json:"object_attributes"`
+		Ref     string `json:"ref"` // push
+		After   string `json:"after"`
+		Commits []struct {
+			Message string `json:"message"`
+			URL     string `json:"url"`
+		} `json:"commits"`
 		MR *struct {
 			IID          int64  `json:"iid"`
 			SourceBranch string `json:"source_branch"`
 		} `json:"merge_request"`
 		Project struct {
-			Path string `json:"path_with_namespace"`
+			Path   string `json:"path_with_namespace"`
+			WebURL string `json:"web_url"`
 		} `json:"project"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
 		return
 	}
+	remote := normRemote(b.Project.WebURL)
 	branch, state, checks := "", "", ""
 	switch b.Kind {
+	case "push": // triggers (teamtriggers.go); a deleted branch pushes all zeros
+		pushed := strings.TrimPrefix(b.Ref, "refs/heads/")
+		n := 0
+		if strings.HasPrefix(b.Ref, "refs/heads/") && strings.Trim(b.After, "0") != "" {
+			extra := "推送到 " + pushed
+			if k := len(b.Commits); k > 0 {
+				extra += "：" + oneLine(b.Commits[k-1].Message) + "\n" + b.Commits[k-1].URL
+			}
+			n = h.gitTriggers("push", remote, pushed, extra)
+		}
+		writeJSON(w, 200, obj{"ok": true, "fired": n})
+		return
 	case "merge_request":
 		branch = b.Attrs.SourceBranch
 		switch b.Attrs.State {
@@ -1095,7 +1150,11 @@ func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
 	}
 	if !strings.HasPrefix(branch, "agent/") {
 		h.noteGitEvent(ev)
-		writeJSON(w, 200, obj{"ok": true, "ignored": "not a task branch"})
+		n := 0
+		if b.Kind == "merge_request" && (b.Attrs.Action == "open" || b.Attrs.Action == "reopen") {
+			n = h.gitTriggers("pr", remote, b.Attrs.TargetBranch, fmt.Sprintf("PR !%d %s\n%s", b.Attrs.IID, b.Attrs.Title, b.Attrs.URL))
+		}
+		writeJSON(w, 200, obj{"ok": true, "ignored": "not a task branch", "fired": n})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE branch = ? ORDER BY num DESC LIMIT 1", branch))

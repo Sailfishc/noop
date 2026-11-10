@@ -54,7 +54,9 @@ export type PR = { provider: "github" | "gitlab"; url: string; number: number; t
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
   /** People in the channel who took it over from the one who asked; by is the last. */
-  takeovers?: { from: string; to: string; at: number }[] | null };
+  takeovers?: { from: string; to: string; at: number }[] | null;
+  /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
+  via?: string[] | null; parent?: string; trigger?: string };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -82,11 +84,25 @@ export type Task = {
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
   repos?: string[] | null;
+  /** Its agent's proposals to hand the work on to another agent: cards a person clicks. */
+  handoffs?: Handoff[] | null;
+  /** Its agent's submissions to outside services (`remi submit`), at most 3. */
+  submits?: { what: string; at: number }[] | null;
+  /** Who has the ball now (null once it ended). */
+  holder?: Holder | null;
 };
-/** A question an agent asked someone in the task's thread; answered: when they replied. */
-export type Asked = { user: string; question: string; message: string; at: number; answered?: number };
+/** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
+export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
+export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
+/** Whose move it is, and why. */
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
+/** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
+export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
+  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
+/** Handoff cards still waiting for a person. */
+export const openHandoffs = (t: Task) => (t.handoffs ?? []).filter((x) => x.state === "proposed");
 /** A task came to a status (and then needed this of a person). */
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
@@ -684,10 +700,17 @@ export function createTeam(s: Session) {
   const metrics = (days = 7) => api("GET", `/api/v1/metrics?days=${days}`);
   /** The team config repository (teamowned.go): its address; admins set it. */
   const teamConfig = () => api("GET", "/api/v1/team/config");
+  /** A channel's triggers (teamtriggers.go). */
+  const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string }) =>
+    api("POST", "/api/v1/triggers", body);
+  const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
+  const patchTrigger = (id: string, enabled: boolean) => api("PATCH", `/api/v1/triggers/${id}`, { enabled });
+  const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
   /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover", body: unknown = {}) {
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
@@ -744,7 +767,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

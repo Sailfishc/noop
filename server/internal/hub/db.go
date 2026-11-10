@@ -91,6 +91,9 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(signupSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(triggersSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -122,6 +125,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN repos TEXT NOT NULL DEFAULT '[]'",     // repositories its agent declared (remi repo)
 		"ALTER TABLE machines ADD COLUMN team INTEGER NOT NULL DEFAULT 0",      // a team Computer: admins put agents on it (teamowned.go)
 		"ALTER TABLE channels ADD COLUMN conventions TEXT NOT NULL DEFAULT ''", // how this channel works, for its agents
+		"ALTER TABLE tasks_v1 ADD COLUMN handoffs TEXT NOT NULL DEFAULT '[]'",  // its agent's handoffs to other agents, each a card a person clicks (teamhandoff.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN submits TEXT NOT NULL DEFAULT '[]'",   // its agent's submissions to outside services (remi submit, at most 3)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

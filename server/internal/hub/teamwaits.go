@@ -167,6 +167,7 @@ func (h *Hub) Tick() {
 		}
 	}
 	h.fireReminders()
+	h.fireTriggers()
 }
 
 // v1WaitHook: anything posted to a task's callback address wakes it with the body (its format is the agent's to

@@ -1168,3 +1168,54 @@ describe("team ownership", () => {
     expect(app.shows("id:task-T-0001-takeover")).toBe(false);
   });
 });
+
+describe("passing the ball", () => {
+  test("an agent's handoff card: the requester hands the work to the other agent; who has the ball shows", async () => {
+    const log = newLog();
+    const bei = { ...acha, id: "a_2", handle: "bei", name: "贝" };
+    const t1 = task({ created_by: "u_1", state: "running", runs: 1, tracked: true, holder: { kind: "user", id: "u_1", why: "handoff_card" },
+      handoffs: [{ id: "ho_1", to: "a_2", what: "改完后写发布说明", message: "msg_5", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: { ...server(log, {}, [t1]), [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei] } } } });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-holder");
+    expect(app.shows("text:球在 你 手里 · 决定要不要交接")).toBe(true);
+    expect(app.shows("text:@acha 建议交给 @bei")).toBe(true);
+    await app.press("id:task-T-0001-handoff-ho_1-accept >> nth=1");
+    await app.waitUntil(() => log.acts.includes("T-0001 handoff"));
+    await app.waitFor("text:球在 @acha 手里 · 在做");
+    expect(app.shows("id:task-T-0001-handoff-ho_1")).toBe(false);
+  });
+
+  test("a person the agent handed the ball to sees it as theirs", async () => {
+    const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: true, asked: [{ user: "u_1", question: "在测试环境点一下退款", message: "msg_9", at: T0, kind: "handoff" }] });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900,
+      network: { ...server(newLog(), {}, [t1]), [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [t1] } } } });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0001-asked-u_1");
+    expect(app.shows("text:@acha handed this to you")).toBe(true);
+    expect(app.shows("text:Reply in the thread when it’s done; the agent hears it.")).toBe(true);
+  });
+
+  test("a channel's triggers: one waits for the owner's yes; a new one is added from the members panel", async () => {
+    const log = newLog();
+    const waitingOne = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0 };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:trigger-trg_1");
+    expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
+    await app.press("id:trigger-confirm-trg_1");
+    await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
+    await app.waitFor("text:还没触发过");
+    await app.press("id:trigger-add");
+    await app.press("id:trigger-kind-pr");
+    await app.type("id:trigger-repo", "https://github.com/acme/pay");
+    await app.type("id:trigger-text", "review 这个 PR");
+    await app.press("id:trigger-save");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "" } });
+    await app.waitFor("text:/acme\\/pay 有新 PR/");
+  });
+});
