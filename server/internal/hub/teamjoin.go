@@ -49,20 +49,32 @@ func (h *Hub) v1MachineJoinCode(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, obj{"join": h.newJoinCode(id)})
 }
 
-// v1MachinePatch: its owner (or an admin) renames it.
+// v1MachinePatch: its owner (or an admin) renames it; an admin makes it a team machine (or no longer one).
 func (h *Hub) v1MachinePatch(w http.ResponseWriter, q *request) {
 	id := q.r.PathValue("id")
 	if !h.mayManageMachine(w, q, id) {
 		return
 	}
-	var b struct{ Name string }
+	var b struct {
+		Name *string `json:"name"`
+		Team *bool   `json:"team"`
+	}
 	_ = q.json(&b)
-	name := trimmed(b.Name, 60)
-	if name == "" {
-		errJSON(w, 400, "name required")
+	if b.Team != nil && !h.isAdmin(q.who.userID) {
+		errJSON(w, 403, "只有管理员能把机器设成团队机器")
 		return
 	}
-	h.must(h.db.Exec("UPDATE machines SET name = ? WHERE id = ?", name, id))
+	if b.Name != nil {
+		name := trimmed(*b.Name, 60)
+		if name == "" {
+			errJSON(w, 400, "name required")
+			return
+		}
+		h.must(h.db.Exec("UPDATE machines SET name = ? WHERE id = ?", name, id))
+	}
+	if b.Team != nil {
+		h.must(h.db.Exec("UPDATE machines SET team = ? WHERE id = ?", boolInt(*b.Team), id))
+	}
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", id))[0]
 	h.broadcastPeople(obj{"type": "machine", "machine": m})
 	writeJSON(w, 200, obj{"machine": m})

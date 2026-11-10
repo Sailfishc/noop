@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Channels, threads and messages. Every channel is visible to everyone in the workspace (≤ 10 people); posting
@@ -19,21 +20,24 @@ type member struct {
 }
 
 type channelView struct {
-	ID       string   `json:"id"`
-	Slug     string   `json:"slug"`
-	Name     string   `json:"name"`
-	Topic    string   `json:"topic"`
-	Repo     string   `json:"repo"` // default repository of its tasks: host/owner/name, "" = none
-	Archived bool     `json:"archived"`
-	Created  int64    `json:"created"`
-	Members  []member `json:"members"`
-	LastSeq  int64    `json:"last_seq"`
+	ID    string `json:"id"`
+	Slug  string `json:"slug"`
+	Name  string `json:"name"`
+	Topic string `json:"topic"`
+	Repo  string `json:"repo"` // its usual repository, a hint for agents: host/owner/name, "" = none
+	// Conventions: how this channel works ("PR 标题用中文", "发布前在 #ops 说一声"): every agent working here reads
+	// them; the channel's members edit them.
+	Conventions string   `json:"conventions"`
+	Archived    bool     `json:"archived"`
+	Created     int64    `json:"created"`
+	Members     []member `json:"members"`
+	LastSeq     int64    `json:"last_seq"`
 }
 
 func (h *Hub) channel(id string) (channelView, bool) {
 	var c channelView
-	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
-		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Archived, &c.Created)
+	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Archived, &c.Created)
 	if err != nil {
 		return c, false
 	}
@@ -258,8 +262,17 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 		Topic    *string `json:"topic"`
 		Repo     *string `json:"repo"`
 		Archived *bool   `json:"archived"`
+		// Conventions: up to 4000 characters
+		Conventions *string `json:"conventions"`
 	}
 	_ = q.json(&b)
+	if b.Conventions != nil {
+		if utf8.RuneCountInString(strings.TrimSpace(*b.Conventions)) > maxConventions {
+			errJSON(w, 400, "频道约定最多 4000 字")
+			return
+		}
+		h.must(h.db.Exec("UPDATE channels SET conventions = ? WHERE id = ?", strings.TrimSpace(*b.Conventions), c.ID))
+	}
 	if b.Repo != nil {
 		r := normRemote(*b.Repo)
 		if r == "" && strings.TrimSpace(*b.Repo) != "" {

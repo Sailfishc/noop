@@ -1,7 +1,8 @@
 // A channel: its conversation, the members panel, the default repository, a thread with its task's facts, and a new channel.
-import { effect, List, Scroll, signal, Text, View, type JSX } from "nsh";
+import { effect, List, Scroll, signal, Text, untracked, View, type JSX } from "nsh";
+import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, Spinner } from "../ui";
+import { alpha, colors, hovered, Icon, radius, Spinner } from "../ui";
 import { errorOf, isMember, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, Avatar, Btn, ErrorNote, failed, Field, Header, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
@@ -154,6 +155,47 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
   );
 }
 
+/** How the channel works ("PR 标题用中文", "发布前在 #ops 说一声"): its members write it, every agent working here
+ * reads it with its task (before the team's AGENTS.md). */
+function ChannelConventions(props: { team: Team; channelId: string }) {
+  const t = props.team;
+  const channel = () => t.channels().find((c) => c.id === props.channelId);
+  const now = () => channel()?.conventions ?? "";
+  const value = signal(untracked(now));
+  const busy = signal(false);
+  const error = signal("");
+  const changed = () => value().trim() !== now();
+  effect(() => { const n = now(); if (!untracked(changed)) value.set(n); });
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.patchChannel(props.channelId, { conventions: value().trim() });
+    busy.set(false);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <View testID="channel-conventions" style={{ gap: 6, paddingTop: 10 }}>
+      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("HOW WE WORK HERE", "频道约定")}</Text>
+      <Input
+        testID="channel-conventions-input"
+        value={value()}
+        multiline
+        placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
+        class="placeholder:text-faint"
+        onChange={({ value: v }) => value.set(v)}
+        style={{ minHeight: 64, maxHeight: 200, padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
+      />
+      <ErrorNote text={error()} />
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Text style={{ flex: 1, fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("Every agent working in this channel reads this with its task.", "在这个频道干活的 Agent 每次开工都会读。")}</Text>
+        <If when={changed()}>
+          <Btn small testID="channel-conventions-save" label={L("Save", "保存")} busy={busy()} onPress={() => void save()} />
+        </If>
+      </View>
+    </View>
+  );
+}
+
 /** The channel's people, and its agents by owner (with runtime and state); add or remove members. */
 export function MembersPanel(props: { team: Team; channelId: string; back?: boolean; onClose: () => void; onAgent: (handle: string) => void }) {
   const t = props.team;
@@ -208,6 +250,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 16, paddingBottom: 16, gap: 4 }}>
         <ErrorNote text={error()} testID="members-error" />
         <ChannelRepo team={t} channelId={props.channelId} />
+        <ChannelConventions team={t} channelId={props.channelId} />
         <If when={adding()}>
           <View style={{ gap: 2, marginTop: 10, padding: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
             <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.muted }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>

@@ -16,7 +16,15 @@ export type Machine = {
   runtime_info?: RuntimeInfo[]; git?: GitCred[];
   /** The repositories it has checkouts of, by remote (host/owner/name). */
   repos?: RepoRef[] | null;
+  /** A team machine: any admin may put agents on it and look after them. */
+  team?: boolean;
+  /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
+  skills?: string[] | null; mcp?: string[] | null;
+  /** How the team config repository last synced there. */
+  team_config?: TeamConfigStatus | null;
 };
+/** The team config repository (AGENTS.md, skills/, mcp.json) on one machine: which commit, when, what went wrong. */
+export type TeamConfigStatus = { repo: string; commit: string; synced: number; error?: string; instructions: boolean };
 /** A repository, named by its remote the same way on every machine: host/owner/name. */
 export type RepoRef = { remote: string; name: string };
 export type Repo = RepoRef & { machines: string[] };
@@ -44,7 +52,9 @@ export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_de
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
-export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string };
+export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
+  /** People in the channel who took it over from the one who asked; by is the last. */
+  takeovers?: { from: string; to: string; at: number }[] | null };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -104,8 +114,10 @@ export const installCommand = (server: string, code: string) => {
 export const isLoopback = (server: string) => /^https?:\/\/(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(server);
 
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
-  /** The default repository of its tasks (host/owner/name), "" for none. */
-  repo?: string };
+  /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
+  repo?: string;
+  /** How the channel works, written by its members; every agent working here reads it. */
+  conventions?: string };
 export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
   mentions: Mention[] | null; attachments: string[] | null; client_id?: string | null; created: number; edited: number | null;
@@ -587,7 +599,7 @@ export function createTeam(s: Session) {
     return r;
   }
   /** name, topic, or the default repository (an address; "" clears it). */
-  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string }) {
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string }) {
     const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
@@ -628,7 +640,11 @@ export function createTeam(s: Session) {
     return api("POST", "/api/v1/machines/enroll");
   }
   async function renameMachine(id: string, name: string) {
-    const r = await api("PATCH", `/api/v1/machines/${id}`, { name });
+    return patchMachine(id, { name });
+  }
+  /** name; team (admins): make it a team machine or no longer one. */
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean }) {
+    const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
   }
@@ -666,9 +682,12 @@ export function createTeam(s: Session) {
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
   /** How the team works with its agents over the last `days` days (teammetrics.go). */
   const metrics = (days = 7) => api("GET", `/api/v1/metrics?days=${days}`);
+  /** The team config repository (teamowned.go): its address; admins set it. */
+  const teamConfig = () => api("GET", "/api/v1/team/config");
+  const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
@@ -725,7 +744,7 @@ export function createTeam(s: Session) {
   return {
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

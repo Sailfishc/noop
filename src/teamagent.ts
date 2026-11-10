@@ -9,6 +9,8 @@ import { type Cfg, HOME_DIR } from "./config";
 import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
 import { gitAfterRun, refreshPRs } from "./gitflow";
 import { repoBook, type RepoBook } from "./repos";
+import { claudeMcpServers } from "./runtimes";
+import { localSkills, syncTeamConfig, type TeamConfigStatus, type TeamContext } from "./teamconfig";
 
 export type TeamAgent = {
   id: string; handle: string; name: string; owner_id: string; machine_id: string | null; runtime: string; dispatch: string; autonomy: string;
@@ -122,7 +124,7 @@ let handler: Handler = (m, agents) => console.log(`remi: ${agents.map((a) => `@$
 /** Who acts on a message for this machine's agents (M2: the dispatcher). */
 export const onAgentMessage = (h: Handler) => { handler = h; };
 
-export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: string) => void; afterRun?: AfterRun; worker?: Partial<WorkerOptions>; repos?: RepoBook } = {}) {
+export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: string) => void; afterRun?: AfterRun; worker?: Partial<WorkerOptions>; repos?: RepoBook; home?: string; configRoot?: string } = {}) {
   if (!teamEnabled(cfg)) return null;
   const base = String(cfg.cloud.url).replace(/\/$/, "");
   const auth = { Authorization: `Bearer ${cfg.server.token}` };
@@ -145,11 +147,29 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   const repos = opts.repos ?? repoBook({ roots, clones: join(HOME_DIR, "teamagent", "repos"), extra: () => agents.map((a) => a.repo ?? "").filter(Boolean) });
   // runtimes and Git credentials change rarely and cost a few process spawns and HTTP calls: look every 10 minutes
   let probe: { at: number; runtime_info: RuntimeInfo[]; git: GitCred[] } | null = null;
+  // the team config repository (teamconfig.ts): synced when the server names another one, else every 10 minutes
+  const userHome = opts.home ?? homedir();
+  const configRoot = opts.configRoot ?? join(HOME_DIR, "teamagent");
+  const secrets: Record<string, string> = Object.fromEntries(Object.entries(section?.env ?? {}).map(([k, v]) => [k, String(v)]));
+  let team: { repo: string; at: number; status: TeamConfigStatus | null; context: TeamContext | null } = { repo: "", at: 0, status: null, context: null };
+  let syncing: Promise<unknown> | null = null;
+  const syncConfig = (repo: string) => {
+    if (syncing || (repo === team.repo && Date.now() - team.at < 10 * 60_000 && (repo || !team.status))) return;
+    syncing = syncTeamConfig(repo, configRoot, { home: userHome, env: { ...process.env, ...secrets } }).then((r) => {
+      const changed = r.status?.commit !== team.status?.commit || r.status?.error !== team.status?.error;
+      team = { repo, at: Date.now(), status: r.status, context: r.context };
+      if (r.status?.error) log(`团队配置：${r.status.error}`);
+      if (changed) void report();
+    }).catch((e) => log(`团队配置同步出错：${e}`)).finally(() => { syncing = null; });
+  };
   const report = async () => {
     if (!probe || Date.now() - probe.at > 10 * 60_000) probe = { at: Date.now(), runtime_info: detectRuntimes(), git: await detectGit(cfg) };
-    const body = { ...machineReport(cfg), runtime_info: probe.runtime_info, git: probe.git, repos: repos.list() };
+    const body = { ...machineReport(cfg), runtime_info: probe.runtime_info, git: probe.git, repos: repos.list(),
+      skills: localSkills(userHome), mcp: [...new Set([...Object.keys(team.context?.mcp ?? {}), ...claudeMcpServers(userHome, userHome).map((n) => n.slice(5))])].sort(),
+      ...(team.status ? { team_config: team.status } : {}) };
     const r = await api("/api/v1/machine", { method: "PUT", body: JSON.stringify(body) });
     if (r?.agents) agents = r.agents;
+    if (r) syncConfig(String(r.team_config?.repo ?? ""));
     return r;
   };
   // a message can come twice (live on the socket and in a catch-up page at the same moment): once is enough
@@ -208,6 +228,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
         return r?.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       },
     },
+    team: () => team.context,
     workRoot: join(HOME_DIR, "teamagent", "work"), logDir: join(HOME_DIR, "logs", "teamagent"), ...opts.worker,
   });
   const mine = (agentId: string) => agents.some((a) => a.id === agentId);
@@ -250,6 +271,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   connect();
   return {
     agents: () => agents,
+    teamConfig: () => team,
     worker,
     stop: () => { stopped = true; clearInterval(tick); clearInterval(prTick); clearInterval(sweepTick); worker.stop(); ws?.close(); },
   };
