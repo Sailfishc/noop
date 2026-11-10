@@ -7,9 +7,11 @@ import { dirname, join } from "node:path";
 import { DEFAULT_GATES } from "./gates";
 import { addUsage, type Usage } from "./runfail";
 
-/** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). */
+/** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). "idle": a tool call finished and the
+ * agent is between calls, a safe moment to stop it and resume the session with news (teamwork.ts, steering). */
 export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "message"; text: string } | { kind: "error"; text: string }
-  | { kind: "usage"; usage: Usage };
+  | { kind: "usage"; usage: Usage } | { kind: "idle" };
+const IDLE: RunEvent = { kind: "idle" };
 
 export type RunOptions = {
   cwd: string;
@@ -61,7 +63,7 @@ const short = (s: string, n = 120) => {
 };
 
 /** One line of `codex exec --json` → what it means for us (null: nothing worth showing). */
-export function codexEvent(line: string): RunEvent | null {
+export function codexEvent(line: string): RunEvent | RunEvent[] | null {
   let e: any;
   try { e = JSON.parse(line); } catch { return null; }
   switch (e?.type) {
@@ -85,15 +87,15 @@ export function codexEvent(line: string): RunEvent | null {
         case "agent_message":
           return e.type === "item.completed" ? { kind: "message", text: String(it.text ?? "") } : null;
         case "command_execution":
-          return e.type === "item.started" ? { kind: "step", text: `运行 ${short(it.command, 100)}` } : null;
+          return e.type === "item.started" ? { kind: "step", text: `运行 ${short(it.command, 100)}` } : IDLE;
         case "file_change": {
           const paths = (it.changes ?? []).map((c: any) => String(c.path ?? "").split("/").slice(-2).join("/")).filter(Boolean);
-          return paths.length ? { kind: "step", text: `改 ${short(paths.join(", "), 100)}` } : null;
+          return paths.length ? [{ kind: "step", text: `改 ${short(paths.join(", "), 100)}` }, IDLE] : IDLE;
         }
         case "web_search":
-          return { kind: "step", text: `搜索 ${short(it.query, 100)}` };
+          return e.type === "item.started" ? { kind: "step", text: `搜索 ${short(it.query, 100)}` } : IDLE;
         case "mcp_tool_call":
-          return { kind: "step", text: `调用 ${it.server ?? ""}${it.tool ? `.${it.tool}` : ""}` };
+          return e.type === "item.started" ? { kind: "step", text: `调用 ${it.server ?? ""}${it.tool ? `.${it.tool}` : ""}` } : IDLE;
         case "todo_list": {
           const next = (it.items ?? []).find((x: any) => !x.completed);
           return next ? { kind: "step", text: short(next.text, 100) } : null;
@@ -229,6 +231,8 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
       }
       return out.length ? out : null;
     }
+    case "user": // a tool's result came back: between tool calls
+      return !e.parent_tool_use_id && Array.isArray(e.message?.content) && e.message.content.some((c: any) => c?.type === "tool_result") ? IDLE : null;
     case "result": {
       const out: RunEvent[] = [];
       if (e.session_id) out.push({ kind: "session", id: String(e.session_id) });
@@ -304,6 +308,8 @@ export function piEvent(line: string): RunEvent | RunEvent[] | null {
       const s = toolStep(String(e.toolName ?? ""), e.args);
       return s ? { kind: "step", text: s } : null;
     }
+    case "tool_execution_end":
+      return IDLE;
     case "message_end": {
       const m = e.message ?? {};
       if (m.role !== "assistant") return null;

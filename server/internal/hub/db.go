@@ -117,6 +117,9 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0", // its title was given (by the agent or a person), not cut from the request
 		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",  // who takes it when it stops for people ("" = its creator)
 		"ALTER TABLE tasks_v1 ADD COLUMN cancelled_at INTEGER",              // when a person cancelled it (teammetrics.go: was it asked again)
+		"ALTER TABLE tasks_v1 ADD COLUMN news INTEGER NOT NULL DEFAULT 0",   // something new for its running agent (teamsteer.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN asked TEXT NOT NULL DEFAULT '[]'",  // questions its agent put to people (remi ask)
+		"ALTER TABLE tasks_v1 ADD COLUMN repos TEXT NOT NULL DEFAULT '[]'",  // repositories its agent declared (remi repo)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

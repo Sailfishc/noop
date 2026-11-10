@@ -116,7 +116,8 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   );
 }
 
-/** The channel's default repository: where its tasks run when the message names none. */
+/** The channel's usual repository: a hint its agents get. A task starts in a general directory unless the message
+ * names a repository; the agent declares one (`remi repo`) when the work needs changes there. */
 function ChannelRepo(props: { team: Team; channelId: string }) {
   const t = props.team;
   const editing = signal(false);
@@ -124,15 +125,15 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
   const repo = () => channel()?.repo ?? "";
   return (
     <View testID="channel-repo" style={{ gap: 6, paddingTop: 10 }}>
-      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("DEFAULT REPOSITORY", "默认仓库")}</Text>
+      <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>
       <If when={!editing()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.text : colors.muted }}>
-            {repo() ? repoLabel(repo()) : L("None: tasks run where the message says, or as general tasks.", "没有：任务按消息里写的仓库做，没写就是通用任务。")}
+            {repo() ? repoLabel(repo()) : L("None: agents pick a repository when the work needs one.", "没有：需要改代码时，Agent 自己判断用哪个仓库。")}
           </Text>
           <Btn small kind="ghost" testID="channel-repo-edit" label={repo() ? L("Change", "更换") : L("Set", "设置")} onPress={() => editing.set(true)} />
         </View>
-        <Text style={{ fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("A repository named in the message, or used earlier in the thread, comes first.", "消息里写了仓库地址、或者线程里之前用过仓库时，以那个为准。")}</Text>
+        <Text style={{ fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs changes there. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要改代码时再检出。消息里写了仓库地址的，一开始就用那个。")}</Text>
       </If>
       <If when={editing()}>
         <RepoPicker

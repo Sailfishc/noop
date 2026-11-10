@@ -49,7 +49,8 @@ func TestTaskRepoFollowsTheTask(t *testing.T) {
 	check(t, "a bad address is refused", e.do("PATCH", "/api/v1/channels/"+e.cid, e.wl.session, map[string]any{"repo": "pay"}).status == 400)
 	m = e.post(e.wl.session, "@acha 修一下退款按钮", "")
 	tk = e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
-	check(t, "a task takes the channel's repo", tk["repo"] == "github.com/acme/pay")
+	check(t, "the channel's default is a hint, not the task's repo: the agent declares one (remi repo)", tk["repo"] == "")
+	e.do("POST", "/api/v1/tasks/"+tk["id"].(string)+"/cancel", e.wl.session, nil)
 
 	// named in the message: owner/name of a repo a machine has, or an address
 	m = e.post(e.wl.session, "@acha 在 fin/ledger 里加个对账脚本", "")

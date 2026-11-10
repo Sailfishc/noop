@@ -3,7 +3,7 @@ import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
-import { errorOf, isParty, type Output, type Task, type Team } from "./api";
+import { errorOf, isParty, openQuestions, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
@@ -13,7 +13,7 @@ import { TaskFacts } from "./taskfacts";
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
  * request the agent only answered stays a conversation: its reply is in the thread, its emoji on the message. */
 export function shownAsTask(task: Task): boolean {
-  return task.tracked !== false || statusOf(task.state).needs !== "";
+  return task.tracked !== false || statusOf(task.state).needs !== "" || openQuestions(task).length > 0;
 }
 
 /** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
@@ -38,6 +38,7 @@ const HOW: Record<string, () => string> = {
   callback: () => L("woken by a callback", "等回调"),
   poll: () => L("checked now and then", "定时查询"),
   timer: () => L("looks again at a set time", "到点再看"),
+  answer: () => L("woken by the answer", "等人回答"),
 };
 
 /** What a waiting task waits for, in one short line (its card). */
@@ -45,7 +46,7 @@ export function waitShort(task: Task): string {
   const w = task.wait;
   if (!w) return "";
   const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
-  return [w.what || L("an outside result", "外部结果"), until].join(" · ");
+  return [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), until].join(" · ");
 }
 
 /** The details: how it is watched, when it gives up, the last check and its note. */
@@ -53,7 +54,7 @@ export function waitLines(task: Task): string[] {
   const w = task.wait;
   if (!w) return [];
   const lines = [
-    [w.what || L("an outside result", "外部结果"), HOW[w.how]?.() ?? w.how].join(" · "),
+    [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), HOW[w.how]?.() ?? w.how].join(" · "),
     [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
   ];
   if (w.how === "poll" && w.checks) lines.push(L(`checked ${w.checks}×, last ${time(w.checked ?? 0)}`, `已查 ${w.checks} 次，上次 ${time(w.checked ?? 0)}`) + (w.errors ? L(` (${w.errors} failed)`, `（${w.errors} 次没查到）`) : ""));
@@ -253,6 +254,23 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         )}
       </If>
+      <Each of={openQuestions(task())} key={(q) => q.message}>
+        {(q) => {
+          const who = () => t.users().find((u) => u.id === q().user);
+          const mine = () => q().user === me()?.id;
+          return (
+            <View testID={`task-${task().id}-asked-${q().user}`} style={{ gap: 3, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
+                {mine() ? L(`@${agent()?.handle ?? "?"} asks you`, `@${agent()?.handle ?? "?"} 问你`) : L(`@${agent()?.handle ?? "?"} asks @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 在问 @${who()?.handle ?? "?"}`)}
+              </Text>
+              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{q().question}</Text>
+              <If when={mine()}>
+                <Text style={{ fontSize: 12, color: colors.faint }}>{L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />

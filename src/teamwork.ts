@@ -4,7 +4,7 @@
 // resumes the same runtime session with only what is new.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
 import { addUsage, classify, FAILURE_TEXT, type Failure, planFor, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
@@ -25,11 +25,17 @@ export type TeamTask = {
   titled?: boolean;
   /** The repository it runs in, host/owner/name ("" or missing: a general task, or the agent's own repo path). */
   repo?: string;
+  /** Repositories the agent declared while it worked (`remi repo`): each gets a worktree beside the task's directory. */
+  repos?: string[];
+  /** Something new for its running agent (people's words, a repository it asked for): the run is resumed with it. */
+  news?: boolean;
 };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string };
 export type Claim = {
-  task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string }; channel: { id: string; name: string; topic: string };
+  task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string };
+  /** repo: the channel's usual repository, a hint (the agent declares a repository itself with `remi repo`). */
+  channel: { id: string; name: string; topic: string; repo?: string };
   recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
   creator: { name: string; handle: string }; resumed: boolean;
   /** Why a waiting task woke (and what a callback posted). */
@@ -58,8 +64,9 @@ export type TaskResult = {
 };
 
 /** Where a task runs. `repo` is the checkout this worktree belongs to. `files`: in/ (what people attached) and out/
- * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task. */
-export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string };
+ * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task.
+ * `extra`: worktrees of the repositories the agent declared while it worked (remote → its worktree). */
+export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string; extra?: Record<string, Workdir> };
 
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
@@ -90,7 +97,7 @@ export function parseTaskResult(text: string): TaskResult {
       if (STATUSES.has(r.status)) {
         const options = Array.isArray(r.options) ? r.options.map(String).filter(Boolean) : undefined;
         if (r.status === "needs_decision" && !String(r.question ?? "").trim()) return { ...r, status: "blocked", summary: String(r.summary ?? "") };
-        if (r.status === "waiting" && !["callback", "poll", "timer"].includes(r.wait?.how)) return { ...r, status: "review", result: "unconfirmed", summary: String(r.summary ?? "") };
+        if (r.status === "waiting" && !["callback", "poll", "timer", "answer"].includes(r.wait?.how)) return { ...r, status: "review", result: "unconfirmed", summary: String(r.summary ?? "") };
         if (r.status === "waiting" && r.wait.how === "poll" && !String(r.wait.check ?? "").trim()) return { ...r, wait: { ...r.wait, how: "timer" }, summary: String(r.summary ?? "") };
         return { ...r, summary: String(r.summary ?? ""), options };
       }
@@ -113,7 +120,7 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
 {
   "status": "review" | "needs_decision" | "blocked" | "failed" | "waiting",
   "result": "review only, when the work depends on an outcome outside your work directory: confirmed (you saw it) | unconfirmed (you could not; say in the summary where and when it will appear)",
-  "wait": {"how": "poll" | "callback" | "timer", "check": "poll: a shell command run in your work directory that prints one JSON line {\"state\": \"pending\" | \"done\" | \"failed\", \"note\": \"progress\"}", "every": "5m", "expect": "2h", "deadline": "6h", "cancel": "optional: a command that cancels the outside job", "what": "what you wait for"},
+  "wait": {"how": "poll" | "callback" | "timer" | "answer", "check": "poll: a shell command run in your work directory that prints one JSON line {\"state\": \"pending\" | \"done\" | \"failed\", \"note\": \"progress\"}", "every": "5m", "expect": "2h", "deadline": "6h", "cancel": "optional: a command that cancels the outside job", "what": "what you wait for"},
   "summary": "1-3 sentences for the thread: what you did or found, with file paths, commands and links",
   "question": "needs_decision only: one short question",
   "options": ["A: <recommended> — consequence", "B: ... — consequence"],
@@ -126,7 +133,9 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
 }
 waiting = you started something outside (a cloud job, a render, a deployment) whose result decides whether the task is
 done, and you found a way to see the result (a status API to poll, the callback address below, or where it will appear
-at a known time): you stop now and are woken when it is time, in the same session. Do not wait in place for more than
+at a known time): you stop now and are woken when it is time, in the same session. waiting with how "answer" = you
+asked someone with \`remi ask\` and nothing else is left to do before their answer: their reply wakes you (or after a
+day you are woken to decide). Do not wait in place for more than
 about 10 minutes. If the person's goal does not depend on the result, or you cannot find any way to see it, do not wait:
 report review with result unconfirmed. At most 3 submissions to outside services per task: after 3 unsuccessful ones,
 stop with needs_decision (try again / another way / cancel). Before submitting again after no result, cancel the earlier
@@ -141,14 +150,21 @@ const FILES = (wd: Workdir) => wd.files
 - When you start work in an outside service (a cloud job, a render, a deployment), list it in "outputs" with its id there, and say plainly whether you saw its result.`
   : "";
 
-const RULES = (wd: Workdir) => wd.repo
+/** The repositories the agent declared, ready as worktrees. */
+const EXTRA = (wd: Workdir) => Object.entries(wd.extra ?? {}).map(([remote, x]) =>
+  `\n- ${remote} is checked out at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch.`).join("");
+
+/** How to get a repository when the work turns out to need one. */
+const DECLARE = (c?: Claim) => `\n- If the request needs changes in a repository, first declare it with \`remi repo owner/name\` (or its address)${c?.channel.repo ? `; this channel usually works in ${c.channel.repo}` : ""}: your machine checks it out on your task branch and resumes you with its path. Do not clone repositories yourself to change them.`;
+
+const RULES = (wd: Workdir, c?: Claim) => wd.repo
   ? `# Rules (enforced: breaking them fails)
-- Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.
+- Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${EXTRA(wd)}
 - Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
 - Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${FILES(wd)}`
   : `# Rules
-- Work in ${wd.cwd} (this task's own directory; no repository).${FILES(wd)}
-- Never push to remote repositories, merge, or publish anything.`;
+- Work in ${wd.cwd} (this task's own directory).${EXTRA(wd) || DECLARE(c)}${FILES(wd)}
+- Never push to remote repositories, merge, or publish anything: the machine pushes your task branches and opens pull requests after you stop.${EXTRA(wd) ? "\n- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran." : ""}`;
 
 const AUTONOMY: Record<string, string> = {
   cautious: "cautious: before any change beyond reading and investigating, stop with needs_decision and propose what you would do",
@@ -173,7 +189,7 @@ ${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a
 # Your memory (memory.md)
 ${a.memory?.trim() || "(empty)"}
 
-${RULES(wd)}${t.repo ? `\nRepository: ${t.repo}` : ""}
+${RULES(wd, c)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
 # Channel #${c.channel.name}
 ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`remi read\` for more):
@@ -233,6 +249,19 @@ ${quote(c, c.new)}
 Continue the task with this in mind (same rules as before).
 
 ${REACT}
+
+${RESULT_SPEC}`;
+}
+
+/** Resuming a run that was stopped between two tool calls because news came: what people said, the repositories
+ * that are ready now. The agent goes on with the same task in the same session. */
+export function steerPrompt(c: Claim, ready: Record<string, Workdir>, problem = ""): string {
+  const repos = Object.entries(ready).map(([remote, x]) => `- ${remote} is ready at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch (the machine pushes it and opens the pull request after you stop).`);
+  if (problem) repos.push(`- The machine could not check out a repository you declared: ${problem}`);
+  return `The machine paused you between two steps because something new came in while you worked.
+${c.new.length ? `\nPeople in the task's thread said:\n${quote(c, c.new)}\n` : ""}${repos.length ? `\nRepositories you declared:\n${repos.join("\n")}\n` : ""}
+Take this into account and continue the task from where you were (same rules as before). Do not redo steps that
+already took effect. If people changed what they want, follow the latest word.
 
 ${RESULT_SPEC}`;
 }
@@ -300,6 +329,8 @@ export type WorkerOptions = {
   send?: (path: string, body: Record<string, unknown>) => Promise<"ok" | "drop" | "retry">;
   /** How long a pause before a retry really is (tests shorten it). */
   pauseMs?: (ms: number) => number;
+  /** When news comes during a tool call, how long to let the call finish before stopping the run anyway (ms; default 3 minutes). */
+  steerWaitMs?: number;
 };
 
 const expand = (p: string) => (p.startsWith("~") ? join(homedir(), p.slice(1)) : resolve(p));
@@ -329,21 +360,47 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
   if (!existsSync(repoPath) || (!existsSync(join(repoPath, ".git")) && !(await git(repoPath, "rev-parse", "--git-dir")).ok)) {
     throw new Error(`@${c.agent.handle} 的仓库 ${c.agent.repo} 在这台机器上不存在或不是 git 仓库`);
   }
-  const common = (await git(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
   const branch = c.task.branch || `agent/${c.task.id}`;
-  await git(repoPath, "fetch", "--quiet", "origin").catch(() => null);
-  let base = (await git(repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")).out;
-  if (!base || base === "origin/HEAD" || base.includes("fatal")) base = (await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD")).out;
-  if (!existsSync(dir)) {
-    mkdirSync(root, { recursive: true });
-    const exists = (await git(repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).ok;
-    const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, base);
-    if (!r.ok) throw new Error(`开 worktree 失败：${r.out}`);
-  }
+  const { base, common } = await worktree(repoPath, dir, branch);
   const files = join(root, `${c.task.id}.files`);
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
   return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files };
+}
+
+/** A worktree of the checkout at `repoPath` in `dir` on `branch` (made from the default branch the first time, kept
+ * after), and the checkout's git directory (the run must be able to write it to commit). */
+async function worktree(repoPath: string, dir: string, branch: string): Promise<{ base: string; common: string }> {
+  const common = (await git(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
+  await git(repoPath, "fetch", "--quiet", "origin").catch(() => null);
+  let base = (await git(repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")).out;
+  if (!base || base === "origin/HEAD" || base.includes("fatal")) base = (await git(repoPath, "rev-parse", "--abbrev-ref", "HEAD")).out;
+  if (!existsSync(dir)) {
+    mkdirSync(dirname(dir), { recursive: true });
+    const exists = (await git(repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).ok;
+    const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, base);
+    if (!r.ok) throw new Error(`开 worktree 失败：${r.out}`);
+  }
+  return { base, common };
+}
+
+/** Worktrees of the repositories the agent declared (`remi repo`), beside the task's directory in <id>.repos/, on
+ * the task's branch; `wd` gets them (and may write them). Returns the ones made now. */
+export async function prepareDeclared(c: Claim, root: string, wd: Workdir, resolve?: (remote: string) => Promise<string>): Promise<Record<string, Workdir>> {
+  const made: Record<string, Workdir> = {};
+  for (const remote of c.task.repos ?? []) {
+    if (wd.extra?.[remote]) continue;
+    if (!resolve) throw new Error(`这台机器不知道去哪找 ${remote}`);
+    const repoPath = await resolve(remote);
+    const dir = join(root, `${c.task.id}.repos`, remote.replace(/[^\w.-]+/g, "_"));
+    const branch = c.task.branch || `agent/${c.task.id}`;
+    const { base, common } = await worktree(repoPath, dir, branch);
+    const x: Workdir = { cwd: dir, repo: repoPath, base, branch, writable: [] };
+    wd.extra = { ...wd.extra, [remote]: x };
+    wd.writable.push(dir, common);
+    made[remote] = x;
+  }
+  return made;
 }
 
 /** Removes a task's folders: its worktree (the branch stays in the repository, so a task picked up again gets its
@@ -358,10 +415,20 @@ export async function removeWorkdir(root: string, id: string): Promise<void> {
     if (inRepo) await git(root, `--git-dir=${common}`, "worktree", "prune");
   }
   rmSync(join(root, `${id}.files`), { recursive: true, force: true });
+  const declared = join(root, `${id}.repos`);
+  let names: string[] = [];
+  try { names = readdirSync(declared); } catch {}
+  for (const n of names) {
+    const d = join(declared, n);
+    const common = (await git(d, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
+    if (common && existsSync(common)) { await git(d, `--git-dir=${common}`, "worktree", "remove", "--force", d); await git(root, `--git-dir=${common}`, "worktree", "prune"); }
+  }
+  rmSync(declared, { recursive: true, force: true });
 }
 
-/** Whether the run left anything in the task's worktree: edits, or commits on its branch. */
+/** Whether the run left anything in the task's worktrees: edits, or commits on its branch. */
 async function touched(wd: Workdir): Promise<boolean> {
+  for (const x of Object.values(wd.extra ?? {})) if (await touched(x)) return true;
   if (!wd.repo) return false;
   if ((await git(wd.cwd, "status", "--porcelain")).out) return true;
   return wd.base ? Number((await git(wd.cwd, "rev-list", "--count", `${wd.base}..HEAD`)).out) > 0 : false;
@@ -457,11 +524,13 @@ export const REMI_CLI = `#!/bin/sh
 #   remi memory                                            your memory.md as it is now
 #   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
+#   remi ask @WHO QUESTION                                 ask someone in the thread and go on; their answer reaches you
+#   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
 #   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
 #                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,16p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,17p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -471,6 +540,8 @@ case "$1" in
   memory) exec curl -sS "$api/memory" -H "$auth" ;;
   say) shift; [ -n "$*" ] || usage; exec curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
   remind) shift; [ -n "$*" ] || usage; exec curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  ask) shift; [ -n "$*" ] || usage; exec curl -sS "$api/ask" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$*" ;;
+  repo) [ -n "$2" ] || usage; exec curl -sS "$api/repo" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$2" ;;
   upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
   *) usage ;;
 esac
@@ -511,7 +582,10 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
 - remi channel / remi who @HANDLE     what a channel is for and who is in it; who someone is
 - remi file /media/…  > FILE     a file someone attached (remi read shows them)
-Look up only what the request needs. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
+Look up only what the request needs. When you need someone's answer to go on (a choice only they can make, a fact
+only they know), ask with \`remi ask @WHO QUESTION\` and keep working on what does not depend on it: their reply
+reaches you in this session. Ask only what you cannot find out yourself. When the work needs changes in a repository
+you do not have here, declare it with \`remi repo owner/name\` first. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
 most every 5 minutes, only when people would want to know), and hand over a file before you stop with
 \`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
 2 minutes", "remind me on Friday…", "every morning…"), always set it with
@@ -549,6 +623,8 @@ export function createWorker(o: WorkerOptions) {
   const runtimes = o.runtimes ?? RUNTIMES;
   const running = new Map<string, Promise<void>>();
   const kills = new Map<string, () => void>();
+  /** Running tasks with news: stop the run between two tool calls and resume it with the news. */
+  const steers = new Map<string, () => void>();
   const claiming = new Set<string>();
   let stopped = false;
 
@@ -608,6 +684,7 @@ export function createWorker(o: WorkerOptions) {
     let wd: Workdir;
     try {
       wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo)))(c, root);
+      await prepareDeclared(c, root, wd, o.resolveRepo);
     } catch (e) {
       await finish(t, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
       return;
@@ -620,7 +697,20 @@ export function createWorker(o: WorkerOptions) {
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
     const flushStep = () => { stepTimer = undefined; if (pendingStep) void report(t.id, { step: pendingStep }); lastStep = Date.now(); pendingStep = ""; };
     let reacted = false, claimed = false;
+    // steering: news came while it runs. Between tool calls the run is stopped at once; during one, when it ends (or
+    // after steerWaitMs). The loop below then takes the news (a claim of the running task) and resumes the session.
+    let busy = false, steerWanted = false, steered = false, handle: { kill: () => void } | undefined;
+    let steerTimer: ReturnType<typeof setTimeout> | undefined;
+    const steerNow = () => { clearTimeout(steerTimer); if (!handle || steered) return; steered = true; handle.kill(); };
+    steers.set(t.id, () => {
+      if (steerWanted) return;
+      steerWanted = true;
+      if (!busy) steerNow();
+      else steerTimer = setTimeout(steerNow, o.steerWaitMs ?? 3 * 60_000);
+    });
     const onEvent = (e: RunEvent) => {
+      if (e.kind === "step") busy = true;
+      if (e.kind === "idle") { busy = false; if (steerWanted) steerNow(); return; }
       if (e.kind === "session") void report(t.id, { session: e.id, branch: wd.branch ?? "" });
       if (e.kind === "message" && !reacted) {
         const emoji = reactionOf(e.text);
@@ -642,8 +732,10 @@ export function createWorker(o: WorkerOptions) {
         cwd: wd.cwd, prompt: text, resume: resumeId || undefined, writable: wd.writable, onEvent, model: c.agent.model || undefined, stallMs, timeoutMs,
         env: { ...(o.env ?? gateEnv)(wd), ...(o.server && c.read_token ? cliEnv(root, o.server, c.read_token) : {}) }, logFile: o.logDir ? join(o.logDir, `${t.id}-${Date.now()}.jsonl`) : undefined,
       });
+      handle = h;
       kills.set(t.id, () => { cancelled = true; h.kill(); });
       const res = await h.done;
+      handle = undefined;
       if (res.usage) usage = addUsage(usage, res.usage);
       return res;
     };
@@ -657,7 +749,21 @@ export function createWorker(o: WorkerOptions) {
     let r: RunResult = await go(resume, prompt), resumed = !!resume;
     let failure: Failure | null = null, retries = 0, fresh = false, continued = false, emptyRetried = false;
     for (;;) {
-      if (r.killed || cancelled) break;
+      if (cancelled) break;
+      if (r.killed && steered) { // stopped for news: take it (the server hands it over with a claim) and go on
+        steered = steerWanted = busy = false;
+        const fresh: Claim | null = await o.api(`/api/v1/tasks/${t.id}/claim`, { method: "POST" }).catch(() => null);
+        if (cancelled) break;
+        if (fresh?.task) c = fresh;
+        let ready: Record<string, Workdir> = {}, problem = "";
+        try { ready = await prepareDeclared(c, root, wd, o.resolveRepo); } catch (e) { problem = e instanceof Error ? e.message : String(e); }
+        log(`${t.id} 有新消息，在同一会话里续跑${Object.keys(ready).length ? `（仓库 ${Object.keys(ready).join(" ")} 已就绪）` : ""}`);
+        const session = r.session || resume;
+        r = session ? await go(session, steerPrompt(c, ready, problem)) : await go("", taskPrompt(c, wd));
+        resumed = !!session;
+        continue;
+      }
+      if (r.killed) break;
       // an empty completion (no text, no step, no error) is a flake of the tool chain: once more, as it was
       if (!r.text && !r.error && !r.stopped && r.exitCode === 0 && !r.steps && !emptyRetried) { emptyRetried = true; r = await go(resume, prompt); continue; }
       const f = classify({ ...r, resumed });
@@ -708,12 +814,22 @@ export function createWorker(o: WorkerOptions) {
     }
     const result = r.text ? parseTaskResult(r.text) : { status: "failed" as const, summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
     let extra: { pr?: PR; note?: string } | null = null;
+    const morePRs: PR[] = [], moreNotes: string[] = [];
     if (o.afterRun && result.status === "review") {
       try { extra = await o.afterRun(c, result, wd); } catch (e) { extra = { note: `推送或开 PR 失败：${e instanceof Error ? e.message : e}` }; }
+      for (const [remote, x] of Object.entries(wd.extra ?? {})) { // the repositories it declared: a PR each
+        try {
+          const got = await o.afterRun(c, result, x);
+          if (got?.pr && !extra?.pr && !t.pr) extra = { ...extra, pr: got.pr };
+          else if (got?.pr) morePRs.push(got.pr);
+          if (got?.note) moreNotes.push(`${remote}：${got.note}`);
+        } catch (e) { moreNotes.push(`${remote} 推送或开 PR 失败：${e instanceof Error ? e.message : e}`); }
+      }
     }
     const notes: string[] = [];
     if (o.files && wd.files) notes.push(...await uploadOut(o.files, t.id, wd.files).catch((e) => [`上传产出失败：${e instanceof Error ? e.message : e}`]));
     const outputs = (Array.isArray(result.outputs) ? result.outputs : []).filter((x) => x && (x.title || x.external_id)).slice(0, 20);
+    for (const pr of morePRs) outputs.push({ title: pr.title || `PR #${pr.number}`, service: pr.provider === "gitlab" ? "GitLab" : "GitHub", external_id: pr.url, url: pr.url, status: "ready", note: pr.repo });
     if (outputs.length) {
       await report(t.id, { outputs: outputs.map(({ preview: _p, ...x }) => ({ ...x, kind: "external" })) });
       for (const x of outputs) {
@@ -723,7 +839,7 @@ export function createWorker(o: WorkerOptions) {
         try { if (q && existsSync(p)) await o.files.preview(t.id, q, readFileSync(p)); } catch {}
       }
     }
-    const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", extra?.note ?? "", notes.join("；")].filter(Boolean).join("\n\n");
+    const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", ...morePRs.map((p) => `PR：${p.url}`), extra?.note ?? "", ...moreNotes, notes.join("；")].filter(Boolean).join("\n\n");
     const body: Record<string, unknown> = { state: result.status, summary, session: r.session, ...(usage ? { usage } : {}) };
     if (result.result === "confirmed" || result.result === "unconfirmed") body.result = result.result;
     if (result.status === "waiting" && result.wait) {
@@ -734,7 +850,7 @@ export function createWorker(o: WorkerOptions) {
     if (extra?.pr) body.pr = extra.pr;
     // Nothing changed (no commits or edits, no PR, no files, no outside results) and nothing left unconfirmed: the
     // summary is the whole result (a question answered, a lookup), so it needs nobody's acceptance.
-    if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length
+    if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length && !morePRs.length
       && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
     if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
@@ -752,7 +868,7 @@ export function createWorker(o: WorkerOptions) {
       const p = run(c).catch(async (e) => {
         log(`${t.id} 出错：${e instanceof Error ? e.message : e}`);
         await finish(c.task, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
-      }).finally(() => { running.delete(t.id); kills.delete(t.id); void poll(); });
+      }).finally(() => { running.delete(t.id); kills.delete(t.id); steers.delete(t.id); void poll(); });
       running.set(t.id, p);
     } finally {
       claiming.delete(t.id);
@@ -763,6 +879,7 @@ export function createWorker(o: WorkerOptions) {
   function onTask(t: TeamTask, mine: (agentId: string) => boolean) {
     if (!mine(t.agent_id)) return;
     if (t.state === "queued") void claim(t);
+    else if (t.state === "running" && t.news) steers.get(t.id)?.();
     else if (t.state === "closed" || t.state === "done") {
       kills.get(t.id)?.(); // cancelled while it ran
       if (t.state === "closed") void cancelOutside(t.id);
@@ -814,6 +931,7 @@ export function createWorker(o: WorkerOptions) {
     const r = await o.api("/api/v1/machine/tasks");
     for (const t of (r?.tasks ?? []) as TeamTask[]) {
       if (t.state === "queued" || (t.state === "running" && !running.has(t.id) && !unsent(t.id))) void claim(t);
+      else if (t.state === "running" && t.news) steers.get(t.id)?.();
     }
   }
 
@@ -821,7 +939,7 @@ export function createWorker(o: WorkerOptions) {
    * someone picks the task up again) go, so worktrees do not pile up on the machine. */
   async function sweep(): Promise<string[]> {
     let ids: string[] = [];
-    try { ids = [...new Set(readdirSync(root).map((n) => n.replace(/\.files$/, "")).filter((n) => /^T-\d+$/.test(n)))].sort(); } catch { return []; }
+    try { ids = [...new Set(readdirSync(root).map((n) => n.replace(/\.(files|repos)$/, "")).filter((n) => /^T-\d+$/.test(n)))].sort(); } catch { return []; }
     ids = ids.filter((id) => !running.has(id) && !claiming.has(id) && !unsent(id));
     const removed: string[] = [];
     for (let i = 0; i < ids.length; i += 100) {

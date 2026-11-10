@@ -25,7 +25,11 @@ const (
 	defaultWaitWindow = 6 * time.Hour
 )
 
-var waitHows = map[string]bool{"callback": true, "poll": true, "timer": true}
+// answer: a person's answer to a question the agent asked (remi ask): only a reply in the thread (or the deadline) wakes it.
+var waitHows = map[string]bool{"callback": true, "poll": true, "timer": true, "answer": true}
+
+// answerWindow: how long a task waits for a person's answer by default before its agent is woken to decide.
+const answerWindow = 24 * time.Hour
 
 // waitView: what the task waits for (tasks_v1.wait).
 type waitView struct {
@@ -95,13 +99,16 @@ type waitRequest struct {
 
 func (h *Hub) newWait(b *waitRequest) (*waitView, string) {
 	if b == nil || !waitHows[b.How] {
-		return nil, "waiting 要带 wait.how：callback、poll 或 timer"
+		return nil, "waiting 要带 wait.how：callback、poll、timer 或 answer"
 	}
 	now := h.nowMs()
 	w := &waitView{How: b.How, Since: now, What: trimmed(b.What, 200)}
 	dl := time.Duration(b.Deadline) * time.Second
 	if dl <= 0 {
 		dl = defaultWaitWindow
+		if b.How == "answer" {
+			dl = answerWindow
+		}
 	}
 	dl = min(dl, waitMaxDeadline)
 	w.Deadline = now + dl.Milliseconds()
