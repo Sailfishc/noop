@@ -1,7 +1,8 @@
 #!/bin/sh
-# End-to-end: builds remi-server, starts two throwaway servers and runs
+# End-to-end: builds remi-server, starts throwaway servers and runs
 # server/test/e2e-team.ts and e2e-dispatch.ts against them, with this repository's
-# daemon code as the machine. CI's `server` job runs this; so does scripts/check.sh.
+# daemon code as the machine, then checks the app's fixtures against a real server.
+# CI's `server` job runs this; so does scripts/check.sh.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
@@ -22,8 +23,10 @@ run() { # <name> <port> <script>
   PIDS="$PIDS $!"
   i=0
   until curl -s -o /dev/null "http://127.0.0.1:$2/" 2>/dev/null || [ $i -ge 50 ]; do sleep 0.1; i=$((i + 1)); done
-  bun "$ROOT/server/test/$3" "http://127.0.0.1:$2" "$code" || { echo "--- $1 server log:"; tail -30 "$T/$1.log"; return 1; }
+  bun "$ROOT/$3" "http://127.0.0.1:$2" "$code" || { echo "--- $1 server log:"; tail -30 "$T/$1.log"; return 1; }
 }
 PORT="${E2E_PORT:-18081}"
-run team "$PORT" e2e-team.ts
-run dispatch "$((PORT + 1))" e2e-dispatch.ts
+run team "$PORT" server/test/e2e-team.ts
+run dispatch "$((PORT + 1))" server/test/e2e-dispatch.ts
+# the pretend server of the app's UI tests against this one (scripts/check-contract.ts)
+run contract "$((PORT + 2))" scripts/check-contract.ts

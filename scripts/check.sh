@@ -7,7 +7,8 @@
 #   scripts/check.sh app server   just these parts
 #
 # Parts: secrets, daemon (src/, test/), server (server/), e2e (server + daemon
-# together), app (app/: nsh check, nsh test, layout), screens (app/ screenshots).
+# together, and the app's fixtures against a real server), app (app/: nsh check,
+# nsh test, layout), screens (app/ screenshots).
 # Each step's output goes to a log; a failing step prints its last lines.
 # Exit status: 1 if a step failed. Steps that could not run (no nsh, no browser)
 # are listed as NOT RUN: say so in the PR.
@@ -32,6 +33,7 @@ else
     has '^(src/|test/|package\.json|bun\.lock|tsconfig\.json)' && want+=(daemon e2e)
     has '^server/' && want+=(server e2e)
     has '^(app/|scripts/(check-layout|screens|install-nsh)|\.claude/skills/nsh/)' && want+=(app screens)
+    has '^(app/|scripts/check-contract)' && want+=(e2e) # the app's fixtures against a real server
     has '^(\.github/|scripts/(check|e2e)\.sh)' && want=(secrets daemon server e2e app screens)
     echo "check: changed since origin/main: $(wc -l <<<"$changed" | tr -d ' ') files"
   fi

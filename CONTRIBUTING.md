@@ -28,6 +28,7 @@ Keep fixes focused on the existing behavior. A bug fix, security fix, or perform
 
 ```bash
 scripts/check.sh                          # what CI runs, for the parts you changed (`all` for everything)
+scripts/dev.sh                            # a local server, team and machine (fake Codex) to try things
 bun install                               # also installs the pre-commit secret scan
 bun test                                  # the daemon
 bunx tsc --noEmit

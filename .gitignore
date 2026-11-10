@@ -12,3 +12,6 @@ node_modules/
 
 # scripts/release-mac.sh settings (signing identity, notary profile)
 release.env
+
+# scripts/dev.sh: a local server, team and machine
+.dev/
