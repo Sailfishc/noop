@@ -11,12 +11,13 @@ import { SignupSection } from "./signups";
 export function Inbox(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void }) {
   const t = props.team;
   const items = () => t.inbox().map((id) => t.tasks()[id]).filter(Boolean);
-  const waits = () => t.waiting().map((id) => t.tasks()[id]).filter((x) => x?.state === "waiting");
+  const mine = () => new Set(t.inbox());
+  const waits = () => t.waiting().map((id) => t.tasks()[id]).filter((x) => x?.state === "waiting" && !mine().has(x.id));
   effect(() => { void t.loadInbox(); void t.loadReminders(); });
   const up = () => t.reminders().some((r) => reminderUp(r, t.me()?.id));
   return (
     <View style={{ flex: 1 }}>
-      <Header title={L("Waiting for you", "待你决定")} subtitle={L("Tasks to confirm, decisions to make, results to accept", "要你确认的活、要你做的决定、要你验收的结果")} back={props.back} onBack={props.onBack} />
+      <Header title={L("Waiting for you", "待你决定")} subtitle={L("Tasks to confirm, decisions to make, questions to answer, results to accept", "要你确认的活、要你做的决定、要你回答的问题、要你验收的结果")} back={props.back} onBack={props.onBack} />
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 10, maxWidth: 640 }}>
         <SignupSection team={t} />
         <If when={items().length || up() || t.signups().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>

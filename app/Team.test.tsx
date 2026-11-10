@@ -805,7 +805,7 @@ describe("channel v2", () => {
     await app.waitFor("id:task-T-0001-fold-repo");
     await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
-    expect(app.shows("text:none: a general task in an empty folder")).toBe(true);
+    expect(app.shows("text:none yet: the agent checks one out if the work needs it")).toBe(true);
     expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
     await app.press("id:task-T-0001-repo-edit");
     await app.waitFor("id:task-T-0001-repo-picker-pay");
@@ -869,6 +869,22 @@ describe("channel v2", () => {
     expect(app.shows("id:task-T-0001-cancel")).toBe(true);
   });
 
+  test("an agent's question to you: on its card, in 待你决定, answered by replying in the thread", async () => {
+    const asked = [{ user: "u_1", question: "版本号用 3.2 还是 4.0？", message: "msg_9", at: T0 }, { user: "u_2", question: "早答过了", message: "msg_8", at: T0, answered: T0 + 1 }];
+    const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: false, asked });
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: { ...server(newLog(), {}, [t1]), [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [t1] } } },
+    });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0001-asked-u_1");
+    expect(app.shows("text:@acha asks you")).toBe(true);
+    expect(app.shows("text:版本号用 3.2 还是 4.0？")).toBe(true);
+    expect(app.shows("text:Reply in the thread; it keeps working meanwhile.")).toBe(true);
+    expect(app.shows("text:早答过了")).toBe(false); // answered ones are gone
+    expect(app.shows("id:inbox-empty")).toBe(false);
+  });
+
   test("a task that already ran keeps its repository", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
     await app.waitFor("id:thread-msg_1");
@@ -880,13 +896,13 @@ describe("channel v2", () => {
     expect(app.shows("id:task-T-0001-repo-edit")).toBe(false);
   });
 
-  test("a channel's default repository is set from its members panel", async () => {
+  test("a channel's usual repository (a hint for agents) is set from its members panel", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-repo");
-    expect(app.shows("text:/^None: tasks run where the message says/")).toBe(true);
+    expect(app.shows("text:/^None: agents pick a repository/")).toBe(true);
     await app.press("id:channel-repo-edit");
     await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
     await app.press("id:channel-repo-picker-save");

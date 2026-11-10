@@ -68,12 +68,20 @@ export type Task = {
   titled?: boolean;
   /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
   events?: TaskEvent[] | null;
+  /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
+  asked?: Asked[] | null;
+  /** Repositories its agent declared it changes (`remi repo`), besides repo. */
+  repos?: string[] | null;
 };
+/** A question an agent asked someone in the task's thread; answered: when they replied. */
+export type Asked = { user: string; question: string; message: string; at: number; answered?: number };
+/** The questions to people still waiting for an answer. */
+export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** A task came to a status (and then needed this of a person). */
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
-  how: "callback" | "poll" | "timer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  how: "callback" | "poll" | "timer" | "answer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
   checked?: number; checks?: number; errors?: number; note?: string; what?: string;
   wake?: { reason: string; note?: string; at: number } | null;
 };

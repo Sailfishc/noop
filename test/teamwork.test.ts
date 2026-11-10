@@ -13,8 +13,10 @@ const sh = (cwd: string, ...cmd: string[]) => {
 test("codex --json events become the card's steps, the session and the last message", () => {
   expect(codexEvent('{"type":"thread.started","thread_id":"thr_1"}')).toEqual({ kind: "session", id: "thr_1" });
   expect(codexEvent('{"type":"item.started","item":{"type":"command_execution","command":"bash -lc \'bun test\'"}}')).toEqual({ kind: "step", text: "运行 bash -lc 'bun test'" });
-  expect(codexEvent('{"type":"item.completed","item":{"type":"command_execution","command":"x"}}')).toBe(null);
-  expect(codexEvent('{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"/w/src/orders.ts","kind":"update"}]}}')).toEqual({ kind: "step", text: "改 src/orders.ts" });
+  expect(codexEvent('{"type":"item.completed","item":{"type":"command_execution","command":"x"}}')).toEqual({ kind: "idle" });
+  expect(codexEvent('{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"/w/src/orders.ts","kind":"update"}]}}')).toEqual([{ kind: "step", text: "改 src/orders.ts" }, { kind: "idle" }]);
+  expect(claudeEvent('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}')).toEqual({ kind: "idle" });
+  expect(piEvent('{"type":"tool_execution_end","toolCallId":"1"}')).toEqual({ kind: "idle" });
   expect(codexEvent('{"type":"item.completed","item":{"type":"agent_message","text":"done"}}')).toEqual({ kind: "message", text: "done" });
   expect(codexEvent('{"type":"turn.failed","error":{"message":"quota"}}')).toEqual({ kind: "error", text: "quota" });
   expect(codexEvent("not json")).toBe(null);
@@ -306,7 +308,7 @@ function fakeRuntime(turns: { events?: string[]; text: string; hang?: boolean }[
         kill = () => res({ session: "thr_9", text: "", exitCode: 143, killed: true });
         if (turn.hang) return;
         setTimeout(() => {
-          for (const line of turn.events ?? []) { const e = codexEvent(line); if (e) o.onEvent?.(e); }
+          for (const line of turn.events ?? []) { const e = codexEvent(line); for (const x of e ? (Array.isArray(e) ? e : [e]) : []) o.onEvent?.(x); }
           res({ session: o.resume || "thr_9", text: turn.text, exitCode: 0, killed: false });
         }, 5);
       });
@@ -378,6 +380,94 @@ test("the next turn resumes the session with what is new; a cancel stops a run; 
   w.onTask({ ...claim().task, id: "T-0002", state: "closed" } as any, () => true);
   await w.idle();
   expect(calls.filter((c) => c.path === "/api/v1/tasks/T-0002/report" && c.body.state)).toEqual([]); // cancelled: nothing to report
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("news while it runs: the run stops after the tool call in flight and the same session goes on with it", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const kills: string[] = [];
+  const rt: Runtime = {
+    name: "codex", available: () => true,
+    start(o) {
+      seen.push(o);
+      const n = seen.length;
+      let kill = () => {};
+      const done = new Promise<any>((res) => {
+        kill = () => { kills.push(`turn ${n}`); res({ session: "thr_9", text: "", exitCode: 143, killed: true }); };
+        if (n === 1) { // a tool call that takes a while, then the agent would go on (it hangs until stopped)
+          o.onEvent?.({ kind: "session", id: "thr_9" });
+          o.onEvent?.({ kind: "step", text: "运行 bun test" });
+          setTimeout(() => o.onEvent?.({ kind: "idle" }), 40);
+          return;
+        }
+        setTimeout(() => res({ session: "thr_9", text: '```json\n{"status":"review","summary":"按你说的没动索引"}\n```', exitCode: 0, killed: false }), 5);
+      });
+      return { done, kill: () => kill() };
+    },
+  };
+  const claims = [claim(), claim({ news: false }, {})];
+  claims[1]!.new = [{ id: "msg_4", seq: 4, channel_id: "c_1", thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: "先别动索引", mentions: [], created: 0 }];
+  const api = async (path: string, init: RequestInit = {}) => {
+    calls.push({ path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    if (path.endsWith("/claim")) return claims.shift() ?? null;
+    return path === "/api/v1/machine/tasks" ? { tasks: [] } : {};
+  };
+  const w = createWorker({ api, maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(10);
+  w.onTask({ ...claim().task, state: "running", news: true } as any, () => true);
+  await Bun.sleep(15);
+  expect(kills).toEqual([]); // the tool call is still going
+  await w.idle();
+  expect(kills).toEqual(["turn 1"]);
+  expect(seen.length).toBe(2);
+  expect(seen[1]!.resume).toBe("thr_9");
+  expect(seen[1]!.prompt).toContain("paused you between two steps");
+  expect(seen[1]!.prompt).toContain("- 张伟 (@zhangwei): 先别动索引");
+  expect(calls.filter((c) => c.path.endsWith("/claim")).length).toBe(2);
+  const finals = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report" && c.body.state);
+  expect(finals.map((c) => c.body.summary)).toEqual(["按你说的没动索引"]);
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("a repository the agent declared gets a worktree on the task branch; its commits get a PR", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-")), origin = join(W, "pay");
+  mkdirSync(origin);
+  sh(origin, "git", "init", "-q", "-b", "main");
+  writeFileSync(join(origin, "a.txt"), "1");
+  sh(origin, "git", "add", "."); sh(origin, "git", "commit", "-qm", "init");
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [], after: string[] = [];
+  const rt: Runtime = {
+    name: "codex", available: () => true,
+    start(o) {
+      seen.push(o);
+      const done = (async () => {
+        const dir = join(W, "work", "T-0001.repos", "github.com_acme_pay");
+        writeFileSync(join(dir, "b.txt"), "2");
+        sh(dir, "git", "add", "."); sh(dir, "git", "commit", "-qm", "b");
+        return { session: "thr_9", text: '```json\n{"status":"review","summary":"加了 b.txt"}\n```', exitCode: 0, killed: false };
+      })();
+      return { done, kill: () => {} };
+    },
+  };
+  const c = claim({ repos: ["github.com/acme/pay"] });
+  const w = createWorker({
+    api: fakeApi({ "T-0001": c }, calls), maxParallel: 1, workRoot: join(W, "work"), runtimes: { codex: rt }, log: () => {},
+    resolveRepo: async () => origin,
+    afterRun: async (_c, _r, wd) => { after.push(wd.cwd); return wd.repo ? { pr: { provider: "github", url: "https://github.com/acme/pay/pull/1", number: 1, state: "open", checks: "none" } } : null; },
+  });
+  w.onTask({ ...c.task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(seen[0]!.cwd).toBe(join(W, "work", "T-0001"));
+  expect(seen[0]!.prompt).toContain(`github.com/acme/pay is checked out at ${join(W, "work", "T-0001.repos", "github.com_acme_pay")}`);
+  expect(seen[0]!.writable).toContain(join(W, "work", "T-0001.repos", "github.com_acme_pay"));
+  expect(sh(origin, "git", "log", "--oneline", "agent/T-0001").out).toContain("b");
+  expect(after).toEqual([join(W, "work", "T-0001"), join(W, "work", "T-0001.repos", "github.com_acme_pay")]);
+  const last = calls.filter((x) => x.path === "/api/v1/tasks/T-0001/report").at(-1)!.body;
+  expect(last.pr.url).toBe("https://github.com/acme/pay/pull/1");
+  expect(last.answer).toBeUndefined();
   rmSync(W, { recursive: true, force: true });
 });
 

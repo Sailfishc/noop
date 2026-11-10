@@ -654,7 +654,7 @@ function AgentRepo(props: { team: Team; agent: Agent }) {
         </View>
         <Btn small testID={`agent-repo-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
       </View>
-      <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("Usually empty: the repository comes with the task (an address in the message, or the channel’s default) and the machine finds or clones it. This path is used only when a task names none.", "一般不用填：仓库跟着任务走（消息里写的地址，或频道的默认仓库），机器会自己找到或克隆。只有任务没指定仓库时才用这里的路径。")}</Text>
+      <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{L("Usually empty: the repository comes with the task (an address in the message, or one the agent checks out when the work needs it) and the machine finds or clones it. This path is used only when a task names none.", "一般不用填：仓库跟着任务走（消息里写的地址，或者 Agent 判断要改代码时自己检出的），机器会自己找到或克隆。只有任务没指定仓库时才用这里的路径。")}</Text>
     </View>
   );
 }

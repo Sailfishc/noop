@@ -102,6 +102,8 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("GET /api/v1/agent/memory", public, h.v1AgentMemory)
 	r("POST /api/v1/agent/say", public, h.v1AgentSay)
 	r("POST /api/v1/agent/remind", public, h.v1AgentRemind)
+	r("POST /api/v1/agent/ask", public, h.v1AgentAsk)
+	r("POST /api/v1/agent/repo", public, h.v1AgentRepo)
 	r("POST /api/v1/tasks/{id}/decide", person, h.v1TaskDecide)
 	r("GET /api/v1/machine/tasks", machine, h.v1MachineTasks)
 	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)

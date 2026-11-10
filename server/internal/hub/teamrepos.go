@@ -11,9 +11,10 @@ import (
 // remote, "host/owner/name" (github.com/acme/pay), the same on every machine; each machine reports the remotes of
 // the checkouts it has (never their paths), and resolves a task's remote to its own checkout (or clones it).
 //
-// A task's repository is, in order: one named in the message (a URL, or owner/name of a repository a machine
-// reported), the repository of an earlier task in the same thread, the channel's default repository, or none (a
-// general task in an empty work directory).
+// A task's repository is one named in the message (a URL, or owner/name of a repository a machine reported), or the
+// repository of an earlier task in the same thread; otherwise none: it starts in a general work directory, and the
+// agent declares a repository when the work turns out to need one (`remi repo`, teamsteer.go). The channel's default
+// repository is a hint the agent gets, not a rule.
 
 type repoRef struct {
 	Remote string `json:"remote"` // host/owner/name
@@ -99,16 +100,12 @@ func (h *Hub) repoInText(text string) string {
 }
 
 // taskRepo: where a new task runs (see the top of this file).
-func (h *Hub) taskRepo(text, root, channelID string) string {
+func (h *Hub) taskRepo(text, root string) string {
 	if r := h.repoInText(text); r != "" {
 		return r
 	}
 	var r string
 	_ = h.db.QueryRow("SELECT repo FROM tasks_v1 WHERE thread_id = ? AND repo != '' ORDER BY num DESC LIMIT 1", root).Scan(&r)
-	if r != "" {
-		return r
-	}
-	_ = h.db.QueryRow("SELECT repo FROM channels WHERE id = ?", channelID).Scan(&r)
 	return r
 }
 

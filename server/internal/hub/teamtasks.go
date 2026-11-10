@@ -152,6 +152,9 @@ type taskView struct {
 	Failures    int64         `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
 	LastFailure string        `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
 	Usage       *usageView    `json:"usage"`        // tokens its runs used, added up
+	News        bool          `json:"news"`         // something new for its running agent: the machine resumes it with that (teamsteer.go)
+	Asked       []askedView   `json:"asked"`        // questions its agent put to people while it worked (remi ask)
+	Repos       []string      `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
 	Created     int64         `json:"created"`
 	Updated     int64         `json:"updated"`
 	seenSeq     int64
@@ -159,7 +162,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -169,13 +172,16 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait, usage string
+		var decision, pr, mandate, wait, usage, asked, repos string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
+		t.Asked, t.Repos = []askedView{}, []string{}
+		_ = json.Unmarshal([]byte(asked), &t.Asked)
+		_ = json.Unmarshal([]byte(repos), &t.Repos)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
@@ -299,8 +305,9 @@ func taskTitle(text string) string {
 	return line
 }
 
-// onPosted: what a new message means for tasks. A person's reply in a task's thread reaches its tasks; a person's
-// @agent elsewhere hands that agent a task (one per agent and thread).
+// onPosted: what a new message means for tasks. A person's reply in a task's thread reaches its agent when they
+// have a stake in it or @ it (wakes, teamsteer.go); a person's @agent elsewhere hands that agent a task (one per
+// agent and thread).
 func (h *Hub) onPosted(m messageView, asTask bool) {
 	if m.Author.Kind != "user" {
 		return
@@ -309,7 +316,10 @@ func (h *Hub) onPosted(m messageView, asTask bool) {
 	if m.ThreadID != nil {
 		root = *m.ThreadID
 		for _, t := range scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ?", root)) {
-			h.followUp(t)
+			if h.wakes(t, m) {
+				h.answered(t, m)
+				h.news(t)
+			}
 		}
 	}
 	for _, mm := range m.Mentions {
@@ -396,7 +406,7 @@ func (h *Hub) createTask(m messageView, root, agentID string, joined, tracked bo
 			text = r.Text + "\n\n" + text
 		}
 	}
-	repo := h.taskRepo(m.Text, root, m.ChannelID)
+	repo := h.taskRepo(m.Text, root)
 	branch := "agent/" + id
 	mandate := mandateView{By: m.Author.ID, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
 		Branch: branch, Runtime: a.Runtime, Model: a.Model}
@@ -481,7 +491,8 @@ func (h *Hub) v1Task(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
-// v1Inbox: what waits for this person: tasks for their agents to confirm, decisions and results to look at.
+// v1Inbox: what waits for this person: tasks for their agents to confirm, decisions and results to look at, questions
+// an agent put to them.
 func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 	me := q.who.userID
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 t WHERE
@@ -489,7 +500,9 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state = 'needs_decision' AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me))
+		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
+			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me))
 	out := obj{"tasks": h.withOutputs(ts)}
 	if h.isAdmin(me) { // people asking to join wait for an admin
 		out["signups"] = h.pendingSignups()
@@ -779,7 +792,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	if t.Wait != nil {
 		woke = t.Wait.Wake
 	}
-	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil}
+	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil, "news": 0}
 	if !mine {
 		cols["runs"] = t.Runs + 1
 	}
@@ -811,7 +824,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		}
 	}
 	creator, _ := h.user(t.CreatedBy)
-	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic},
+	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo},
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
 		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID)})
 }
@@ -959,8 +972,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		} else if state == taskReview || state == taskWaiting {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
 		}
-		if len(h.unseen(t)) > 0 {
-			state = taskQueued // people said more while it ran: the next run answers them
+		if t.News {
+			state = taskQueued // news came while it ran (and the machine did not resume it with it): the next run takes it
 		}
 		cols["state"] = state
 	}
