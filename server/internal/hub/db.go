@@ -88,6 +88,12 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(teamSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(signupSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(triggersSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -109,10 +115,26 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN read_token TEXT NOT NULL DEFAULT ''", // what its runs read the chat with (teamcontext.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
-		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                        // tokens its runs used, added up
-		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",     // why it takes no work now (teamhealth.go); "" = it does
-		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0", // its title was given (by the agent or a person), not cut from the request
-		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",  // who takes it when it stops for people ("" = its creator)
+		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                                  // tokens its runs used, added up
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",               // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0",           // its title was given (by the agent or a person), not cut from the request
+		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",            // who takes it when it stops for people ("" = its creator)
+		"ALTER TABLE tasks_v1 ADD COLUMN cancelled_at INTEGER",                        // when a person cancelled it (teammetrics.go: was it asked again)
+		"ALTER TABLE tasks_v1 ADD COLUMN news INTEGER NOT NULL DEFAULT 0",             // something new for its running agent (teamsteer.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN asked TEXT NOT NULL DEFAULT '[]'",            // questions its agent put to people (remi ask)
+		"ALTER TABLE tasks_v1 ADD COLUMN repos TEXT NOT NULL DEFAULT '[]'",            // repositories its agent declared (remi repo)
+		"ALTER TABLE machines ADD COLUMN team INTEGER NOT NULL DEFAULT 0",             // a team Computer: admins put agents on it (teamowned.go)
+		"ALTER TABLE machines ADD COLUMN sync_team_config INTEGER NOT NULL DEFAULT 0", // a person's own machine takes the team config repository too (its owner chose so)
+		"ALTER TABLE channels ADD COLUMN conventions TEXT NOT NULL DEFAULT ''",        // how this channel works, for its agents
+		"ALTER TABLE tasks_v1 ADD COLUMN handoffs TEXT NOT NULL DEFAULT '[]'",         // its agent's handoffs to other agents, each a card a person clicks (teamhandoff.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN submits TEXT NOT NULL DEFAULT '[]'",          // its agent's submissions to outside services (remi submit, at most 3)
+		"ALTER TABLE triggers ADD COLUMN max_per_day INTEGER NOT NULL DEFAULT 10",     // firings a day at most (teamtriggers.go)
+		"ALTER TABLE triggers ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0",          // firings skipped: the last task still open, or the day's limit
+		"ALTER TABLE triggers ADD COLUMN last_task TEXT",                              // the task it opened last
+		"ALTER TABLE triggers ADD COLUMN day TEXT NOT NULL DEFAULT ''",                // the day day_fires counts (2006-01-02, the server's zone)
+		"ALTER TABLE triggers ADD COLUMN day_fires INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE triggers ADD COLUMN skipped_run INTEGER NOT NULL DEFAULT 0", // skipped in a row since it last fired
+		"ALTER TABLE triggers ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''",   // why the last one was: busy (its last task is open) | limit
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

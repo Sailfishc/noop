@@ -206,7 +206,7 @@ func TestTaskPRsAndGitlabHook(t *testing.T) {
 	e.h.cfg.GitWebhookSecret = "s3cret"
 	check(t, "a wrong secret is refused", hook("nope", map[string]any{}).status == 401)
 	r = hook("s3cret", map[string]any{"object_kind": "push", "ref": "refs/heads/agent/T-0001"})
-	check(t, "push events are ignored", r.status == 200 && r.body["ignored"] == "push", r)
+	check(t, "a push of an agent's branch fires nothing", r.status == 200 && r.body["fired"] == float64(0), r)
 	r = hook("s3cret", map[string]any{"object_kind": "pipeline", "object_attributes": map[string]any{"ref": "agent/T-0001", "status": "failed"}})
 	check(t, "a pipeline reaches the task's PR", r.status == 200 && e.task("T-0001")["pr"].(map[string]any)["checks"] == "failure", r)
 	r = hook("s3cret", map[string]any{"object_kind": "merge_request", "object_attributes": map[string]any{"iid": 3, "source_branch": "agent/T-0001", "state": "merged", "url": "https://code.corp/pay/orders/-/merge_requests/3"}})

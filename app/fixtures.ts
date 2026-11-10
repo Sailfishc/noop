@@ -36,16 +36,58 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     live.set(id, t);
     return { body: t };
   };
+  const triggers: any[] = [...((over as any).__triggers ?? [])];
   const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
     [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
     [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
+    [`GET ${URL}/api/v1/metrics?*`]: { body: { days: 7, since: T0, reply: { count: 9, median: 1_380_000, p90: 9_000_000, open: 2, oldest: 5_400_000 },
+      reply_by: { confirm: { count: 3, median: 600_000, p90: 900_000, open: 0, oldest: 0 }, accept: { count: 6, median: 2_400_000, p90: 9_000_000, open: 2, oldest: 5_400_000 } },
+      runs: { tasks: 7, mean: 1.9, median: 2, max: 4, three_plus: 2 }, cancelled: 2, redone: 1,
+      agents: [{ agent_id: "a_1", tasks: 9, people: 2, others: 4, team: false, machine: "张伟的 Mac" }] } },
     [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
     [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
+    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t, b) => {
+      const xs = [...(t.mandate?.takeovers ?? [])];
+      if (b.approve !== undefined) { // the agent's owner on a pending takeover
+        const x = xs.pop();
+        if (b.approve) { xs.push({ from: x.from, to: x.to, at: x.at }); t.created_by = x.to; }
+        t.mandate = { ...t.mandate, by: t.created_by, takeovers: xs };
+        return;
+      }
+      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...xs, { from: t.created_by, to: "u_1", at: T0 }] };
+      t.created_by = "u_1";
+    }),
+    [`POST ${URL}/api/v1/tasks/*/handoff`]: act("handoff", (t, b) => {
+      t.handoffs = (t.handoffs ?? []).map((x: any) => (x.id === b.id ? { ...x, state: b.accept ? "accepted" : "declined", decided_by: "u_1", ...(b.accept ? { task: "T-0002" } : {}) } : x));
+      t.holder = { kind: "agent", id: t.agent_id, why: "work" };
+    }),
+    [`GET ${URL}/api/v1/triggers?*`]: () => ({ body: { triggers } }),
+    [`POST ${URL}/api/v1/triggers`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.created.push({ trigger: b });
+      const x = { id: `trg_${triggers.length + 1}`, channel_id: b.channel_id, agent_id: b.agent, created_by: "u_1", kind: b.kind, text: b.text, repeat: b.repeat ?? "",
+        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0 };
+      triggers.push(x);
+      return { body: x };
+    },
+    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string }) => {
+      const id = r.url.match(/triggers\/([^/]+)\//)![1];
+      log.acts.push(`${id} confirm`);
+      const x = triggers.find((y) => y.id === id)!;
+      x.confirmed_by = "u_1";
+      return { body: x };
+    },
+    [`GET ${URL}/api/v1/team/config`]: { body: { repo: "" } },
+    [`PUT ${URL}/api/v1/team/config`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.patches.push({ team_config: b });
+      return { body: { repo: b.repo } };
+    },
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
     [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
@@ -91,11 +133,11 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`PATCH ${URL}/api/v1/channels/c_1`]: (r: { body?: string | null }) => {
       const b = JSON.parse(r.body!);
       log.patches.push({ channel: b });
-      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, "") } };
+      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, ""), conventions: b.conventions ?? "" } };
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...over,
+    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers")),
   };
 }
 export const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });

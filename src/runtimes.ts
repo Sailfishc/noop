@@ -1,14 +1,18 @@
 // Runtime adapters: one way to start an agent engine headless on this machine, follow what it does, and resume its
 // session for the next turn: Codex (`codex exec --json`), Claude Code (`claude -p --output-format stream-json`) and pi
 // (`pi -p --mode json`).
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { DEFAULT_GATES } from "./gates";
 import { addUsage, type Usage } from "./runfail";
+import { codexMcpArgs, type McpServer } from "./teamconfig";
 
-/** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). */
+/** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). "idle": a tool call finished and the
+ * agent is between calls, a safe moment to stop it and resume the session with news (teamwork.ts, steering). */
 export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "message"; text: string } | { kind: "error"; text: string }
-  | { kind: "usage"; usage: Usage };
+  | { kind: "usage"; usage: Usage } | { kind: "idle" };
+const IDLE: RunEvent = { kind: "idle" };
 
 export type RunOptions = {
   cwd: string;
@@ -21,6 +25,8 @@ export type RunOptions = {
   model?: string;
   logFile?: string;
   onEvent?: (e: RunEvent) => void;
+  /** MCP servers from the team config (teamconfig.ts), filled in; file: the same as an mcp.json for Claude Code. */
+  mcp?: { servers: Record<string, McpServer>; file?: string };
   /** Stop the run when it has printed nothing for this long (ms; 0: never). */
   stallMs?: number;
   /** Stop the run after this long in all (ms; 0: never). */
@@ -60,7 +66,7 @@ const short = (s: string, n = 120) => {
 };
 
 /** One line of `codex exec --json` → what it means for us (null: nothing worth showing). */
-export function codexEvent(line: string): RunEvent | null {
+export function codexEvent(line: string): RunEvent | RunEvent[] | null {
   let e: any;
   try { e = JSON.parse(line); } catch { return null; }
   switch (e?.type) {
@@ -84,15 +90,15 @@ export function codexEvent(line: string): RunEvent | null {
         case "agent_message":
           return e.type === "item.completed" ? { kind: "message", text: String(it.text ?? "") } : null;
         case "command_execution":
-          return e.type === "item.started" ? { kind: "step", text: `运行 ${short(it.command, 100)}` } : null;
+          return e.type === "item.started" ? { kind: "step", text: `运行 ${short(it.command, 100)}` } : IDLE;
         case "file_change": {
           const paths = (it.changes ?? []).map((c: any) => String(c.path ?? "").split("/").slice(-2).join("/")).filter(Boolean);
-          return paths.length ? { kind: "step", text: `改 ${short(paths.join(", "), 100)}` } : null;
+          return paths.length ? [{ kind: "step", text: `改 ${short(paths.join(", "), 100)}` }, IDLE] : IDLE;
         }
         case "web_search":
-          return { kind: "step", text: `搜索 ${short(it.query, 100)}` };
+          return e.type === "item.started" ? { kind: "step", text: `搜索 ${short(it.query, 100)}` } : IDLE;
         case "mcp_tool_call":
-          return { kind: "step", text: `调用 ${it.server ?? ""}${it.tool ? `.${it.tool}` : ""}` };
+          return e.type === "item.started" ? { kind: "step", text: `调用 ${it.server ?? ""}${it.tool ? `.${it.tool}` : ""}` } : IDLE;
         case "todo_list": {
           const next = (it.items ?? []).find((x: any) => !x.completed);
           return next ? { kind: "step", text: short(next.text, 100) } : null;
@@ -105,9 +111,9 @@ export function codexEvent(line: string): RunEvent | null {
 }
 
 /** The command line of a Codex run: non-interactive, sandboxed to the work directory (plus `writable`), with network. */
-export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model">): string[] {
+export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model" | "mcp">): string[] {
   const cmd = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
-    "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", "--cd", o.cwd];
+    "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", ...codexMcpArgs(o.mcp?.servers ?? {}), "--cd", o.cwd];
   for (const d of o.writable ?? []) cmd.push("--add-dir", d);
   if (o.model) cmd.push("-m", o.model);
   if (o.resume) cmd.push("resume", o.resume);
@@ -228,6 +234,8 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
       }
       return out.length ? out : null;
     }
+    case "user": // a tool's result came back: between tool calls
+      return !e.parent_tool_use_id && Array.isArray(e.message?.content) && e.message.content.some((c: any) => c?.type === "tool_result") ? IDLE : null;
     case "result": {
       const out: RunEvent[] = [];
       if (e.session_id) out.push({ kind: "session", id: String(e.session_id) });
@@ -244,15 +252,40 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
   return null;
 }
 
-/** Tools a Claude Code run may use without asking (nobody is there to answer), and what it may never run. */
-const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit"];
+/** Tools a Claude Code run may use without asking (nobody is there to answer), and what it may never run. Skill: the
+ * skills installed on the machine (~/.claude/skills, the team config repo) and in the repository. */
+const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit", "Skill"];
 
-/** The command line of a Claude Code run: print mode, JSON stream, edits accepted, the listed tools allowed, the gates
- * denied; its own attribution lines off (the task's PR says who did it). */
-export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model">): string[] {
+/** The MCP servers Claude Code would load in `cwd`: the user's (~/.claude.json mcpServers), the local ones of `cwd` and
+ * the folders above it (~/.claude.json projects), and the repository's .mcp.json. In print mode a tool that is not
+ * allowed is simply refused, and `--allowedTools` takes no wildcard over servers ("mcp__*" matches nothing), so each
+ * server is allowed by name ("mcp__github" allows all of its tools). Servers come from the machine's own config: what
+ * someone installed on this Computer is what its agents may use. */
+export function claudeMcpServers(cwd: string, home = homedir()): string[] {
+  const names = new Set<string>();
+  const add = (servers: unknown) => {
+    if (servers && typeof servers === "object") for (const k of Object.keys(servers)) names.add(k);
+  };
+  const read = (path: string): any => { try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; } };
+  const user = read(join(home, ".claude.json"));
+  add(user?.mcpServers);
+  for (const [dir, p] of Object.entries<any>(user?.projects ?? {})) {
+    if (cwd === dir || cwd.startsWith(dir.endsWith("/") ? dir : dir + "/")) add(p?.mcpServers);
+  }
+  add(read(join(cwd, ".mcp.json"))?.mcpServers);
+  // Claude Code names a server's tools mcp__<name>__<tool>, with what is not a letter, digit, _ or - turned into _
+  return [...names].map((n) => "mcp__" + n.replace(/[^A-Za-z0-9_-]/g, "_")).sort();
+}
+
+/** The command line of a Claude Code run: print mode, JSON stream, edits accepted, the listed tools and the machine's
+ * MCP servers allowed, the gates denied; its own attribution lines off (the task's PR says who did it). */
+export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model"> & { mcp?: string[]; mcpConfig?: RunOptions["mcp"] }): string[] {
+  const team = o.mcpConfig?.file ? Object.keys(o.mcpConfig.servers).map((n) => `mcp__${n}`) : [];
+  const allowed = [...new Set([...CLAUDE_TOOLS, ...(o.mcp ?? []), ...team])];
   const cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
-    "--allowedTools", CLAUDE_TOOLS.join(","), "--disallowedTools", ...DEFAULT_GATES,
+    "--allowedTools", allowed.join(","), "--disallowedTools", ...DEFAULT_GATES,
     "--settings", JSON.stringify({ attribution: { commit: "", pr: "" }, includeCoAuthoredBy: false })];
+  if (o.mcpConfig?.file) cmd.push("--mcp-config", o.mcpConfig.file);
   for (const d of o.writable ?? []) cmd.push("--add-dir", d);
   if (o.model) cmd.push("--model", o.model);
   if (o.resume) cmd.push("--resume", o.resume);
@@ -262,7 +295,8 @@ export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model
 export const claude: Runtime = {
   name: "claude",
   available: () => onPath("claude"),
-  start: (o) => jsonlRun("claude", claudeCommand, claudeEvent, { ...o, env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0", ...o.env } }),
+  start: (o) => jsonlRun("claude", (r) => claudeCommand({ ...r, mcp: claudeMcpServers(r.cwd), mcpConfig: r.mcp }), claudeEvent,
+    { ...o, env: { CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: "0", ...o.env } }),
 };
 
 // ---------------------------------------------------------------- pi
@@ -280,6 +314,8 @@ export function piEvent(line: string): RunEvent | RunEvent[] | null {
       const s = toolStep(String(e.toolName ?? ""), e.args);
       return s ? { kind: "step", text: s } : null;
     }
+    case "tool_execution_end":
+      return IDLE;
     case "message_end": {
       const m = e.message ?? {};
       if (m.role !== "assistant") return null;

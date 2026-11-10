@@ -44,6 +44,15 @@ const resume = a.includes("resume") ? a[a.indexOf("resume") + 1] : "";
 const prompt = await new Response(Bun.stdin.stream()).text();
 const out = (o) => console.log(JSON.stringify(o));
 out({ type: "thread.started", thread_id: resume || "thr_fake_1" });
+const done = (summary) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
+if (prompt.includes("paused you between two steps")) done("插话后：" + (prompt.includes("改主意") ? "按新的要求做了" : "没收到新要求"));
+if (prompt.includes("STEER-TEST")) { // a long tool call, then it would go on for a long time
+  out({ type: "item.started", item: { type: "command_execution", command: "sleep 1" } });
+  await Bun.sleep(1500);
+  out({ type: "item.completed", item: { type: "command_execution", command: "sleep 1" } });
+  await Bun.sleep(30000);
+  done("没被打断");
+}
 out({ type: "item.started", item: { type: "command_execution", command: "git commit" } });
 const env = { ...process.env, GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@a", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@a" };
 const turn = resume ? "2" : "1";
@@ -97,6 +106,14 @@ rs = await replies();
 check("the second turn resumed the session", rs.some((m) => m.text.startsWith("第二轮：也看了 /refunds")), rs.map((m) => m.text).join(" | "));
 t = await task();
 check("the second commit is on the branch", sh(origin, "git", "log", "--oneline", "agent/T-0001").split("\n").length === 3);
+
+// said while it runs: the run stops after the tool call in flight and the same session goes on with it
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "STEER-TEST 慢慢做", thread_id: ask.json.id });
+await until("it runs a third turn", async () => (await task()).runs === 3 && (await task()).step === "运行 sleep 1");
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, wl.session, { text: "改主意了：只改注释", thread_id: ask.json.id });
+await until("the news reaches it mid-run and it finishes with it", async () => (await replies()).some((m) => m.text.startsWith("插话后：按新的要求做了")), 10000);
+t = await task();
+check("in the same run (no new turn), back for review", t.runs === 3 && t.state === "review", `${t.runs} ${t.state}`);
 
 // the creator accepts it
 check("accepted", (await api("POST", "/api/v1/tasks/T-0001/accept", zw.session)).json.state === "done");

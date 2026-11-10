@@ -20,7 +20,8 @@
   },
   "theme": "theme.json",
   "web": {
-    "host": "./host.js"
+    "host": "./host.js",
+    "base": "/"
   },
   "capabilities": {
     "clipboard": true,

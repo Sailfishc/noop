@@ -16,7 +16,17 @@ export type Machine = {
   runtime_info?: RuntimeInfo[]; git?: GitCred[];
   /** The repositories it has checkouts of, by remote (host/owner/name). */
   repos?: RepoRef[] | null;
+  /** A team machine: any admin may put agents on it and look after them. */
+  team?: boolean;
+  /** A person's own machine that takes the team config repository too (its owner turned it on; team machines always do). */
+  sync_team_config?: boolean;
+  /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
+  skills?: string[] | null; mcp?: string[] | null;
+  /** How the team config repository last synced there. */
+  team_config?: TeamConfigStatus | null;
 };
+/** The team config repository (AGENTS.md, skills/, mcp.json) on one machine: which commit, when, what went wrong. */
+export type TeamConfigStatus = { repo: string; commit: string; synced: number; error?: string; instructions: boolean };
 /** A repository, named by its remote the same way on every machine: host/owner/name. */
 export type RepoRef = { remote: string; name: string };
 export type Repo = RepoRef & { machines: string[] };
@@ -25,6 +35,10 @@ export const repoLabel = (remote: string) => (remote.startsWith("github.com/") ?
 export type GitPlatform = { kind: "gitlab" | "github"; name: string; host: string; api: string };
 export type GitEvent = { at: number; kind: string; project: string; branch: string; number: number; state: string; task: string };
 export type GitSettings = { platforms: GitPlatform[]; webhook: { path: string; secret_set: boolean }; events: GitEvent[] };
+/** This server's team: one per server, with a stable id. signup: people may ask to join (an admin approves). */
+export type Workspace = { id: string; name: string; signup: boolean };
+/** Someone asking to join, waiting for an admin. */
+export type Signup = { id: string; email: string; handle: string; name: string; note: string; state: "pending" | "approved" | "rejected"; created: number };
 export type Device = { id: string; ua: string; created: number; last_seen: number; current: boolean };
 /** Who may hand an agent work: only its owner, members of a channel it is in, or anyone in the team. */
 export type Dispatch = "owner" | "channel" | "team";
@@ -40,7 +54,11 @@ export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_de
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
-export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string };
+export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
+  /** People in the channel who took it over from the one who asked; by is the last. */
+  takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
+  /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
+  via?: string[] | null; parent?: string; trigger?: string };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -64,12 +82,38 @@ export type Task = {
   titled?: boolean;
   /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
   events?: TaskEvent[] | null;
+  /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
+  asked?: Asked[] | null;
+  /** Repositories its agent declared it changes (`remi repo`), besides repo. */
+  repos?: string[] | null;
+  /** Its agent's proposals to hand the work on to another agent: cards a person clicks. */
+  handoffs?: Handoff[] | null;
+  /** Its agent's submissions to outside services (`remi submit`), at most 3. */
+  submits?: { what: string; at: number }[] | null;
+  /** Who has the ball now (null once it ended). */
+  holder?: Holder | null;
 };
+/** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
+export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
+export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
+/** Whose move it is, and why. */
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
+/** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
+export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
+  repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
+  /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
+  max_per_day?: number; skipped?: number; last_task?: string;
+  /** skipped in a row since it last fired, and why the last one was: busy (last_task is not over) | limit (the day's) */
+  skipped_run?: number; skip_reason?: "busy" | "limit" };
+/** The questions to people still waiting for an answer. */
+export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
+/** Handoff cards still waiting for a person. */
+export const openHandoffs = (t: Task) => (t.handoffs ?? []).filter((x) => x.state === "proposed");
 /** A task came to a status (and then needed this of a person). */
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
-  how: "callback" | "poll" | "timer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  how: "callback" | "poll" | "timer" | "answer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
   checked?: number; checks?: number; errors?: number; note?: string; what?: string;
   wake?: { reason: string; note?: string; at: number } | null;
 };
@@ -92,8 +136,10 @@ export const installCommand = (server: string, code: string) => {
 export const isLoopback = (server: string) => /^https?:\/\/(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(server);
 
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
-  /** The default repository of its tasks (host/owner/name), "" for none. */
-  repo?: string };
+  /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
+  repo?: string;
+  /** How the channel works, written by its members; every agent working here reads it. */
+  conventions?: string };
 export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
   mentions: Mention[] | null; attachments: string[] | null; client_id?: string | null; created: number; edited: number | null;
@@ -119,7 +165,7 @@ export type Conn = "connecting" | "live" | "offline" | "unauthorized";
 /** `error`: why a call got no response at all (status 0), in the network stack's words. */
 export type Reply = { ok: boolean; status: number; data: any; error?: string };
 
-export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email" } as const;
+export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email", signup: "team.signup" } as const;
 
 /** "hub.corp:8080/" → "http://hub.corp:8080": an intranet server is often plain http. */
 export function normalizeServer(s: string): string {
@@ -256,6 +302,9 @@ export function createTeam(s: Session) {
   /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
   const shareUrl = () => publicUrl() || s.url;
   const users = signal<User[]>([]);
+  const workspace = signal<Workspace | null>(null);
+  /** People asking to join (only an admin gets them). */
+  const signups = signal<Signup[]>([]);
   const agents = signal<Agent[]>([]);
   const machines = signal<Machine[]>([]);
   const channels = signal<Channel[]>([]);
@@ -330,6 +379,12 @@ export function createTeam(s: Session) {
       case "user":
         if (f.user) users.update((us) => upsert(us, f.user as User));
         break;
+      case "workspace":
+        if (f.workspace) workspace.set(f.workspace as Workspace);
+        break;
+      case "signup":
+        if (untracked(me)?.role === "admin") refreshInbox();
+        break;
       case "agent":
         if (f.agent) agents.update((as) => upsert(as, f.agent as Agent));
         break;
@@ -370,6 +425,7 @@ export function createTeam(s: Session) {
     if (!r.ok) return;
     putTasks(r.data.tasks as Task[]);
     inbox.set((r.data.tasks as Task[]).map((t) => t.id));
+    signups.set((r.data.signups as Signup[] | undefined) ?? []);
     const w = await api("GET", "/api/v1/tasks?state=waiting&limit=100");
     if (!w.ok) return;
     putTasks(w.data.tasks as Task[]);
@@ -409,7 +465,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); }
+    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -565,7 +621,7 @@ export function createTeam(s: Session) {
     return r;
   }
   /** name, topic, or the default repository (an address; "" clears it). */
-  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string }) {
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string }) {
     const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
@@ -606,7 +662,11 @@ export function createTeam(s: Session) {
     return api("POST", "/api/v1/machines/enroll");
   }
   async function renameMachine(id: string, name: string) {
-    const r = await api("PATCH", `/api/v1/machines/${id}`, { name });
+    return patchMachine(id, { name });
+  }
+  /** name; team (admins): make it a team machine or no longer one. */
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean }) {
+    const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
   }
@@ -623,6 +683,18 @@ export function createTeam(s: Session) {
     return r;
   }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
+  /** An admin lets someone in (the account is made now) or turns them away. */
+  async function decideSignup(id: string, approve: boolean) {
+    const r = await api("POST", `/api/v1/signups/${id}/${approve ? "approve" : "reject"}`, {});
+    if (r.ok || r.status === 404 || r.status === 409) signups.update((xs) => xs.filter((x) => x.id !== id));
+    if (r.ok && r.data.user) users.update((us) => upsert(us, r.data.user as User));
+    return r;
+  }
+  async function patchWorkspace(p: Partial<Pick<Workspace, "name" | "signup">>) {
+    const r = await api("PATCH", "/api/v1/workspace", p);
+    if (r.ok) workspace.set(r.data as Workspace);
+    return r;
+  }
   /** A one-time login code: for this person's other device, or (an admin) for a member who lost theirs. */
   const loginCode = (userId?: string) => api("POST", "/api/v1/login-codes", userId ? { user_id: userId } : {});
 
@@ -630,9 +702,21 @@ export function createTeam(s: Session) {
   const removeDevice = (id: string) => api("DELETE", `/api/v1/sessions/${id}`);
   const gitSettings = () => api("GET", "/api/v1/git");
   const saveGitPlatforms = (platforms: GitPlatform[]) => api("PUT", "/api/v1/git/platforms", { platforms });
+  /** How the team works with its agents over the last `days` days (teammetrics.go). */
+  const metrics = (days = 7) => api("GET", `/api/v1/metrics?days=${days}`);
+  /** The team config repository (teamowned.go): its address; admins set it. */
+  const teamConfig = () => api("GET", "/api/v1/team/config");
+  /** A channel's triggers (teamtriggers.go). */
+  const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number }) =>
+    api("POST", "/api/v1/triggers", body);
+  const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number }) => api("PATCH", `/api/v1/triggers/${id}`, body);
+  const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
+  const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
@@ -687,13 +771,23 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }
 export type Team = ReturnType<typeof createTeam>;
+
+/** A spread of waits: answered ones (ms) and the ones still open. */
+export type DurationStats = { count: number; median: number; p90: number; open: number; oldest: number };
+export type Metrics = {
+  days: number; since: number;
+  reply: DurationStats; reply_by: Partial<Record<"confirm" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
+  runs: { tasks: number; mean: number; median: number; max: number; three_plus: number };
+  cancelled: number; redone: number;
+  agents: { agent_id: string; tasks: number; people: number; others: number; team: boolean; machine: string }[];
+};
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
 export const isParty = (t: Task, me: User | null, agent: Agent | undefined) =>

@@ -35,6 +35,9 @@ test("remi turns each command into the right request", async () => {
   await remi("say", "改到一半，", "还差测试");
   await remi("upload", join(W, "报告 1.md"));
   await remi("remind", "每天", "9:00", "@acha", "汇总告警");
+  await remi("handoff", "@bei", "写发布说明");
+  await remi("ask", "@liuli", "版本号？");
+  await remi("submit", "render", "job-1");
   const usage = await remi("bogus");
   server.stop(true);
   rmSync(W, { recursive: true, force: true });
@@ -43,8 +46,11 @@ test("remi turns each command into the right request", async () => {
   expect(seen.map((s) => `${s.method} ${s.path}`)).toEqual([
     "GET /api/v1/agent/read", "GET /api/v1/agent/search", "GET /api/v1/agent/tasks/T-0001", "GET /api/v1/agent/channel",
     "GET /api/v1/agent/who", "GET /api/v1/agent/file", "GET /api/v1/agent/memory", "POST /api/v1/agent/say", "POST /api/v1/agent/upload",
-    "POST /api/v1/agent/remind",
+    "POST /api/v1/agent/remind", "POST /api/v1/agent/handoff", "POST /api/v1/agent/ask", "POST /api/v1/agent/submit",
   ]);
+  expect(seen[10]).toMatchObject({ type: "text/plain; charset=utf-8", body: "@bei 写发布说明" });
+  expect(seen[11]).toMatchObject({ body: "@liuli 版本号？" }); // a leading @ is text, not curl's @file
+  expect(seen[12]).toMatchObject({ body: "render job-1" });
   expect(seen[0].query).toEqual({ channel: "支付后端", limit: "5" });
   expect(seen[1].query).toEqual({ q: "慢 查询" });
   expect(seen[3].query).toEqual({ channel: "#后端" });
@@ -56,4 +62,6 @@ test("remi turns each command into the right request", async () => {
   expect(usage.exitCode).toBe(2);
   expect(usage.stdout).toContain("remi say TEXT");
   expect(usage.stdout).toContain("tomorrow 9:00");
+  expect(usage.stdout).toContain("remi handoff @WHO WHAT");
+  expect(usage.stdout).not.toContain("api=");
 });

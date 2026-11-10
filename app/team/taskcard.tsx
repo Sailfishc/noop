@@ -3,7 +3,7 @@ import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
-import { errorOf, isParty, type Output, type Task, type Team } from "./api";
+import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
@@ -13,7 +13,7 @@ import { TaskFacts } from "./taskfacts";
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
  * request the agent only answered stays a conversation: its reply is in the thread, its emoji on the message. */
 export function shownAsTask(task: Task): boolean {
-  return task.tracked !== false || statusOf(task.state).needs !== "";
+  return task.tracked !== false || statusOf(task.state).needs !== "" || openQuestions(task).length > 0 || openHandoffs(task).length > 0;
 }
 
 /** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
@@ -38,6 +38,7 @@ const HOW: Record<string, () => string> = {
   callback: () => L("woken by a callback", "等回调"),
   poll: () => L("checked now and then", "定时查询"),
   timer: () => L("looks again at a set time", "到点再看"),
+  answer: () => L("woken by the answer", "等人回答"),
 };
 
 /** What a waiting task waits for, in one short line (its card). */
@@ -45,7 +46,7 @@ export function waitShort(task: Task): string {
   const w = task.wait;
   if (!w) return "";
   const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
-  return [w.what || L("an outside result", "外部结果"), until].join(" · ");
+  return [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), until].join(" · ");
 }
 
 /** The details: how it is watched, when it gives up, the last check and its note. */
@@ -53,7 +54,7 @@ export function waitLines(task: Task): string[] {
   const w = task.wait;
   if (!w) return [];
   const lines = [
-    [w.what || L("an outside result", "外部结果"), HOW[w.how]?.() ?? w.how].join(" · "),
+    [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), HOW[w.how]?.() ?? w.how].join(" · "),
     [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
   ];
   if (w.how === "poll" && w.checks) lines.push(L(`checked ${w.checks}×, last ${time(w.checked ?? 0)}`, `已查 ${w.checks} 次，上次 ${time(w.checked ?? 0)}`) + (w.errors ? L(` (${w.errors} failed)`, `（${w.errors} 次没查到）`) : ""));
@@ -157,6 +158,18 @@ function conclusion(task: Task): string {
   return (task.summary ?? "").trim().split(/\n\s*\n/)[0].replace(/\s+/g, " ").slice(0, 300);
 }
 
+const WHY: Record<Holder["why"], () => string> = {
+  confirm: () => L("to say yes", "确认开工"), handoff_card: () => L("to decide a handoff", "决定要不要交接"), answer: () => L("to answer", "回答问题"),
+  handoff: () => L("to do their part", "做交给他的事"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
+  unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
+  work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
+};
+/** "Ball: 张伟 · to accept it" / "Ball: you · …" / "Ball: @acha · working on it". */
+function holderText(t: Team, hd: Holder, me: string | undefined): string {
+  const who = hd.kind === "agent" ? "@" + (t.agents().find((a) => a.id === hd.id)?.handle ?? "?") : hd.id === me ? L("you", "你") : t.users().find((u) => u.id === hd.id)?.name ?? "?";
+  return L(`Ball: ${who} · ${WHY[hd.why]?.() ?? hd.why}`, `球在 ${who} 手里 · ${WHY[hd.why]?.() ?? hd.why}`);
+}
+
 export function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; detail?: boolean }) {
   const t = props.team;
   const task = () => props.task;
@@ -168,6 +181,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const party = () => isParty(task(), me(), agent());
   const busy = signal("");
   const error = signal("");
+  /** Someone else in the channel can take it over (its asker is away): it goes on in their name. */
+  const lastTakeover = () => task().mandate?.takeovers?.at(-1);
+  /** Taking it over is asking the agent in one's own name: an owner-only agent's work can't be; one that needs its
+   * owner's yes waits for it (pendingTakeover). */
+  const canTakeOver = () => !!me() && me()!.id !== task().created_by && !["done", "closed"].includes(task().state) &&
+    (me()!.id === agent()?.owner_id || agent()?.dispatch !== "owner") && !(lastTakeover()?.pending && lastTakeover()!.to === me()!.id) &&
+    (me()!.role === "admin" || !!t.channels().find((c) => c.id === task().channel_id)?.members.some((m) => m.kind === "user" && m.id === me()!.id));
+  const pendingTakeover = () => (lastTakeover()?.pending && !["done", "closed"].includes(task().state) ? lastTakeover()! : null);
   const st = () => statusOf(task().state);
   const label = () => STATUS[st().status];
   const needs = () => waitsOn(t, task());
@@ -183,7 +204,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen", body: unknown = {}) {
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -253,6 +274,57 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         )}
       </If>
+      <Each of={openQuestions(task())} key={(q) => q.message}>
+        {(q) => {
+          const who = () => t.users().find((u) => u.id === q().user);
+          const mine = () => q().user === me()?.id;
+          return (
+            <View testID={`task-${task().id}-asked-${q().user}`} style={{ gap: 3, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
+                {q().kind === "handoff"
+                  ? (mine() ? L(`@${agent()?.handle ?? "?"} handed this to you`, `@${agent()?.handle ?? "?"} 交给你`) : L(`@${agent()?.handle ?? "?"} handed this to @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 交给了 @${who()?.handle ?? "?"}`))
+                  : mine() ? L(`@${agent()?.handle ?? "?"} asks you`, `@${agent()?.handle ?? "?"} 问你`) : L(`@${agent()?.handle ?? "?"} asks @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 在问 @${who()?.handle ?? "?"}`)}
+              </Text>
+              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{q().question}</Text>
+              <If when={mine()}>
+                <Text style={{ fontSize: 12, color: colors.faint }}>{q().kind === "handoff" ? L("Reply in the thread when it’s done; the agent hears it.", "做完在线程里回复一句，Agent 会收到。") : L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+      <Each of={openHandoffs(task())} key={(x) => x.id}>
+        {(x) => {
+          const to = () => t.agents().find((a) => a.id === x().to);
+          const mayDecide = () => party() || (!!me() && me()!.id === to()?.owner_id);
+          return (
+            <View testID={`task-${task().id}-handoff-${x().id}`} style={{ gap: 6, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
+                {L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}
+              </Text>
+              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{x().what}</Text>
+              <If when={mayDecide()} else={<Text style={{ fontSize: 12, color: colors.faint }}>{L("Its asker, the person taking it, or an owner of the two agents decides.", "由发起人、处理人或两个 Agent 的主人决定。")}</Text>}>
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
+                </View>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+      <If when={props.detail ? task().holder : null}>
+        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id)}</Text>}
+      </If>
+      <If when={props.detail && (task().mandate?.via?.length || task().mandate?.trigger || task().submits?.length)}>
+        <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.faint }}>
+          {[
+            task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
+            task().mandate?.trigger ? L("Started by a trigger", "由触发器发起") : "",
+            task().submits?.length ? L(`Outside submissions ${task().submits!.length}/3`, `外部提交 ${task().submits!.length}/3`) : "",
+          ].filter(Boolean).join(" · ")}
+        </Text>
+      </If>
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
@@ -311,6 +383,13 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
             <Btn small kind="ghost" testID={`task-${task().id}-done`} label={L("Mark done", "标为完成")} busy={busy() === "accept"} onPress={() => act("accept")} />
           </If>
         </If>
+        <If when={props.detail && canTakeOver()}>
+          <Btn small kind="ghost" testID={`task-${task().id}-takeover`} label={L("Take it over", "接手")} busy={busy() === "takeover"} onPress={() => act("takeover")} />
+        </If>
+        <If when={props.detail && pendingTakeover() && isOwner()}>
+          <Btn small testID={`task-${task().id}-takeover-approve`} label={L("Let them take it over", "同意接手")} busy={busy() === "takeover"} onPress={() => act("takeover", { approve: true })} />
+          <Btn small kind="ghost" testID={`task-${task().id}-takeover-reject`} label={L("Don’t", "不同意")} onPress={() => act("takeover", { approve: false })} />
+        </If>
         <If when={party() && ["done", "closed"].includes(task().state)}>
           <Btn small kind="ghost" testID={`task-${task().id}-reopen`} label={L("Reopen", "重新打开")} busy={busy() === "reopen"} onPress={() => act("reopen")} />
         </If>
@@ -319,6 +398,17 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         </If>
       </View>
       <ErrorNote text={error()} testID={`task-${task().id}-error`} />
+      <If when={props.detail ? lastTakeover() : null}>
+        {(x) => (
+          <Text testID={`task-${task().id}-takeover-note`} style={{ fontSize: 12.5, color: colors.muted }}>
+            {x().pending
+              ? L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} asked to take it over ${time(x().at)}; waiting for @${owner()?.handle ?? "?"} to say yes`,
+                `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 想接手，等 @${owner()?.handle ?? "?"} 同意`)
+              : L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} took it over from ${t.users().find((u) => u.id === x().from)?.name ?? "?"} ${time(x().at)}`,
+                `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 从 ${t.users().find((u) => u.id === x().from)?.name ?? "?"} 手里接手`)}
+          </Text>
+        )}
+      </If>
       <If when={props.detail}>
         <TaskFacts team={t} task={task()} />
       </If>

@@ -1,7 +1,7 @@
 // End-to-end for M1: two people, one machine, one agent, one channel — against a running Go server, with the
 // daemon's own module (src/teamagent.ts) as the machine.
 //   bun server/test/e2e-team.ts http://127.0.0.1:18080 <invite code for the first admin>
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { onAgentMessage, startTeamAgent, type TeamMessage } from "../../src/teamagent";
@@ -42,7 +42,11 @@ const heard: TeamMessage[] = [];
 onAgentMessage((m) => { heard.push(m); });
 const cfg = { cloud: { url: BASE }, server: { token }, host: { max_parallel: 2 } };
 let ta = startTeamAgent(cfg, { stateFile: join(W, "state.json"), log: () => {} })!;
-await until("machine online", async () => (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((m: any) => m.id === mid)?.online === true);
+// online comes with the socket; the machine's report (PUT /machine) can land a moment later
+await until("machine online and reported", async () => {
+  const m = (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((m: any) => m.id === mid);
+  return m?.online === true && m.os !== "";
+});
 const m = (await api("GET", "/api/v1/machines", zw.session)).json.machines.find((x: any) => x.id === mid);
 check("machine reported its sessions", m.max_sessions === 2, JSON.stringify(m));
 await until("daemon knows its agent", () => ta.agents().some((a) => a.handle === "acha"));
@@ -62,6 +66,21 @@ await until("catch up after reconnect", () => heard.some((x) => x.id === missed.
 await Bun.sleep(300);
 check("nothing delivered twice", heard.length === 2, heard.map((x) => x.text).join(" | "));
 check("unaddressed messages are not handed to the agent", !heard.some((x) => x.text.includes("没 @")));
+
+// a person's own machine that synced the team config repository before (it no longer gets one unless its owner
+// turns that on): the daemon clears what it left, the skills' links and the MCP servers' file, when it starts
+ta.stop();
+const root = join(W, "cfg"), home = join(W, "home");
+mkdirSync(join(root, "team-config", "skills", "release-notes"), { recursive: true });
+writeFileSync(join(root, "team-config", "skills", "release-notes", "SKILL.md"), "# release notes");
+mkdirSync(join(home, ".claude", "skills"), { recursive: true });
+const link = join(home, ".claude", "skills", "release-notes");
+symlinkSync(join(root, "team-config", "skills", "release-notes"), link);
+writeFileSync(join(root, "team-config.links.json"), JSON.stringify({ links: [link] }));
+writeFileSync(join(root, "team-config.mcp.json"), "{}");
+ta = startTeamAgent(cfg, { stateFile: join(W, "state.json"), log: () => {}, home, configRoot: root })!;
+await until("an earlier sync is cleared from a machine that isn't given the team config", () =>
+  !existsSync(link) && !existsSync(join(root, "team-config")) && !existsSync(join(root, "team-config.mcp.json")));
 
 ta.stop();
 rmSync(W, { recursive: true, force: true });

@@ -188,16 +188,18 @@ function TaskRepo(props: { team: Team; task: Task }) {
   const editing = signal(false);
   const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
   const can = () => isParty(props.task, t.me(), agent()) && props.task.runs === 0 && !["done", "closed"].includes(props.task.state);
+  const declared = () => props.task.repos ?? [];
   const label = () => props.task.repo
     ? repoLabel(props.task.repo)
-    : agent()?.repo ? L(`the agent’s checkout ${agent()!.repo}`, `Agent 的本地仓库 ${agent()!.repo}`) : L("none: a general task in an empty folder", "没有：通用任务，在一个空目录里做");
+    : declared().length ? L(`${declared().map(repoLabel).join(", ")} (the agent checked it out)`, `${declared().map(repoLabel).join("、")}（Agent 自己检出的）`)
+    : agent()?.repo ? L(`the agent’s checkout ${agent()!.repo}`, `Agent 的本地仓库 ${agent()!.repo}`) : L("none yet: the agent checks one out if the work needs it", "暂时没有：要改代码时 Agent 自己检出");
   return (
     <View testID={`task-${props.task.id}-repo`} style={{ gap: 6 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 22 }}>
         <Text style={{ width: 68, fontSize: 12.5, color: colors.faint }}>{L("Repository", "仓库")}</Text>
-        <If when={props.task.repo} else={<Text testID={`task-${props.task.id}-repo-label`} style={{ flex: 1, fontSize: 13, color: props.task.repo || agent()?.repo ? colors.text : colors.muted }}>{label()}</Text>}>
+        <If when={props.task.repo} else={<Text testID={`task-${props.task.id}-repo-label`} style={{ flex: 1, fontSize: 13, color: declared().length || agent()?.repo ? colors.text : colors.muted }}>{label()}</Text>}>
           <View role="link" style={{ flex: 1 }} onPress={() => void openUrl(`https://${props.task.repo}`)} hoverStyle={hovered()}>
-            <Text testID={`task-${props.task.id}-repo-label`} style={{ fontSize: 13, color: colors.accent }}>{label()}</Text>
+            <Text testID={`task-${props.task.id}-repo-label`} style={{ fontSize: 13, color: colors.accent }}>{[label(), ...declared().map(repoLabel)].join(" + ")}</Text>
           </View>
         </If>
         <If when={can() && !editing()}>

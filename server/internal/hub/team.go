@@ -13,7 +13,7 @@ import (
 // People, invites and sign-in, machines and agents.
 //
 // There is no password and no mail. An admin invites a person (or `remi-server invite` does, for the first
-// admin) and the invite link signs them in. Another device signs in with a one-time login code made on a device
+// admin) and the invite link signs them in; or a person asks to join and an admin approves (teamsignup.go). Another device signs in with a one-time login code made on a device
 // that is already signed in, or with a login link an admin makes. Accounts from before keep email + authenticator.
 
 const (
@@ -69,6 +69,12 @@ type machineView struct {
 	MaxSessions int      `json:"max_sessions"`
 	Online      bool     `json:"online"`
 	LastSeen    *int64   `json:"last_seen"`
+	// Team: a team Computer (an always-on box with a bot account): any admin may put agents on it and look after
+	// them, not only the person who added it.
+	Team bool `json:"team"`
+	// SyncTeamConfig: a person's own machine takes the team config repository too: its MCP commands run there and
+	// its skills show up in the person's own runtimes, so only its owner turns this on. Team machines always do.
+	SyncTeamConfig bool `json:"sync_team_config"`
 	machineInfo
 }
 
@@ -78,6 +84,11 @@ type machineInfo struct {
 	RuntimeInfo []runtimeInfo `json:"runtime_info"`
 	Git         []gitCred     `json:"git"`
 	Repos       []repoRef     `json:"repos"` // the remotes of the checkouts it has (never their paths)
+	// What its agents can use beyond the runtime: skills and MCP servers (names only; secrets stay on the machine),
+	// and how the team config repository last synced there.
+	Skills     []string          `json:"skills"`
+	MCP        []string          `json:"mcp"`
+	TeamConfig *teamConfigStatus `json:"team_config,omitempty"`
 }
 
 type runtimeInfo struct {
@@ -96,7 +107,7 @@ type gitCred struct {
 	Via        string `json:"via"` // token | gh
 }
 
-const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}')"
+const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}'), team, sync_team_config"
 
 func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	if err != nil {
@@ -107,7 +118,7 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	for rows.Next() {
 		var m machineView
 		var rt, info string
-		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info); err != nil {
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info, &m.Team, &m.SyncTeamConfig); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(rt), &m.Runtimes)
@@ -125,6 +136,12 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 		}
 		if m.Repos == nil {
 			m.Repos = []repoRef{}
+		}
+		if m.Skills == nil {
+			m.Skills = []string{}
+		}
+		if m.MCP == nil {
+			m.MCP = []string{}
 		}
 		if m.Runtimes == nil {
 			m.Runtimes = []string{}
@@ -419,7 +436,7 @@ func (h *Hub) v1Logout(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 	u, _ := h.user(q.who.userID)
-	out := obj{"user": u, "public_url": h.cfg.PublicURL,
+	out := obj{"user": u, "public_url": h.cfg.PublicURL, "workspace": h.workspace(),
 		"machines": h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE owner_id = ? ORDER BY created", u.ID)),
 		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
 	if q.who.machineID != "" {
@@ -525,16 +542,24 @@ func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
 // v1MachineReport: the daemon says what it is and what it can run; it gets back the agents it hosts.
 func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	var b struct {
-		OS          string        `json:"os"`
-		Arch        string        `json:"arch"`
-		Runtimes    []string      `json:"runtimes"`
-		MaxSessions int           `json:"max_sessions"`
-		RuntimeInfo []runtimeInfo `json:"runtime_info"`
-		Git         []gitCred     `json:"git"`
-		Repos       []repoRef     `json:"repos"`
+		OS          string            `json:"os"`
+		Arch        string            `json:"arch"`
+		Runtimes    []string          `json:"runtimes"`
+		MaxSessions int               `json:"max_sessions"`
+		RuntimeInfo []runtimeInfo     `json:"runtime_info"`
+		Git         []gitCred         `json:"git"`
+		Repos       []repoRef         `json:"repos"`
+		Skills      []string          `json:"skills"`
+		MCP         []string          `json:"mcp"`
+		TeamConfig  *teamConfigStatus `json:"team_config"`
 	}
 	_ = q.json(&b)
 	var info machineInfo
+	info.Skills, info.MCP = names(b.Skills, 200), names(b.MCP, 100)
+	if c := b.TeamConfig; c != nil {
+		info.TeamConfig = &teamConfigStatus{Repo: trimmed(c.Repo, 300), Commit: trimmed(c.Commit, 40), Synced: c.Synced,
+			Error: trimmed(c.Error, 500), Instructions: c.Instructions}
+	}
 	for _, r := range b.RuntimeInfo {
 		if runtimes[r.Name] && len(info.RuntimeInfo) < 8 {
 			r.Version = trimmed(r.Version, 40)
@@ -578,7 +603,12 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
 	h.broadcastPeople(obj{"type": "machine", "machine": m})
 	h.resumeAgents(q.who.machineID, info.RuntimeInfo)
-	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))})
+	cfg := teamConfig{} // "": the daemon clears what it synced before
+	if m.Team || m.SyncTeamConfig {
+		cfg = h.teamConfig()
+	}
+	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID)),
+		"team_config": cfg})
 }
 
 // ---------------------------------------------------------------- agents
@@ -599,10 +629,13 @@ type agentBody struct {
 	Model       *string `json:"model"`
 	Repo        *string `json:"repo"`
 	Memory      *string `json:"memory"`
+	// OwnerID: hand the agent to another responsible person (an admin, for a team agent)
+	OwnerID *string `json:"owner_id"`
 }
 
 // apply validates the fields present and writes them to agent id.
-func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
+// actor: who is changing it (its responsible person, or an admin for a team agent).
+func (h *Hub) applyAgent(id, owner, actor string, b agentBody) *httpError {
 	set := func(col string, v any) { h.must(h.db.Exec("UPDATE agents SET "+col+" = ? WHERE id = ?", v, id)) }
 	if b.Name != nil {
 		n := trimmed(*b.Name, 40)
@@ -617,8 +650,8 @@ func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
 	if b.MachineID != nil {
 		if *b.MachineID == "" {
 			set("machine_id", nil)
-		} else if h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND owner_id = ?", *b.MachineID, owner) == 0 {
-			return &httpError{400, "只能用你自己的机器"}
+		} else if !h.mayRunAgentsOn(actor, *b.MachineID) && !h.mayRunAgentsOn(owner, *b.MachineID) {
+			return &httpError{400, "只能用你自己的机器，或者（管理员）团队机器"}
 		} else {
 			set("machine_id", *b.MachineID)
 		}
@@ -651,6 +684,15 @@ func (h *Hub) applyAgent(id, owner string, b agentBody) *httpError {
 	if b.Memory != nil {
 		set("memory", clip(strings.TrimSpace(*b.Memory), memoryChars))
 	}
+	if b.OwnerID != nil && *b.OwnerID != owner {
+		if !h.isAdmin(actor) {
+			return &httpError{403, "只有管理员能换 Agent 的负责人"}
+		}
+		if _, ok := h.user(*b.OwnerID); !ok {
+			return &httpError{400, "没有这个人"}
+		}
+		set("owner_id", *b.OwnerID)
+	}
 	if b.Autonomy != nil {
 		if !autonomies[*b.Autonomy] {
 			return &httpError{400, "autonomy 只能是 cautious、assist 或 auto"}
@@ -680,7 +722,18 @@ func (h *Hub) v1AgentCreate(w http.ResponseWriter, q *request) {
 	}
 	id := newID("a_")
 	h.must(h.db.Exec("INSERT INTO agents (id, owner_id, handle, name, created) VALUES (?, ?, ?, ?, ?)", id, q.who.userID, handle, handle, h.nowMs()))
-	if e := h.applyAgent(id, q.who.userID, b); e != nil { // all fields or none (the lock hides the half-made row)
+	if b.MachineID != nil && *b.MachineID != "" && h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND team = 1", *b.MachineID) > 0 {
+		// a team agent: anyone may ask it, and nobody has to say yes first (unless said otherwise)
+		if b.Dispatch == nil {
+			team := "team"
+			b.Dispatch = &team
+		}
+		if b.Confirm == nil {
+			no := false
+			b.Confirm = &no
+		}
+	}
+	if e := h.applyAgent(id, q.who.userID, q.who.userID, b); e != nil { // all fields or none (the lock hides the half-made row)
 		h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", id))
 		errJSON(w, e.status, e.msg)
 		return
@@ -696,8 +749,8 @@ func (h *Hub) v1AgentPatch(w http.ResponseWriter, q *request) {
 		errJSON(w, 404, "not found")
 		return
 	}
-	if a.OwnerID != q.who.userID {
-		errJSON(w, 403, "只有 Agent 的主人能改它的设置")
+	if !h.mayManageAgent(q.who.userID, a) {
+		errJSON(w, 403, "只有 Agent 的负责人（团队 Agent 还有管理员）能改它的设置")
 		return
 	}
 	var b agentBody
@@ -706,7 +759,7 @@ func (h *Hub) v1AgentPatch(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "@名创建后不能改")
 		return
 	}
-	if e := h.applyAgent(a.ID, a.OwnerID, b); e != nil {
+	if e := h.applyAgent(a.ID, a.OwnerID, q.who.userID, b); e != nil {
 		errJSON(w, e.status, e.msg)
 		return
 	}

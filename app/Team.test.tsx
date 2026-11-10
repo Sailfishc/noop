@@ -66,6 +66,58 @@ describe("team sign in", () => {
     expect(linked.storage()["team.url"]).toBe(URL);
   });
 
+  test("asking to join: the request waits for an admin; once approved this device signs in, even after a restart", async () => {
+    const asks: any[] = [];
+    let state = "pending";
+    const net = {
+      ...server(newLog()),
+      [`GET ${URL}/api/v1/workspace`]: { body: { id: "w_1", name: "支付团队", signup: true } },
+      [`POST ${URL}/api/v1/signup`]: (r: { body?: string | null }) => {
+        asks.push(JSON.parse(r.body!));
+        return { status: 201, body: { id: "s_1", token: "tsu_abc", state: "pending" } };
+      },
+      [`GET ${URL}/api/v1/signup/tsu_abc`]: () => ({ body: { state, email: "wl@corp.com" } }),
+      [`POST ${URL}/api/v1/signup/tsu_abc/session`]: () => (state === "approved" ? { body: { session: "sess2", user: wl } } : { status: 409, body: { error: "还在等管理员审批" } }),
+    };
+    const app = await open("./App.tsx", { width: 1200, height: 800, network: net });
+    await app.press("id:signin-mode-ask");
+    await app.type("id:ask-url", "hub.test:8080");
+    await app.type("id:ask-name", "王磊");
+    await app.type("id:ask-handle", "wanglei");
+    await app.type("id:ask-email", "wl@corp.com");
+    await app.type("id:ask-note", "支付组新人");
+    await app.press("id:ask-send");
+    await app.waitFor("id:ask-waiting");
+    expect(app.shows("text:/支付团队/")).toBe(true);
+    expect(asks).toEqual([{ email: "wl@corp.com", name: "王磊", handle: "wanglei", note: "支付组新人" }]);
+    expect(JSON.parse(app.storage()["team.signup"]).token).toBe("tsu_abc");
+    await app.press("id:ask-check");
+    expect(app.shows("id:ask-waiting")).toBe(true);
+
+    state = "approved";
+    const again = await open("./App.tsx", { width: 1200, height: 800, storage: { "team.signup": app.storage()["team.signup"] }, network: net });
+    await again.waitFor("id:team-composer");
+    expect(again.storage()["team.session"]).toBe("sess2");
+    expect(again.storage()["team.signup"]).toBe(undefined);
+  });
+
+  test("a rejected request says so; a closed team says to ask for an invite", async () => {
+    const net = {
+      ...server(newLog()),
+      [`GET ${URL}/api/v1/workspace`]: { body: { id: "w_1", name: "", signup: false } },
+      [`GET ${URL}/api/v1/signup/tsu_abc`]: { body: { state: "rejected", email: "wl@corp.com" } },
+    };
+    const app = await open("./App.tsx", { width: 1200, height: 800, storage: { "team.signup": JSON.stringify({ server: URL, token: "tsu_abc", email: "wl@corp.com", team: "" }) }, network: net });
+    await app.waitFor("text:/没有通过|didn’t approve/");
+    await app.press("id:ask-again");
+    await app.type("id:ask-url", URL);
+    await app.type("id:ask-name", "王磊");
+    await app.type("id:ask-handle", "wanglei");
+    await app.type("id:ask-email", "wl@corp.com");
+    await app.press("id:ask-send");
+    await app.waitFor("text:/没有开放申请|doesn’t take requests/");
+  });
+
   test("an unreachable server is told apart; a 401 later sends you back to sign in", async () => {
     const app = await open("./App.tsx", { width: 1200, height: 800, network: {} });
     await app.type("id:team-url", "nowhere.test:1");
@@ -445,6 +497,58 @@ describe("settings", () => {
     expect(app.shows(`text:${URL}/invite/INVITECODE123`)).toBe(true);
   });
 
+  test("people asking to join wait in 待你决定 and in 成员与邀请; an admin lets them in or rejects them", async () => {
+    const decided: string[] = [];
+    const li = { id: "s_1", email: "li@corp.com", handle: "lina", name: "李娜", note: "支付组新人", state: "pending", created: T0 };
+    const zz = { id: "s_2", email: "zz@corp.com", handle: "zz", name: "赵", note: "", state: "pending", created: T0 };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [], signups: [li, zz] } },
+        [`POST ${URL}/api/v1/signups/s_1/approve`]: () => { decided.push("s_1 approve"); return { body: { user: { id: "u_3", email: li.email, handle: "lina", name: "李娜", role: "member", disabled: false } } }; },
+        [`POST ${URL}/api/v1/signups/s_2/reject`]: () => { decided.push("s_2 reject"); return { body: { ok: true } }; },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:signup-lina");
+    expect(app.shows("text:支付组新人")).toBe(true);
+    await app.press("id:signup-zz-reject");
+    await app.waitUntil(() => !app.shows("id:signup-zz"));
+    await settings(app, "people");
+    await app.waitFor("id:signup-lina");
+    await app.press("id:signup-lina-approve");
+    await app.waitFor("id:person-lina");
+    await app.waitUntil(() => !app.shows("id:signup-lina"));
+    expect(app.shows("id:signup-lina")).toBe(false);
+    expect(decided).toEqual(["s_2 reject", "s_1 approve"]);
+  });
+
+  test("the team's id shows; an admin renames it and closes asking to join", async () => {
+    const patches: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], workspace: { id: "w_7f3a", name: "", signup: true } } },
+        [`PATCH ${URL}/api/v1/workspace`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          patches.push(b);
+          return { body: { id: "w_7f3a", name: b.name ?? "支付团队", signup: b.signup ?? true } };
+        },
+      },
+    });
+    await settings(app, "people");
+    await app.waitFor("id:workspace-id");
+    expect(app.shows("text:/w_7f3a/")).toBe(true);
+    await app.type("id:workspace-name", "支付团队");
+    await app.press("id:workspace-save");
+    await app.press("id:workspace-signup");
+    await app.waitUntil(() => patches.length === 2);
+    expect(patches).toEqual([{ name: "支付团队" }, { signup: false }]);
+  });
+
   test("a login code for another device; signed-in devices; an admin makes a login link for a member", async () => {
     const made: any[] = [];
     const removed: string[] = [];
@@ -515,6 +619,24 @@ describe("settings", () => {
     await app.press("id:menu-login-code");
     await app.waitFor("id:server-loopback");
     expect(app.shows("text:/-public-url/")).toBe(true);
+  });
+
+  test("协作数据: the three numbers, and which agents people go to", async () => {
+    const asked: string[] = [];
+    const base = server(newLog());
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900,
+      network: { ...base, [`GET ${URL}/api/v1/metrics?*`]: (r: { url: string }) => { asked.push(r.url.split("?")[1]!); return (base as any)[`GET ${URL}/api/v1/metrics?*`]; } },
+    });
+    await settings(app, "metrics");
+    await app.waitFor("id:metrics-redone");
+    expect(app.shows("text:中位 23 分钟 · 90% 在 2.5 小时内 · 共 9 次")).toBe(true);
+    expect(app.shows("text:7 个，平均 1.9 轮，中位 2，最多 4")).toBe(true);
+    expect(app.shows("text:还有 2 件在等，最久的已经等了 1.5 小时。")).toBe(true);
+    expect(app.shows("text:@acha")).toBe(true);
+    await app.press("text:最近 30 天");
+    await app.waitUntil(() => asked.length === 2);
+    expect(asked).toEqual(["days=7", "days=30"]);
   });
 
   test("Git platforms: an admin adds a GitLab-based platform; its webhook and each machine's credentials show, never a token", async () => {
@@ -683,7 +805,7 @@ describe("channel v2", () => {
     await app.waitFor("id:task-T-0001-fold-repo");
     await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
-    expect(app.shows("text:none: a general task in an empty folder")).toBe(true);
+    expect(app.shows("text:none yet: the agent checks one out if the work needs it")).toBe(true);
     expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
     await app.press("id:task-T-0001-repo-edit");
     await app.waitFor("id:task-T-0001-repo-picker-pay");
@@ -747,6 +869,22 @@ describe("channel v2", () => {
     expect(app.shows("id:task-T-0001-cancel")).toBe(true);
   });
 
+  test("an agent's question to you: on its card, in 待你决定, answered by replying in the thread", async () => {
+    const asked = [{ user: "u_1", question: "版本号用 3.2 还是 4.0？", message: "msg_9", at: T0 }, { user: "u_2", question: "早答过了", message: "msg_8", at: T0, answered: T0 + 1 }];
+    const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: false, asked });
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: { ...server(newLog(), {}, [t1]), [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [t1] } } },
+    });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0001-asked-u_1");
+    expect(app.shows("text:@acha asks you")).toBe(true);
+    expect(app.shows("text:版本号用 3.2 还是 4.0？")).toBe(true);
+    expect(app.shows("text:Reply in the thread; it keeps working meanwhile.")).toBe(true);
+    expect(app.shows("text:早答过了")).toBe(false); // answered ones are gone
+    expect(app.shows("id:inbox-empty")).toBe(false);
+  });
+
   test("a task that already ran keeps its repository", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [task({ created_by: "u_1", state: "review", runs: 1, repo: "github.com/acme/pay" })]) });
     await app.waitFor("id:thread-msg_1");
@@ -758,13 +896,13 @@ describe("channel v2", () => {
     expect(app.shows("id:task-T-0001-repo-edit")).toBe(false);
   });
 
-  test("a channel's default repository is set from its members panel", async () => {
+  test("a channel's usual repository (a hint for agents) is set from its members panel", async () => {
     const log = newLog();
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-repo");
-    expect(app.shows("text:/^None: tasks run where the message says/")).toBe(true);
+    expect(app.shows("text:/^None: agents pick a repository/")).toBe(true);
     await app.press("id:channel-repo-edit");
     await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
     await app.press("id:channel-repo-picker-save");
@@ -947,5 +1085,163 @@ describe("tasks", () => {
     await app.press("id:settings-nav-machines");
     await app.waitFor("id:machine-m_1-repos");
     expect(app.shows("text:acme/pay")).toBe(true);
+  });
+});
+
+describe("team ownership", () => {
+  const settings = async (app: any, tab: string) => {
+    await app.press("id:user-menu");
+    await app.press("id:menu-settings");
+    await app.waitFor("id:settings");
+    await app.press(`id:settings-nav-${tab}`);
+  };
+
+  test("an admin makes a machine a team machine; its card shows its Git identity, skills, MCP and the team config sync", async () => {
+    const log = newLog();
+    const box = { ...mac, git: [{ provider: "gitlab", host: "code.corp.com", configured: true, user: "remi-bot", via: "token" }], skills: ["release-notes"], mcp: ["jira"],
+      team_config: { repo: "git@code.corp.com:team/remi-config.git", commit: "abc1234", synced: T0, instructions: true, error: "MCP wiki：这台机器没有 WIKI_TOKEN" } };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } } } });
+    await settings(app, "machines");
+    await app.waitFor("id:machine-m_1-git");
+    expect(app.shows("text:code.corp.com · remi-bot")).toBe(true);
+    expect(app.shows("text:release-notes")).toBe(true);
+    expect(app.shows("text:MCP jira")).toBe(true);
+    expect(app.shows("text:/团队配置 abc1234/")).toBe(true);
+    expect(app.shows("text:/没有 WIKI_TOKEN/")).toBe(true);
+    expect(app.shows("text:/团队配置仓库默认不同步到这里/")).toBe(true);
+    await app.press("id:machine-syncconfig-m_1");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ machine: { sync_team_config: true } });
+    await app.waitFor("text:停止同步");
+    await app.press("id:machine-team-m_1");
+    await app.waitUntil(() => log.patches.length === 2);
+    expect(log.patches[1]).toEqual({ machine: { team: true } });
+    await app.waitFor("text:取消团队机器");
+    expect(app.shows("text:团队机器")).toBe(true);
+    expect(app.shows("id:machine-syncconfig-m_1")).toBe(false);
+  });
+
+  test("a team agent: any admin changes it, and picks its responsible person", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900,
+      network: { ...server(log), [`GET ${URL}/api/v1/machines`]: { body: { machines: [{ ...mac, team: true }] } } } });
+    await app.press("id:user-menu");
+    await app.press("id:menu-agents");
+    await app.waitFor("id:agent-owner-acha-u_2");
+    expect(app.shows("text:/跑在团队机器 张伟的 Mac 上/")).toBe(true);
+    await app.press("id:agent-owner-acha-u_2");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ owner_id: "u_2" });
+  });
+
+  test("团队配置: an admin names the repository; what goes in it; how each machine synced", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log) });
+    await settings(app, "teamconfig");
+    await app.waitFor("id:teamconfig-repo");
+    expect(app.shows("text:AGENTS.md")).toBe(true);
+    expect(app.shows("text:/还没同步|—/")).toBe(true);
+    await app.type("id:teamconfig-repo", "git@code.corp.com:team/remi-config.git");
+    await app.press("id:teamconfig-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ team_config: { repo: "git@code.corp.com:team/remi-config.git" } });
+  });
+
+  test("a channel's conventions are written in its members panel", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(log) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-conventions");
+    expect(app.shows("id:channel-conventions-save")).toBe(false);
+    await app.type("id:channel-conventions-input", "PR 标题用中文");
+    await app.press("id:channel-conventions-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ channel: { conventions: "PR 标题用中文" } });
+  });
+
+  test("someone in the channel takes over a task whose asker is away", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: server(log, {}, [task({ created_by: "u_2", state: "running", runs: 1, tracked: true })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-takeover");
+    await app.press("id:task-T-0001-takeover");
+    await app.waitUntil(() => log.acts.includes("T-0001 takeover"));
+    await app.waitFor("id:task-T-0001-takeover-note");
+    expect(app.shows("text:/张伟 在 .* 从 王磊 手里接手/")).toBe(true);
+    expect(app.shows("id:task-T-0001-takeover")).toBe(false);
+  });
+
+  test("someone asked to take over a task of an agent that needs its owner's yes: the owner says yes", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: server(log, {}, [task({ created_by: "u_1", state: "running", runs: 1, tracked: true,
+        mandate: { by: "u_1", takeovers: [{ from: "u_1", to: "u_2", at: T0, pending: true }] } })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-takeover-approve");
+    expect(app.shows("text:/王磊 在 .* 想接手，等 @.* 同意/")).toBe(true);
+    await app.press("id:task-T-0001-takeover-approve");
+    await app.waitUntil(() => log.acts.includes("T-0001 takeover"));
+    await app.waitUntil(() => app.shows("text:/王磊 在 .* 从 张伟 手里接手/"));
+    expect(app.shows("id:task-T-0001-takeover-approve")).toBe(false);
+  });
+});
+
+describe("passing the ball", () => {
+  test("an agent's handoff card: the requester hands the work to the other agent; who has the ball shows", async () => {
+    const log = newLog();
+    const bei = { ...acha, id: "a_2", handle: "bei", name: "贝" };
+    const t1 = task({ created_by: "u_1", state: "running", runs: 1, tracked: true, holder: { kind: "user", id: "u_1", why: "handoff_card" },
+      handoffs: [{ id: "ho_1", to: "a_2", what: "改完后写发布说明", message: "msg_5", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: { ...server(log, {}, [t1]), [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei] } } } });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-holder");
+    expect(app.shows("text:球在 你 手里 · 决定要不要交接")).toBe(true);
+    expect(app.shows("text:@acha 建议交给 @bei")).toBe(true);
+    await app.press("id:task-T-0001-handoff-ho_1-accept >> nth=1");
+    await app.waitUntil(() => log.acts.includes("T-0001 handoff"));
+    await app.waitFor("text:球在 @acha 手里 · 在做");
+    expect(app.shows("id:task-T-0001-handoff-ho_1")).toBe(false);
+  });
+
+  test("a person the agent handed the ball to sees it as theirs", async () => {
+    const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: true, asked: [{ user: "u_1", question: "在测试环境点一下退款", message: "msg_9", at: T0, kind: "handoff" }] });
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900,
+      network: { ...server(newLog(), {}, [t1]), [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [t1] } } } });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0001-asked-u_1");
+    expect(app.shows("text:@acha handed this to you")).toBe(true);
+    expect(app.shows("text:Reply in the thread when it’s done; the agent hears it.")).toBe(true);
+  });
+
+  test("a channel's triggers: one waits for the owner's yes; a new one is added from the members panel", async () => {
+    const log = newLog();
+    const waitingOne = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0 };
+    const stuck = { ...waitingOne, id: "trg_9", confirmed_by: "u_1", fires: 5, fired: T0, max_per_day: 10, skipped: 4, skipped_run: 3, skip_reason: "busy", last_task: "T-0007" };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [waitingOne, stuck] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:trigger-trg_1");
+    expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
+    expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还没结束")).toBe(true);
+    await app.press("id:trigger-confirm-trg_1");
+    await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
+    await app.waitFor("text:还没触发过");
+    await app.press("id:trigger-add");
+    await app.press("id:trigger-kind-pr");
+    await app.type("id:trigger-repo", "https://github.com/acme/pay");
+    await app.type("id:trigger-text", "review 这个 PR");
+    await app.clear("id:trigger-max");
+    await app.type("id:trigger-max", "3");
+    await app.press("id:trigger-save");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
+    await app.waitFor("text:/acme\\/pay 有新 PR/");
+    expect(app.shows("text:每天最多 3 次；上一个任务没结束时跳过")).toBe(true);
   });
 });

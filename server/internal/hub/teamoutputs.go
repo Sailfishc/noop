@@ -98,6 +98,7 @@ func (h *Hub) withOutputs(ts []taskView) []taskView {
 		}
 		ts[i].Outputs = append(os, h.outputs(ts[i].ID)...)
 		ts[i].Events = h.taskEvents(ts[i].ID)
+		ts[i].Holder = h.holderOf(ts[i])
 	}
 	return ts
 }
