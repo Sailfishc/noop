@@ -14,6 +14,7 @@ import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team,
 } from "./api";
+import { SignupSection } from "./signups";
 import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "metrics";
@@ -1087,6 +1088,9 @@ function PeopleSection(props: { team: Team }) {
   const agentsOf = (id: string) => t.agents().filter((a) => a.owner_id === id);
   return (
     <>
+      <If when={admin() && t.signups().length}>
+        <View style={{ gap: 10 }}><SignupSection team={t} /></View>
+      </If>
       <Panel title={L(`Members · ${t.users().filter((u) => !u.disabled).length}`, `成员 · ${t.users().filter((u) => !u.disabled).length}`)}>
         <Each of={t.users().filter((u) => !u.disabled)} key={(u) => u.id}>
           {(u) => (
@@ -1124,7 +1128,43 @@ function PeopleSection(props: { team: Team }) {
           </View>
         </View>
       </If>
+      <WorkspacePanel team={t} />
     </>
+  );
+}
+
+/** This server's team: its name and id for everyone; admins rename it and open or close asking to join. */
+function WorkspacePanel(props: { team: Team }) {
+  const t = props.team;
+  const admin = () => t.me()?.role === "admin";
+  const name = signal(untracked(t.workspace)?.name ?? "");
+  const error = signal("");
+  const busy = signal(false);
+  async function save(p: { name?: string; signup?: boolean }) {
+    busy.set(true);
+    error.set("");
+    const r = await t.patchWorkspace(p);
+    busy.set(false);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <If when={t.workspace()}>
+      {(ws) => (
+        <Panel title={L("Team", "团队")}>
+          <Text testID="workspace-id" style={{ fontSize: 13, color: colors.muted }}>
+            {L("Team ID ", "团队 ID ")}<Text style={{ color: colors.text, ...mono }}>{ws().id}</Text>
+          </Text>
+          <If when={admin()} else={<Text style={{ fontSize: 14.5, color: colors.text }}>{ws().name || "Remi"}</Text>}>
+            <Field label={L("Team name", "团队名字")} value={name()} onChange={(v) => name.set(v)} onSubmit={() => void save({ name: name() })} placeholder="Remi" testID="workspace-name" hint={L("Shown on the sign-in screen when people ask to join.", "申请加入的人会在登录页看到它。")} />
+            <View style={{ flexDirection: "row" }}>
+              <Btn small testID="workspace-save" label={L("Save name", "保存名字")} busy={busy()} disabled={name().trim() === ws().name} onPress={() => void save({ name: name() })} />
+            </View>
+            <Toggle testID="workspace-signup" value={ws().signup} label={L("Let people ask to join (an admin approves)", "允许自助申请加入（管理员审批）")} onChange={(v) => void save({ signup: v })} />
+            <ErrorNote text={error()} testID="workspace-error" />
+          </If>
+        </Panel>
+      )}
+    </If>
   );
 }
 

@@ -88,6 +88,9 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(teamSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(signupSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",

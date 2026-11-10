@@ -25,6 +25,10 @@ export const repoLabel = (remote: string) => (remote.startsWith("github.com/") ?
 export type GitPlatform = { kind: "gitlab" | "github"; name: string; host: string; api: string };
 export type GitEvent = { at: number; kind: string; project: string; branch: string; number: number; state: string; task: string };
 export type GitSettings = { platforms: GitPlatform[]; webhook: { path: string; secret_set: boolean }; events: GitEvent[] };
+/** This server's team: one per server, with a stable id. signup: people may ask to join (an admin approves). */
+export type Workspace = { id: string; name: string; signup: boolean };
+/** Someone asking to join, waiting for an admin. */
+export type Signup = { id: string; email: string; handle: string; name: string; note: string; state: "pending" | "approved" | "rejected"; created: number };
 export type Device = { id: string; ua: string; created: number; last_seen: number; current: boolean };
 /** Who may hand an agent work: only its owner, members of a channel it is in, or anyone in the team. */
 export type Dispatch = "owner" | "channel" | "team";
@@ -119,7 +123,7 @@ export type Conn = "connecting" | "live" | "offline" | "unauthorized";
 /** `error`: why a call got no response at all (status 0), in the network stack's words. */
 export type Reply = { ok: boolean; status: number; data: any; error?: string };
 
-export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email" } as const;
+export const TEAM_KEYS = { url: "team.url", session: "team.session", email: "team.email", signup: "team.signup" } as const;
 
 /** "hub.corp:8080/" → "http://hub.corp:8080": an intranet server is often plain http. */
 export function normalizeServer(s: string): string {
@@ -256,6 +260,9 @@ export function createTeam(s: Session) {
   /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
   const shareUrl = () => publicUrl() || s.url;
   const users = signal<User[]>([]);
+  const workspace = signal<Workspace | null>(null);
+  /** People asking to join (only an admin gets them). */
+  const signups = signal<Signup[]>([]);
   const agents = signal<Agent[]>([]);
   const machines = signal<Machine[]>([]);
   const channels = signal<Channel[]>([]);
@@ -330,6 +337,12 @@ export function createTeam(s: Session) {
       case "user":
         if (f.user) users.update((us) => upsert(us, f.user as User));
         break;
+      case "workspace":
+        if (f.workspace) workspace.set(f.workspace as Workspace);
+        break;
+      case "signup":
+        if (untracked(me)?.role === "admin") refreshInbox();
+        break;
       case "agent":
         if (f.agent) agents.update((as) => upsert(as, f.agent as Agent));
         break;
@@ -370,6 +383,7 @@ export function createTeam(s: Session) {
     if (!r.ok) return;
     putTasks(r.data.tasks as Task[]);
     inbox.set((r.data.tasks as Task[]).map((t) => t.id));
+    signups.set((r.data.signups as Signup[] | undefined) ?? []);
     const w = await api("GET", "/api/v1/tasks?state=waiting&limit=100");
     if (!w.ok) return;
     putTasks(w.data.tasks as Task[]);
@@ -409,7 +423,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); }
+    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -623,6 +637,18 @@ export function createTeam(s: Session) {
     return r;
   }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
+  /** An admin lets someone in (the account is made now) or turns them away. */
+  async function decideSignup(id: string, approve: boolean) {
+    const r = await api("POST", `/api/v1/signups/${id}/${approve ? "approve" : "reject"}`, {});
+    if (r.ok || r.status === 404 || r.status === 409) signups.update((xs) => xs.filter((x) => x.id !== id));
+    if (r.ok && r.data.user) users.update((us) => upsert(us, r.data.user as User));
+    return r;
+  }
+  async function patchWorkspace(p: Partial<Pick<Workspace, "name" | "signup">>) {
+    const r = await api("PATCH", "/api/v1/workspace", p);
+    if (r.ok) workspace.set(r.data as Workspace);
+    return r;
+  }
   /** A one-time login code: for this person's other device, or (an admin) for a member who lost theirs. */
   const loginCode = (userId?: string) => api("POST", "/api/v1/login-codes", userId ? { user_id: userId } : {});
 
@@ -689,7 +715,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    url: s.url, shareUrl, conn, me, users, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, logout, dispose, applyFrame, catchUp,
     userById, agentById,
