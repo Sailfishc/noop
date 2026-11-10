@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { claudeCommand, claudeEvent, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
+import { claudeCommand, claudeEvent, claudeMcpServers, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
 import { cliEnv, createWorker, fetchInputs, reactionOf, taskClaimOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
@@ -46,6 +46,19 @@ test("Claude Code: stream-json steps, its session, its result; edits accepted, g
   expect(cmd).toContain("Bash(git push --force:*)");
   expect(cmd.join(" ")).toContain("--add-dir /r/.git --model sonnet --resume s_1");
   expect(claudeCommand({}).join(" ")).not.toContain("--model");
+  const allowed = (c: string[]) => c[c.indexOf("--allowedTools") + 1]!.split(",");
+  expect(allowed(claudeCommand({}))).toContain("Skill");
+  expect(allowed(claudeCommand({ mcp: ["mcp__github"] }))).toContain("mcp__github");
+});
+
+test("Claude Code: the machine's MCP servers are allowed by name (user, local to the folder or above it, the repository's)", () => {
+  const home = mkdtempSync(join(tmpdir(), "remi-home-")), repo = join(home, "work", "repo");
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { github: {}, "plugin:x y": {} },
+    projects: { [join(home, "work")]: { mcpServers: { jira: {} } }, [join(home, "other")]: { mcpServers: { nope: {} } } } }));
+  writeFileSync(join(repo, ".mcp.json"), JSON.stringify({ mcpServers: { docs: {} } }));
+  expect(claudeMcpServers(repo, home)).toEqual(["mcp__docs", "mcp__github", "mcp__jira", "mcp__plugin_x_y"]);
+  expect(claudeMcpServers(join(home, "none"), join(home, "missing"))).toEqual([]);
 });
 
 test("pi: json mode steps, session and last message; model and session passed", () => {

@@ -13,7 +13,7 @@ import (
 // People, invites and sign-in, machines and agents.
 //
 // There is no password and no mail. An admin invites a person (or `remi-server invite` does, for the first
-// admin) and the invite link signs them in. Another device signs in with a one-time login code made on a device
+// admin) and the invite link signs them in; or a person asks to join and an admin approves (teamsignup.go). Another device signs in with a one-time login code made on a device
 // that is already signed in, or with a login link an admin makes. Accounts from before keep email + authenticator.
 
 const (
@@ -419,7 +419,7 @@ func (h *Hub) v1Logout(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 	u, _ := h.user(q.who.userID)
-	out := obj{"user": u, "public_url": h.cfg.PublicURL,
+	out := obj{"user": u, "public_url": h.cfg.PublicURL, "workspace": h.workspace(),
 		"machines": h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE owner_id = ? ORDER BY created", u.ID)),
 		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
 	if q.who.machineID != "" {

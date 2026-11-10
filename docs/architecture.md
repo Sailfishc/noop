@@ -8,7 +8,7 @@
  machines (src/, Bun): one daemon per computer that runs agents ┘  outbound HTTPS only
 ```
 
-- People sign in with an invite link, then one-time codes for new devices. Channels, threads, tasks, reminders and search
+- People sign in with an invite link, or ask to join and an admin approves (`teamsignup.go`); then one-time codes for new devices. One server is one team (the workspace: a stable `w_…` id and a name in `kv`). Channels, threads, tasks, reminders and search
   live on the server (`server/internal/hub`, API under `/api/v1`, see `v1.go`).
 - A machine joins with a one-time code (`noop join`, written into `<data>/config.local.toml`) and then only calls the
   server: it reports its runtimes, repositories and Git credentials, claims the tasks of its agents, runs them, and

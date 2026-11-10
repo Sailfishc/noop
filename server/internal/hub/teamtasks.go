@@ -490,7 +490,11 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me))
-	writeJSON(w, 200, obj{"tasks": h.withOutputs(ts)})
+	out := obj{"tasks": h.withOutputs(ts)}
+	if h.isAdmin(me) { // people asking to join wait for an admin
+		out["signups"] = h.pendingSignups()
+	}
+	writeJSON(w, 200, out)
 }
 
 // taskFor: the task in the path, if this person may act on it as `who` ("owner": the agent's owner; "party": its
@@ -554,7 +558,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
-	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消")})
+	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)

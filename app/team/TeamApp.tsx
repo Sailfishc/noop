@@ -184,7 +184,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
 /** Phones: messages, what waits for me, tasks, me. */
 function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
   const t = props.team;
-  const waiting = () => t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length;
+  const waiting = () => t.inbox().length + t.signups().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length;
   const unread = () => Object.values(t.unread()).reduce((n, x) => n + (x || 0), 0);
   const Item = (p: { tab: Tab; icon: IconName; label: string; badge: number }) => {
     const on = () => props.active === p.tab;
@@ -261,7 +261,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
         <Row testID="open-search" icon="search" label={L("Search", "搜索")} active={props.page.kind === "search"} onPress={() => props.onOpen({ kind: "search" })} />
         {/* phones have these as tabs */}
         <If when={props.inset}>
-          <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+          <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.signups().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
           <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         </If>
         <Section

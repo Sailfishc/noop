@@ -66,6 +66,58 @@ describe("team sign in", () => {
     expect(linked.storage()["team.url"]).toBe(URL);
   });
 
+  test("asking to join: the request waits for an admin; once approved this device signs in, even after a restart", async () => {
+    const asks: any[] = [];
+    let state = "pending";
+    const net = {
+      ...server(newLog()),
+      [`GET ${URL}/api/v1/workspace`]: { body: { id: "w_1", name: "支付团队", signup: true } },
+      [`POST ${URL}/api/v1/signup`]: (r: { body?: string | null }) => {
+        asks.push(JSON.parse(r.body!));
+        return { status: 201, body: { id: "s_1", token: "tsu_abc", state: "pending" } };
+      },
+      [`GET ${URL}/api/v1/signup/tsu_abc`]: () => ({ body: { state, email: "wl@corp.com" } }),
+      [`POST ${URL}/api/v1/signup/tsu_abc/session`]: () => (state === "approved" ? { body: { session: "sess2", user: wl } } : { status: 409, body: { error: "还在等管理员审批" } }),
+    };
+    const app = await open("./App.tsx", { width: 1200, height: 800, network: net });
+    await app.press("id:signin-mode-ask");
+    await app.type("id:ask-url", "hub.test:8080");
+    await app.type("id:ask-name", "王磊");
+    await app.type("id:ask-handle", "wanglei");
+    await app.type("id:ask-email", "wl@corp.com");
+    await app.type("id:ask-note", "支付组新人");
+    await app.press("id:ask-send");
+    await app.waitFor("id:ask-waiting");
+    expect(app.shows("text:/支付团队/")).toBe(true);
+    expect(asks).toEqual([{ email: "wl@corp.com", name: "王磊", handle: "wanglei", note: "支付组新人" }]);
+    expect(JSON.parse(app.storage()["team.signup"]).token).toBe("tsu_abc");
+    await app.press("id:ask-check");
+    expect(app.shows("id:ask-waiting")).toBe(true);
+
+    state = "approved";
+    const again = await open("./App.tsx", { width: 1200, height: 800, storage: { "team.signup": app.storage()["team.signup"] }, network: net });
+    await again.waitFor("id:team-composer");
+    expect(again.storage()["team.session"]).toBe("sess2");
+    expect(again.storage()["team.signup"]).toBe(undefined);
+  });
+
+  test("a rejected request says so; a closed team says to ask for an invite", async () => {
+    const net = {
+      ...server(newLog()),
+      [`GET ${URL}/api/v1/workspace`]: { body: { id: "w_1", name: "", signup: false } },
+      [`GET ${URL}/api/v1/signup/tsu_abc`]: { body: { state: "rejected", email: "wl@corp.com" } },
+    };
+    const app = await open("./App.tsx", { width: 1200, height: 800, storage: { "team.signup": JSON.stringify({ server: URL, token: "tsu_abc", email: "wl@corp.com", team: "" }) }, network: net });
+    await app.waitFor("text:/没有通过|didn’t approve/");
+    await app.press("id:ask-again");
+    await app.type("id:ask-url", URL);
+    await app.type("id:ask-name", "王磊");
+    await app.type("id:ask-handle", "wanglei");
+    await app.type("id:ask-email", "wl@corp.com");
+    await app.press("id:ask-send");
+    await app.waitFor("text:/没有开放申请|doesn’t take requests/");
+  });
+
   test("an unreachable server is told apart; a 401 later sends you back to sign in", async () => {
     const app = await open("./App.tsx", { width: 1200, height: 800, network: {} });
     await app.type("id:team-url", "nowhere.test:1");
@@ -445,6 +497,58 @@ describe("settings", () => {
     expect(app.shows(`text:${URL}/invite/INVITECODE123`)).toBe(true);
   });
 
+  test("people asking to join wait in 待你决定 and in 成员与邀请; an admin lets them in or rejects them", async () => {
+    const decided: string[] = [];
+    const li = { id: "s_1", email: "li@corp.com", handle: "lina", name: "李娜", note: "支付组新人", state: "pending", created: T0 };
+    const zz = { id: "s_2", email: "zz@corp.com", handle: "zz", name: "赵", note: "", state: "pending", created: T0 };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [], signups: [li, zz] } },
+        [`POST ${URL}/api/v1/signups/s_1/approve`]: () => { decided.push("s_1 approve"); return { body: { user: { id: "u_3", email: li.email, handle: "lina", name: "李娜", role: "member", disabled: false } } }; },
+        [`POST ${URL}/api/v1/signups/s_2/reject`]: () => { decided.push("s_2 reject"); return { body: { ok: true } }; },
+      },
+    });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:signup-lina");
+    expect(app.shows("text:支付组新人")).toBe(true);
+    await app.press("id:signup-zz-reject");
+    await app.waitUntil(() => !app.shows("id:signup-zz"));
+    await settings(app, "people");
+    await app.waitFor("id:signup-lina");
+    await app.press("id:signup-lina-approve");
+    await app.waitFor("id:person-lina");
+    await app.waitUntil(() => !app.shows("id:signup-lina"));
+    expect(app.shows("id:signup-lina")).toBe(false);
+    expect(decided).toEqual(["s_2 reject", "s_1 approve"]);
+  });
+
+  test("the team's id shows; an admin renames it and closes asking to join", async () => {
+    const patches: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], workspace: { id: "w_7f3a", name: "", signup: true } } },
+        [`PATCH ${URL}/api/v1/workspace`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          patches.push(b);
+          return { body: { id: "w_7f3a", name: b.name ?? "支付团队", signup: b.signup ?? true } };
+        },
+      },
+    });
+    await settings(app, "people");
+    await app.waitFor("id:workspace-id");
+    expect(app.shows("text:/w_7f3a/")).toBe(true);
+    await app.type("id:workspace-name", "支付团队");
+    await app.press("id:workspace-save");
+    await app.press("id:workspace-signup");
+    await app.waitUntil(() => patches.length === 2);
+    expect(patches).toEqual([{ name: "支付团队" }, { signup: false }]);
+  });
+
   test("a login code for another device; signed-in devices; an admin makes a login link for a member", async () => {
     const made: any[] = [];
     const removed: string[] = [];
@@ -515,6 +619,24 @@ describe("settings", () => {
     await app.press("id:menu-login-code");
     await app.waitFor("id:server-loopback");
     expect(app.shows("text:/-public-url/")).toBe(true);
+  });
+
+  test("协作数据: the three numbers, and which agents people go to", async () => {
+    const asked: string[] = [];
+    const base = server(newLog());
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900,
+      network: { ...base, [`GET ${URL}/api/v1/metrics?*`]: (r: { url: string }) => { asked.push(r.url.split("?")[1]!); return (base as any)[`GET ${URL}/api/v1/metrics?*`]; } },
+    });
+    await settings(app, "metrics");
+    await app.waitFor("id:metrics-redone");
+    expect(app.shows("text:中位 23 分钟 · 90% 在 2.5 小时内 · 共 9 次")).toBe(true);
+    expect(app.shows("text:7 个，平均 1.9 轮，中位 2，最多 4")).toBe(true);
+    expect(app.shows("text:还有 2 件在等，最久的已经等了 1.5 小时。")).toBe(true);
+    expect(app.shows("text:@acha")).toBe(true);
+    await app.press("text:最近 30 天");
+    await app.waitUntil(() => asked.length === 2);
+    expect(asked).toEqual(["days=7", "days=30"]);
   });
 
   test("Git platforms: an admin adds a GitLab-based platform; its webhook and each machine's credentials show, never a token", async () => {

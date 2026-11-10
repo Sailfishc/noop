@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { m1, msg, r1, SESSION, server, newLog, task, URL } from "./fixtures";
+import { m1, msg, r1, SESSION, server, newLog, task, URL, zw } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
 //
@@ -94,6 +94,32 @@ describe("screens", () => {
     await app.press("id:settings-nav-general");
     await app.waitFor("id:notify");
     await shot(app, "settings-general");
+    await app.press("id:settings-nav-metrics");
+    await app.waitFor("id:metrics-redone");
+    await shot(app, "settings-metrics");
+  });
+
+  test("signin-ask", async () => {
+    const app = await open("./App.tsx", { ...SIZE, storage: { "hub.lang": "zh" }, network: net() });
+    await app.press("id:signin-mode-ask");
+    await app.waitFor("id:ask-note");
+    await shot(app, "signin-ask");
+  });
+
+  test("settings-people", async () => {
+    const asking = { id: "s_1", email: "li@corp.com", handle: "lina", name: "李娜", note: "支付组新人，想加入一起做对账", state: "pending", created: Date.now() - 600_000 };
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, ...SIZE,
+      network: { ...net(),
+        [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [], signups: [asking] } },
+        [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [], agents: [], workspace: { id: "w_7f3a91c2", name: "支付团队", signup: true } } } },
+    });
+    await app.waitFor("id:open-tasks");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings");
+    await app.press("id:settings-nav-people");
+    await app.waitFor("id:signup-lina");
+    await shot(app, "settings-people");
   });
 });
 
