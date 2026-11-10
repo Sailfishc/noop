@@ -51,8 +51,15 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/accept`]: act("accept", (t) => { t.state = "done"; }),
     [`POST ${URL}/api/v1/tasks/*/track`]: act("track", (t) => { t.tracked = true; }),
-    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t) => {
-      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...(t.mandate?.takeovers ?? []), { from: t.created_by, to: "u_1", at: T0 }] };
+    [`POST ${URL}/api/v1/tasks/*/takeover`]: act("takeover", (t, b) => {
+      const xs = [...(t.mandate?.takeovers ?? [])];
+      if (b.approve !== undefined) { // the agent's owner on a pending takeover
+        const x = xs.pop();
+        if (b.approve) { xs.push({ from: x.from, to: x.to, at: x.at }); t.created_by = x.to; }
+        t.mandate = { ...t.mandate, by: t.created_by, takeovers: xs };
+        return;
+      }
+      t.mandate = { ...(t.mandate ?? {}), by: "u_1", takeovers: [...xs, { from: t.created_by, to: "u_1", at: T0 }] };
       t.created_by = "u_1";
     }),
     [`POST ${URL}/api/v1/tasks/*/handoff`]: act("handoff", (t, b) => {

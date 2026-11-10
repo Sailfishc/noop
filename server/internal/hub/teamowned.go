@@ -77,11 +77,13 @@ func (h *Hub) mayManageAgent(userID string, a agentView) bool {
 	return a.OwnerID == userID || (h.isAdmin(userID) && h.onTeamMachine(a))
 }
 
-// takeoverView: someone took the task over from the person who asked.
+// takeoverView: someone took the task over from the person who asked. Pending: they asked to, and the agent's owner
+// still has to say yes (an agent that needs its owner's confirmation).
 type takeoverView struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-	At   int64  `json:"at"`
+	From    string `json:"from"`
+	To      string `json:"to"`
+	At      int64  `json:"at"`
+	Pending bool   `json:"pending,omitempty"`
 }
 
 // v1TaskTakeover: a member of the task's channel takes it over: it goes on in their name (they accept it, they are
@@ -92,38 +94,109 @@ func (h *Hub) v1TaskTakeover(w http.ResponseWriter, q *request) {
 		errJSON(w, 404, "not found")
 		return
 	}
-	me := q.who.userID
-	if !h.isMember(t.ChannelID, "user", me) && !h.isAdmin(me) {
-		errJSON(w, 403, "只有频道里的人能接手")
-		return
+	var b struct {
+		Approve *bool `json:"approve"` // the agent's owner on a pending takeover: yes or no
 	}
+	_ = q.json(&b)
+	me := q.who.userID
+	a, _ := h.agent(t.AgentID)
 	if t.State == taskDone || t.State == taskClosed {
 		errJSON(w, 409, "任务已经结束了")
-		return
-	}
-	if t.CreatedBy == me {
-		writeJSON(w, 200, t)
 		return
 	}
 	m := mandateView{}
 	if t.Mandate != nil {
 		m = *t.Mandate
 	}
-	m.Takeovers = append(m.Takeovers, takeoverView{From: t.CreatedBy, To: me, At: h.nowMs()})
-	m.By = me
-	cols := map[string]any{"created_by": me, "mandate": jsonOrNil(m)}
+	last := len(m.Takeovers) - 1
+	pending := last >= 0 && m.Takeovers[last].Pending
+	if b.Approve != nil {
+		if me != a.OwnerID && !h.isAdmin(me) {
+			errJSON(w, 403, "只有 @"+a.Handle+" 的主人能确认接手")
+			return
+		}
+		if !pending {
+			errJSON(w, 409, "没有等确认的接手")
+			return
+		}
+		x := m.Takeovers[last]
+		if !*b.Approve {
+			m.Takeovers = m.Takeovers[:last]
+			h.setTask(t.ID, map[string]any{"mandate": jsonOrNil(m)})
+			h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, "没有同意 "+h.handle(x.To)+" 接手")
+			h.taskChanged(t.ID)
+			t, _ = h.task(t.ID)
+			writeJSON(w, 200, t)
+			return
+		}
+		h.takeOver(w, t, m, x.To, me)
+		return
+	}
+	if !h.isMember(t.ChannelID, "user", me) && !h.isAdmin(me) {
+		errJSON(w, 403, "只有频道里的人能接手")
+		return
+	}
+	if t.CreatedBy == me {
+		writeJSON(w, 200, t)
+		return
+	}
+	// taking it over is asking the agent in one's own name: the agent's rules for who may ask hold
+	if me != a.OwnerID && a.Dispatch == "owner" {
+		errJSON(w, 403, "@"+a.Handle+" 只接主人派的活，不能接手")
+		return
+	}
+	if me != a.OwnerID && a.Confirm {
+		if pending && m.Takeovers[last].To == me {
+			writeJSON(w, 200, t)
+			return
+		}
+		if pending {
+			m.Takeovers = m.Takeovers[:last]
+		}
+		m.Takeovers = append(m.Takeovers, takeoverView{From: t.CreatedBy, To: me, At: h.nowMs(), Pending: true})
+		h.setTask(t.ID, map[string]any{"mandate": jsonOrNil(m)})
+		h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, h.handle(a.OwnerID)+" 我想接手这个任务（之前是 "+h.handle(t.CreatedBy)+" 发起的），@"+a.Handle+" 要你确认")
+		h.taskChanged(t.ID)
+		t, _ = h.task(t.ID)
+		writeJSON(w, 200, t)
+		return
+	}
+	if pending {
+		m.Takeovers = m.Takeovers[:last]
+	}
+	h.takeOver(w, t, m, me, me)
+}
+
+// takeOver: the task goes on in to's name; by is who said so (to, or the agent's owner confirming).
+func (h *Hub) takeOver(w http.ResponseWriter, t taskView, m mandateView, to, by string) {
+	last := len(m.Takeovers) - 1
+	if last >= 0 && m.Takeovers[last].Pending {
+		m.Takeovers[last].Pending = false
+	} else {
+		m.Takeovers = append(m.Takeovers, takeoverView{From: t.CreatedBy, To: to, At: h.nowMs()})
+	}
+	m.By = to
+	cols := map[string]any{"created_by": to, "mandate": jsonOrNil(m)}
 	if t.Handler == t.CreatedBy {
 		cols["handler"] = ""
 	}
 	h.setTask(t.ID, cols)
-	from := "原发起人"
-	if u, ok := h.user(t.CreatedBy); ok {
-		from = "@" + u.Handle
+	text := "接手了这个任务（之前是 " + h.handle(t.CreatedBy) + " 发起的），之后由我来回答和验收"
+	if by != to {
+		text = "同意 " + h.handle(to) + " 接手这个任务（之前是 " + h.handle(t.CreatedBy) + " 发起的）"
 	}
-	h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, "接手了这个任务（之前是 "+from+" 发起的），之后由我来回答和验收")
+	h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", by}, text)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, t)
+}
+
+// handle: "@handle" of a person, or "原发起人" when they are gone.
+func (h *Hub) handle(userID string) string {
+	if u, ok := h.user(userID); ok {
+		return "@" + u.Handle
+	}
+	return "原发起人"
 }
 
 // names: up to max short names (skills, MCP servers), trimmed, without duplicates.

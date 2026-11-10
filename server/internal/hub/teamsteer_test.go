@@ -30,6 +30,13 @@ func TestWakeRuleAndNews(t *testing.T) {
 	fresh := r.body["new"].([]any)
 	check(t, "the machine takes the news (the bystander's words come along, as context), same run", len(fresh) == 2 &&
 		r.body["task"].(map[string]any)["runs"] == float64(1) && r.body["task"].(map[string]any)["news"] == false, r)
+	for i := 0; i < maxFailures+1; i++ {
+		e.post(e.zw.session, "再补一句", root)
+		r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+		check(t, "taking up news again and again is not the daemon dying", r.status == 200 && r.body["task"].(map[string]any)["failures"] == float64(0), r)
+	}
+	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	check(t, "claiming it again with nothing new is a restart, and counts", r.status == 200 && r.body["task"].(map[string]any)["failures"] == float64(1), r)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "好了"})
 	check(t, "nothing new since: it stops", r.body["state"] == "review", r)
 

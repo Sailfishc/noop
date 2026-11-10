@@ -74,6 +74,10 @@ func TestHandoffAndHolder(t *testing.T) {
 
 	check(t, "an agent can't @ another agent through a reminder", e.do("POST", "/api/v1/agent/remind", tok,
 		bytes.NewBufferString("2h @bei 写发布说明"), "content-type", "text/plain").status == 400)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("1m 请 @bei 写发布说明"), "content-type", "text/plain")
+	check(t, "nor by reminding itself with the other agent's @ in the text", r.status == 400 && strings.Contains(string(r.raw), "remi handoff @bei"), r)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("1m 问 @liuli 发布说明写好没"), "content-type", "text/plain")
+	check(t, "a person's @ in its own reminder is fine", r.status == 200, r)
 }
 
 func TestRemiSubmit(t *testing.T) {

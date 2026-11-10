@@ -1167,6 +1167,21 @@ describe("team ownership", () => {
     expect(app.shows("text:/张伟 在 .* 从 王磊 手里接手/")).toBe(true);
     expect(app.shows("id:task-T-0001-takeover")).toBe(false);
   });
+
+  test("someone asked to take over a task of an agent that needs its owner's yes: the owner says yes", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: server(log, {}, [task({ created_by: "u_1", state: "running", runs: 1, tracked: true,
+        mandate: { by: "u_1", takeovers: [{ from: "u_1", to: "u_2", at: T0, pending: true }] } })]) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-takeover-approve");
+    expect(app.shows("text:/王磊 在 .* 想接手，等 @.* 同意/")).toBe(true);
+    await app.press("id:task-T-0001-takeover-approve");
+    await app.waitUntil(() => log.acts.includes("T-0001 takeover"));
+    await app.waitUntil(() => app.shows("text:/王磊 在 .* 从 张伟 手里接手/"));
+    expect(app.shows("id:task-T-0001-takeover-approve")).toBe(false);
+  });
 });
 
 describe("passing the ball", () => {

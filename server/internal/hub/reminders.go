@@ -373,6 +373,11 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 	if byAgent != "" && target.Kind == "agent" && target.ID != byAgent {
 		return reminderView{}, 400, "Agent 不能用提醒把事交给另一个 Agent：用 remi handoff @" + who + " 交给它的事（由人点一下确认）"
 	}
+	if byAgent != "" {
+		if other := h.otherAgent(text, byAgent); other != "" { // the reminder's message would @ it, in the person's name
+			return reminderView{}, 400, "Agent 的提醒里不能 @ 另一个 Agent：用 remi handoff @" + other + " 交给它的事（由人点一下确认）"
+		}
+	}
 	if target.Kind == "agent" && thread == "" && repeat == "" && target == setter {
 		return reminderView{}, 400, "要在线程里提醒自己"
 	}
@@ -430,6 +435,16 @@ func (h *Hub) fireReminders() {
 	}
 }
 
+// otherAgent: the handle of an agent other than self that text @s, or "".
+func (h *Hub) otherAgent(text, self string) string {
+	for _, m := range h.mentions(text) {
+		if m.Kind == "agent" && m.ID != self {
+			return m.Handle
+		}
+	}
+	return ""
+}
+
 // remindAgent @s the agent where the reminder was set, in its person's name; dispatch takes it from there.
 func (h *Hub) remindAgent(r reminderView) bool {
 	a, ok := h.agent(r.Target.ID)
@@ -437,6 +452,9 @@ func (h *Hub) remindAgent(r reminderView) bool {
 		return false
 	}
 	if c, ok := h.channel(r.ChannelID); !ok || c.Archived {
+		return false
+	}
+	if r.ByAgent != nil && h.otherAgent(r.Text, *r.ByAgent) != "" { // set before agents' reminders were checked for this
 		return false
 	}
 	m := h.insertMessage(r.ChannelID, r.ThreadID, member{"user", r.By}, "⏰ @"+a.Handle+" "+r.Text)

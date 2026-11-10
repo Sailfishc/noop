@@ -54,7 +54,7 @@ export type PR = { provider: "github" | "gitlab"; url: string; number: number; t
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
   /** People in the channel who took it over from the one who asked; by is the last. */
-  takeovers?: { from: string; to: string; at: number }[] | null;
+  takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
   /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
   via?: string[] | null; parent?: string; trigger?: string };
 export type Task = {
@@ -709,7 +709,7 @@ export function createTeam(s: Session) {
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name). */
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one). */
   async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
