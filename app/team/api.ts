@@ -51,7 +51,10 @@ export type Agent = { id: string; owner_id: string; machine_id: string | null; h
   /** Why it takes no work now (its runtime logged out, out of credit); its tasks wait in the queue. */
   paused?: { reason: string; text: string; at: number } | null };
 export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
-export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
+export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string;
+  /** align: before it starts, what "done" will mean: the criteria it proposes, what it leaves alone, how, and whether it
+   * had already changed files. */
+  kind?: "align"; acceptance?: string[]; not_doing?: string[]; approach?: string; dirty?: boolean };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
@@ -85,6 +88,8 @@ export type Task = {
   titled?: boolean;
   /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
   events?: TaskEvent[] | null;
+  /** Its agent aligned with people once (an align card): it may not again. */
+  aligned?: boolean;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
@@ -106,7 +111,7 @@ export type CallClass = "align" | "decide" | "accept" | "outside";
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
 export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
 /** Whose move it is, and why. */
-export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
@@ -828,7 +833,7 @@ export type Team = ReturnType<typeof createTeam>;
 export type DurationStats = { count: number; median: number; p90: number; open: number; oldest: number };
 export type Metrics = {
   days: number; since: number;
-  reply: DurationStats; reply_by: Partial<Record<"confirm" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
+  reply: DurationStats; reply_by: Partial<Record<"confirm" | "align" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
   runs: { tasks: number; mean: number; median: number; max: number; three_plus: number };
   cancelled: number; redone: number;
   agents: { agent_id: string; tasks: number; people: number; others: number; team: boolean; machine: string }[];

@@ -7,6 +7,7 @@ import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
+import { AlignCard } from "./aligncard";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -159,7 +160,7 @@ function conclusion(task: Task): string {
 
 const WHY: Record<Holder["why"], () => string> = {
   confirm: () => L("to say yes", "确认开工"), handoff_card: () => L("to decide a handoff", "决定要不要交接"), answer: () => L("to answer", "回答问题"),
-  handoff: () => L("to do their part", "做交给他的事"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
+  handoff: () => L("to do their part", "做交给他的事"), align: () => L("to align on what done means", "对齐做完意味着什么"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
   unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
   work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
 };
@@ -349,7 +350,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         )}
       </If>
-      <If when={task().state === "needs_decision" ? task().decision : null}>
+      <If when={task().state === "needs_decision" && task().decision?.kind === "align" ? task().decision : null}>
+        {(d) => <AlignCard task={task()} decision={d()} party={party()} busy={busy() === "decide"} onGo={(acceptance) => act("decide", acceptance === undefined ? {} : { acceptance })} />}
+      </If>
+      <If when={task().state === "needs_decision" && task().decision?.kind !== "align" ? task().decision : null}>
         {(d) => (
           <View style={{ gap: 6 }}>
             <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{d().question}</Text>

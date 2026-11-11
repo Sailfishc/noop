@@ -631,3 +631,41 @@ test("the person's preferences come after the conventions; a private channel's t
     rmSync(W, { recursive: true, force: true });
   }
 });
+
+test("align: the first turn says when to align, only for a person's own request with no criteria, once per task", () => {
+  const wd = { cwd: "/w", writable: [] };
+  expect(taskPrompt(claim(), wd)).toContain("# Align first, when the request is larger");
+  expect(taskPrompt(claim({ acceptance: "P99 < 200ms" }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ body: "@acha 直接做：把超时调到 5 秒" }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ aligned: true }), wd)).not.toContain("# Align first");
+  const m = { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex" };
+  expect(taskPrompt(claim({ mandate: { ...m, trigger: "trg_1" } }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ mandate: { ...m, via: ["a_2"], parent: "T-0009" } }), wd)).not.toContain("# Align first");
+  const r = parseTaskResult('看完了\n```json\n{"status":"align","summary":"先对一下","acceptance":["对账一致","10 分钟内"],"approach":"按天分批"}\n```');
+  expect(r.status).toBe("align");
+  expect(r.acceptance).toEqual(["对账一致", "10 分钟内"]);
+});
+
+test("align: the run reports its criteria and whether it changed files; a second alignment is told to go on in the same session", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const align = '```json\n{"status":"align","summary":"先对一下","acceptance":["对账一致","10 分钟内"],"not_doing":["不改导出"],"approach":"按天分批"}\n```';
+  const rt = fakeRuntime([{ text: align }, { text: align }, { text: '```json\n{"status":"review","summary":"好了"}\n```' }], seen);
+  const w = createWorker({
+    api: fakeApi({ "T-0001": claim(), "T-0002": claim({ id: "T-0002", aligned: true }) }, calls),
+    maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {},
+  });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report`).at(-1)!.body;
+  expect(last("T-0001")).toMatchObject({ state: "align", summary: "先对一下", align: { acceptance: ["对账一致", "10 分钟内"], not_doing: ["不改导出"], approach: "按天分批", dirty: false } });
+  w.onTask({ ...claim().task, id: "T-0002", state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(seen.length).toBe(3);
+  expect(seen[2]!.resume).toBe("thr_9");
+  expect(seen[2]!.prompt).toContain("already been aligned once");
+  expect(last("T-0002").state).toBe("review");
+  rmSync(W, { recursive: true, force: true });
+});

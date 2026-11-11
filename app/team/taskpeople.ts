@@ -18,6 +18,7 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
     case "pending":
       return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "warn");
     case "needs_decision":
+      if (task.decision?.kind === "align") return by(takerOf(task), taker?.name, ["Waits for you to align", "等你对齐"], (n) => [`Waits for ${n} to align`, `等 ${n} 对齐`], "warn");
       return by(takerOf(task), taker?.name, ["Waits for your decision", "等你决定"], (n) => [`Waits for ${n} to decide`, `等 ${n} 决定`], "warn");
     case "review":
       return by(takerOf(task), taker?.name, ["Waits for your acceptance", "等你验收"], (n) => [`Waits for ${n} to accept`, `等 ${n} 验收`], "accent");

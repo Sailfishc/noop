@@ -1424,6 +1424,7 @@ const NO_CALLS: CallStats = { calls: 0, tasks: 0, outside: 0, by_class: {}, by_k
 
 const REPLY_KINDS: { key: keyof Metrics["reply_by"]; label: () => string }[] = [
   { key: "confirm", label: () => L("Start it", "确认开工") },
+  { key: "align", label: () => L("Align", "对齐") },
   { key: "decide", label: () => L("Decide", "做决定") },
   { key: "accept", label: () => L("Accept", "验收") },
   { key: "unblock", label: () => L("Unblock", "解除阻塞") },

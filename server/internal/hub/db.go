@@ -139,6 +139,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0",     // only its members see it (chat.go canRead)
 		"ALTER TABLE users ADD COLUMN preferences TEXT NOT NULL DEFAULT ''",      // 「我的偏好」: given to agents on the tasks they ask for (teammemory.go)
 		"ALTER TABLE channels ADD COLUMN dm_agent TEXT",                          // a person's private chat with this agent (teamdm.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0",     // its agent aligned with people once (teamalign.go): never again
 		"ALTER TABLE task_events ADD COLUMN who TEXT NOT NULL DEFAULT ''",        // the person the task needed then ("" = nobody); teammetrics.go
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
