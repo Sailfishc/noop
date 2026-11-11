@@ -3,7 +3,7 @@
 import { cleanup, effect, Image, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { LOGO } from "./logo";
-import { Btn, Choice, colors, ErrorNote, Field } from "../ui";
+import { Btn, canScan, Choice, colors, ErrorNote, Field, Modal, QrScanner, toast } from "../ui";
 import { call, errorOf, type Reply, normalizeServer, parseInvite, parseLoginLink, type Session, TEAM_KEYS } from "./api";
 import { unreachable } from "./ui";
 
@@ -15,6 +15,8 @@ export function SignIn(props: { url: string; email: string; notice: string; link
   const code = signal("");
   const error = signal(props.notice);
   const busy = signal(false);
+  /** The camera is open, reading a login QR (canScan: iOS, Android, macOS). */
+  const scanning = signal(false);
   // invite
   const link = signal("");
   const invite = signal<{ server: string; code: string; email: string } | null>(null);
@@ -109,6 +111,16 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     });
   });
 
+  /** A QR the camera read: a login link signs in with it; anything else is said and the camera keeps looking. */
+  function scanned(text: string) {
+    const l = parseLoginLink(text);
+    if (!l) return toast(L("That isn’t a Remi login code. Scan the one in Settings › Account on a signed-in device.", "这不是 Remi 的登录码，请扫已登录设备 设置 › 账号 里的二维码"), "info");
+    scanning.set(false);
+    url.set(l.server);
+    code.set(l.code);
+    void login();
+  }
+
   async function openInvite() {
     const p = parseInvite(link(), url());
     if (!p) return error.set(L("Paste the invite link you were sent (…/invite/…)", "粘贴收到的邀请链接（…/invite/…）"));
@@ -187,8 +199,13 @@ export function SignIn(props: { url: string; email: string; notice: string; link
               else={
                 <If when={mode() === "login"}>
                   <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="team-url" />
-                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("Get one on a signed-in device in Settings › Account. On a phone, scan its QR code with the camera.", "在已登录设备的 设置 › 账号 里生成；手机直接用相机扫那里的二维码")} />
-                  <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
+                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("Get one on a signed-in device in Settings › Account.", "在已登录设备的 设置 › 账号 里生成")} />
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <If when={canScan()}>
+                      <Btn testID="team-scan" icon="scan" label={L("Scan", "扫码")} onPress={() => scanning.set(true)} />
+                    </If>
+                    <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
+                  </View>
                 </If>
               }
             >
@@ -213,6 +230,11 @@ export function SignIn(props: { url: string; email: string; notice: string; link
             </If>
             <ErrorNote text={error()} testID="signin-error" />
           </View>
+          <Modal open={scanning()} onClose={() => scanning.set(false)} title={L("Scan to sign in", "扫码登录")} width={480} testID="scan">
+            <If when={scanning()}>
+              <QrScanner testID="scan-camera" onScan={scanned} />
+            </If>
+          </Modal>
         </View>
       </View>
     </Scroll>

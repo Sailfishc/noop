@@ -37,6 +37,21 @@ describe("team sign in", () => {
     expect(app.storage()["team.url"]).toBe(URL);
   });
 
+  test("扫码 opens the camera on a phone, and isn't offered on the web", async () => {
+    const phone = await open("./App.tsx", { platform: "ios", network: server(newLog()) });
+    await phone.waitFor("id:team-signin");
+    expect(phone.shows("id:scan-camera")).toBe(false);
+    await phone.press("id:team-scan");
+    await phone.waitFor("id:scan-camera");
+    await phone.press("id:scan-close");
+    await phone.waitFor("id:scan-camera", { state: "gone" });
+
+    const web = await open("./App.tsx", { platform: "web", width: 1200, height: 800, network: server(newLog()) });
+    await web.waitFor("id:team-signin");
+    expect(web.shows("id:team-login")).toBe(true);
+    expect(web.shows("id:team-scan")).toBe(false);
+  });
+
   test("a login code, or a pasted login link that brings its server, signs in", async () => {
     const logins: any[] = [];
     const net = {

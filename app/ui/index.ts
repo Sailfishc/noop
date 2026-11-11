@@ -28,3 +28,4 @@ export { Tabs } from "./tabs";
 export { Empty } from "./empty";
 export { Count } from "./count";
 export { QrCode } from "./qr-code";
+export { canScan, QrScanner } from "./qr-scanner";

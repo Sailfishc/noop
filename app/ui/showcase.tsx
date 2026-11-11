@@ -39,7 +39,7 @@ function Section(props: { title: string; children: JSX.Element }) {
 
 const Row = (props: { children: JSX.Element }) => <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>{props.children}</View>;
 
-const ICONS: IconName[] = ["plus", "check", "back", "chevron-down", "reply", "chat", "task", "user", "github", "info", "bell", "copy", "close", "search", "settings"];
+const ICONS: IconName[] = ["plus", "check", "back", "chevron-down", "reply", "chat", "task", "user", "github", "info", "bell", "copy", "close", "search", "settings", "scan"];
 
 export function Showcase() {
   const text = signal("");
