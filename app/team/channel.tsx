@@ -159,23 +159,34 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
 }
 
 /** How the channel works ("PR 标题用中文", "发布前在 #ops 说一声"): its members write it, every agent working here
- * reads it with its task (before the team's AGENTS.md). */
+ * reads it with its task (before the team's AGENTS.md).
+ *
+ * Shown as text in a box; a press on the box opens the editor, focused, as the acceptance criteria do. On the Mac an
+ * always-mounted multiline Input here took no clicks (2026-11-10/11, never seen on the web): the press now goes to a
+ * plain view, and the input that appears takes the focus by itself. While it is open, live updates of the channel do
+ * not touch what is being typed. */
 function ChannelConventions(props: { team: Team; channelId: string }) {
   const t = props.team;
   const channel = () => t.channels().find((c) => c.id === props.channelId);
-  const now = () => channel()?.conventions ?? "";
-  const value = signal(untracked(now));
+  const now = () => (channel()?.conventions ?? "").trim();
+  const editing = signal(false);
+  const draft = signal("");
   const busy = signal(false);
   const error = signal("");
-  const changed = () => value().trim() !== now();
   const grow = growing({ min: 64, max: 200, pad: 18, line: 19 });
-  effect(() => { const n = now(); if (!untracked(changed)) value.set(n); });
+  const box = { padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field } as const;
+  function edit() {
+    draft.set(untracked(now));
+    error.set("");
+    editing.set(true);
+  }
   async function save() {
     busy.set(true);
     error.set("");
-    const r = await t.patchChannel(props.channelId, { conventions: value().trim() });
+    const r = await t.patchChannel(props.channelId, { conventions: draft().trim() });
     busy.set(false);
-    if (!r.ok) error.set(failed(r));
+    if (!r.ok) return error.set(failed(r));
+    editing.set(false);
   }
   return (
     <View testID="channel-conventions" style={{ gap: 6, paddingTop: 10 }}>
@@ -184,20 +195,38 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
         label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("HOW WE WORK HERE", "频道约定")}</Text>}
         note={L("Every agent working in this channel reads this with its task.", "在这个频道干活的 Agent 每次开工都会读。")}
       />
-      <Input
-        testID="channel-conventions-input"
-        value={value()}
-        multiline
-        placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => value.set(v)}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13, lineHeight: 19, color: colors.text }}
-      />
-      <ErrorNote text={error()} />
-      <If when={changed()}>
-        <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
-          <Btn small testID="channel-conventions-save" label={L("Save", "保存")} busy={busy()} onPress={() => void save()} />
+      <If when={!editing()}>
+        <View
+          role="button"
+          testID="channel-conventions-box"
+          accessibilityLabel={L("Edit how we work here", "编辑频道约定")}
+          onPress={edit}
+          hoverStyle={{ borderColor: colors.faint }}
+          style={{ ...box, minHeight: 64 }}
+        >
+          <Text testID="channel-conventions-text" style={{ fontSize: 13, lineHeight: 19, color: now() ? colors.text : colors.faint }}>
+            {now() || L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
+          </Text>
+        </View>
+      </If>
+      <If when={editing()}>
+        <View style={{ gap: 6 }}>
+          <Input
+            testID="channel-conventions-input"
+            value={draft()}
+            multiline
+            autoFocus
+            placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
+            class="placeholder:text-faint"
+            onChange={({ value: v }) => draft.set(v)}
+            onContentSizeChange={grow.onContentSizeChange}
+            style={{ ...box, height: grow.height(), fontSize: 13, lineHeight: 19, color: colors.text }}
+          />
+          <ErrorNote text={error()} />
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+            <Btn small kind="ghost" testID="channel-conventions-cancel" label={L("Cancel", "取消")} onPress={() => editing.set(false)} />
+            <Btn small kind="primary" testID="channel-conventions-save" label={L("Save", "保存")} busy={busy()} disabled={draft().trim() === now()} onPress={() => void save()} />
+          </View>
         </View>
       </If>
     </View>

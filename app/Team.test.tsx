@@ -1153,6 +1153,8 @@ describe("team ownership", () => {
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-conventions");
+    // a box that opens the editor when pressed (an always-open multiline input took no clicks on the Mac)
+    expect(app.shows("id:channel-conventions-input")).toBe(false);
     expect(app.shows("id:channel-conventions-save")).toBe(false);
     // what it is for stays behind the ⓘ until asked
     expect(app.shows("text:Every agent working in this channel reads this with its task.")).toBe(false);
@@ -1160,10 +1162,18 @@ describe("team ownership", () => {
     expect(app.shows("id:channel-conventions-head-note")).toBe(true);
     await app.press("id:channel-conventions-head-info");
     expect(app.shows("id:channel-conventions-head-note")).toBe(false);
+    await app.press("id:channel-conventions-box");
+    await app.waitFor("id:channel-conventions-input");
+    await app.press("id:channel-conventions-cancel");
+    expect(app.shows("id:channel-conventions-input")).toBe(false);
+    await app.press("id:channel-conventions-box");
     await app.type("id:channel-conventions-input", "PR 标题用中文");
     await app.press("id:channel-conventions-save");
     await app.waitUntil(() => log.patches.length === 1);
     expect(log.patches[0]).toEqual({ channel: { conventions: "PR 标题用中文" } });
+    await app.waitFor("id:channel-conventions-text");
+    expect(app.shows("id:channel-conventions-input")).toBe(false);
+    expect(app.shows("text:PR 标题用中文")).toBe(true);
   });
 
   test("someone in the channel takes over a task whose asker is away", async () => {
