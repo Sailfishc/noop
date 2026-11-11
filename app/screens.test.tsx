@@ -246,7 +246,7 @@ describe("screens", () => {
       { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总一下昨晚的告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 4, created: T0, max_per_day: 10, skipped: 2, skipped_run: 2, skip_reason: "busy", last_task: "T-0003" },
       { id: "trg_2", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "pr", text: "review 这个 PR", repo: "github.com/acme/pay", confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0, max_per_day: 10, skipped: 0 },
       { id: "trg_3", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "看主干最新一次 CI，红了就查原因", repeat: "daily", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 40, created: T0, max_per_day: 24, skipped: 0,
-        duty: "看住主干", readonly: true, recent: { nochange: 31, nothing: 9, spoke: 1 } },
+        duty: "看住主干", readonly: true, check_cmd: "gh run list -b main -L 1 --json conclusion", recent: { nochange: 31, nothing: 9, spoke: 1 } },
       { id: "trg_4", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "看过期的依赖和没人管的分支", repeat: "weekly", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 2, created: T0, max_per_day: 10, skipped: 0,
         duty: "看住主干", readonly: true, recent: { spoke: 1 } },
     ] } }, [`GET ${URL}/api/v1/triggers/runs?*`]: { body: { runs: [

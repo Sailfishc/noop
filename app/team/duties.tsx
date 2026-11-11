@@ -64,6 +64,7 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
   const perDay = signal("10");
   const duty = signal("");
   const readonly = signal(true);
+  const check = signal("");
   const load = async () => { const r = await t.triggers(props.channelId); if (r.ok) list.set(r.data.triggers as Trigger[]); };
   void load();
   async function run(p: Promise<{ ok: boolean; status: number; data: any }>) {
@@ -76,11 +77,11 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
   async function add() {
     busy.set(true);
     const ok = await run(t.createTrigger({ channel_id: props.channelId, agent: agent() || props.agents[0]?.id || "", kind: kind(), text: text().trim(),
-      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat() } : { repo: repo().trim(), branch: branch().trim() }),
+      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat(), ...(check().trim() ? { check_cmd: check().trim() } : {}) } : { repo: repo().trim(), branch: branch().trim() }),
       ...(perDay().trim() && perDay().trim() !== "10" ? { max_per_day: Number(perDay().trim()) } : {}),
       ...(duty().trim() ? { duty: duty().trim() } : {}), readonly: readonly() }));
     busy.set(false);
-    if (ok) { adding.set(false); text.set(""); }
+    if (ok) { adding.set(false); text.set(""); check.set(""); }
   }
   return (
     <View testID="channel-triggers" style={{ gap: 6, paddingTop: 12 }}>
@@ -111,6 +112,13 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
           }>
             <Choice testID="trigger-repeat" options={Object.keys(REPEAT).map((k) => ({ value: k, label: REPEAT[k]!() }))} value={repeat()} onChange={(v) => repeat.set(v)} />
             <Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID="trigger-when" />
+            <Noted
+              testID="trigger-check-about"
+              label={<Txt weight="semibold">{L("Check first (optional)", "先跑检查命令（可选）")}</Txt>}
+              note={L("A command run on the agent's computer before each firing. If it prints the same as last time, nothing happens; if it changed or failed, the agent gets its output. Leave times and dates out of what it prints. The agent's owner confirms it, again whenever it changes.",
+                "每次触发前先在 Agent 的电脑上跑这条命令（最多 60 秒）。输出和上次一样就什么都不做；变了或出错，才把输出交给 Agent。输出里不要带时间、日期这类每次都变的东西。要 Agent 的主人确认，改了要再确认。")}
+            />
+            <Field value={check()} onChange={(v) => check.set(v)} placeholder="gh run list -b main -s failure -L 5" testID="trigger-check" />
           </If>
           <Field label={L("At most a day", "每天最多触发（次）")} value={perDay()} onChange={(v) => perDay.set(v)} placeholder="10" testID="trigger-max" />
           <Field label={L("What to ask", "让它做什么")} value={text()} onChange={(v) => text.set(v)} placeholder={L("Summarize last night’s alerts", "汇总一下昨晚的告警")} testID="trigger-text" />
@@ -200,7 +208,8 @@ function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run
   const x = () => props.trigger;
   const a = () => t.agents().find((g) => g.id === x().agent_id);
   const owner = () => t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?";
-  const canConfirm = () => !x().confirmed_by && (t.me()?.id === a()?.owner_id || t.me()?.role === "admin");
+  // a check command runs on the owner's computer: only the owner confirms it (and again when it changes)
+  const canConfirm = () => (!x().confirmed_by || x().check_waits) && (t.me()?.id === a()?.owner_id || (t.me()?.role === "admin" && !x().check_cmd));
   const limits = () => L(`At most ${x().max_per_day} a day${x().kind === "schedule" ? "; skipped while its last task is queued or running" : ""}`,
     `每天最多 ${x().max_per_day} 次${x().kind === "schedule" ? "；上一个任务还在排队或运行时跳过" : ""}`) +
     (x().skipped ? L(` · skipped ${x().skipped} times`, ` · 跳过过 ${x().skipped} 次`) : "");
@@ -211,11 +220,15 @@ function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run
         <If when={x().readonly}><Tag testID={`trigger-readonly-${x().id}`} label={L("read-only", "只读")} /></If>
       </View>
       <Txt tone="muted" lines={2}>{x().text}</Txt>
+      <If when={x().check_cmd}>
+        <Txt variant="caption" tone="muted" mono lines={2} testID={`trigger-check-${x().id}`}>$ {x().check_cmd}</Txt>
+      </If>
       <Noted
         testID={`trigger-limits-${x().id}`}
         note={x().max_per_day ? limits() : undefined}
-        label={<Txt variant="caption" tone={!x().confirmed_by ? "warn" : "faint"}>
+        label={<Txt variant="caption" tone={!x().confirmed_by || x().check_waits ? "warn" : "faint"}>
           {!x().confirmed_by ? L(`Waits for @${owner()} to confirm once`, `等 @${owner()} 确认一次`)
+            : x().check_waits ? L(`Its check command changed: waits for @${owner()} to confirm`, `检查命令改了，等 @${owner()} 确认`)
             : !x().enabled ? L("Paused", "已暂停") : x().fires ? L(`Fired ${x().fires} times, last ${time(x().fired!)}`, `触发过 ${x().fires} 次，上次 ${time(x().fired!)}`) : L("Not fired yet", "还没触发过")}
         </Txt>}
       />

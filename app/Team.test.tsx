@@ -1405,6 +1405,31 @@ describe("passing the ball", () => {
     expect(log.patches[0]).toEqual({ duty: { channel_id: "c_1", agent_id: "a_1", duty: "看住主干", enabled: false } });
     await app.waitFor("text:已暂停");
   });
+
+  test("a check command: shown under what it asks, waits for the owner again when it changed; a schedule can be given one", async () => {
+    const log = newLog();
+    const changed = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "主干 CI 红了就看看", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 3, created: T0,
+      max_per_day: 10, skipped: 0, readonly: true, check_cmd: "gh run list -b main -s failure -L 5", check_waits: true };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [changed] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:trigger-check-trg_1");
+    expect(app.shows("text:$ gh run list -b main -s failure -L 5")).toBe(true);
+    expect(app.shows("text:检查命令改了，等 @zhangwei 确认")).toBe(true);
+    await app.press("id:trigger-confirm-trg_1");
+    await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
+    await app.waitFor("text:/触发过 3 次/");
+    await app.press("id:trigger-add");
+    expect(app.shows("text:/输出和上次一样/")).toBe(false); // what it does waits behind the ⓘ
+    await app.press("id:trigger-check-about-info");
+    await app.waitFor("text:/输出和上次一样就什么都不做/");
+    await app.type("id:trigger-text", "有新告警就看看");
+    await app.type("id:trigger-check", "cat alerts.txt");
+    await app.press("id:trigger-save");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "schedule", text: "有新告警就看看", when: "9:00", repeat: "weekdays", check_cmd: "cat alerts.txt", readonly: true } });
+    await app.waitFor("text:$ cat alerts.txt");
+  });
 });
 
 describe("private channels", () => {

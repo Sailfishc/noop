@@ -119,6 +119,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("DELETE /api/v1/triggers/{id}", person, h.v1TriggerDelete)
 	r("GET /api/v1/triggers/runs", person, h.v1TriggerRuns)
 	r("POST /api/v1/triggers/duty", person, h.v1DutyPause)
+	r("POST /api/v1/triggers/{id}/check", machine, h.v1TriggerCheck)
 	r("POST /api/v1/hooks/github", public, h.v1GithubHook)
 	r("POST /api/v1/tasks/{id}/decide", person, h.v1TaskDecide)
 	r("GET /api/v1/machine/tasks", machine, h.v1MachineTasks)
