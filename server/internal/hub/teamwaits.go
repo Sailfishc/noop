@@ -180,6 +180,7 @@ func (h *Hub) Tick() {
 		}
 	}
 	h.tickQuota()
+	h.tickAsks()
 	h.fireReminders()
 	h.fireTriggers()
 }

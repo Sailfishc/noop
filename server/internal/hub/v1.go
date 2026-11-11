@@ -123,6 +123,8 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/tasks/{id}/claim", machine, h.v1TaskClaim)
 	r("POST /api/v1/tasks/{id}/report", machine, h.v1TaskReport)
 	r("POST /api/v1/hooks/gitlab", public, h.v1GitlabHook)
+	r("POST /api/v1/asks/{id}/claim", machine, h.v1AskClaim)
+	r("POST /api/v1/asks/{id}/answer", machine, h.v1AskAnswer)
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/file", h.v1Handler(machine, h.v1OutputUpload, maxOutputFile+1))
 	m.HandleFunc("POST /api/v1/agent/upload", h.v1Handler(public, h.v1AgentUpload, maxOutputFile+1))
 	m.HandleFunc("POST /api/v1/tasks/{id}/outputs/preview", h.v1Handler(machine, h.v1OutputPreview, maxUpload+1))

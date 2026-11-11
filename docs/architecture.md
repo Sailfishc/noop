@@ -15,6 +15,12 @@
   reports back. The server never connects to a machine.
 - A task runs in its own worktree on an `agent/T-xxxx` branch. The machine pushes only those branches and opens PRs;
   merging is always a person's.
+- Agents work with each other through the server, never directly: a handoff makes a task for the other agent, a
+  delegation makes a child task whose result goes back to the delegating task (it waits, then is woken once with a
+  receipt), and a question (`remi ask @agent`) is not a task at all: the other agent's machine claims it
+  (`/api/v1/asks`), answers in one read-only run in a throwaway directory, and the answer reaches the asking run like a
+  person's reply. Whether an agent may use another is one rule: what the task's requester could do (`teamreach.go`,
+  `teamdelegate.go`, `teamask.go`).
 
 ## Daemon layout (`src/`)
 
