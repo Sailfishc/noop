@@ -33,7 +33,12 @@ export type TeamTask = {
   news?: boolean;
   /** Its agent already aligned with people once (status align): it may not again. */
   aligned?: boolean;
+  /** Times it moved to another computer (server teammove.go): a run claimed with another count is void. */
+  moves?: number;
+  /** Where it got to, kept off its computer (checkpoint.ts): what a computer it moved to restores. */
+  checkpoint?: TaskCheckpoint | null;
 };
+export type TaskCheckpoint = { at: number; checked?: number; machine?: string; repos: { repo: string; branch: string; commit?: string; head?: string; error?: string }[]; files?: { id: string; size: number } | null; error?: string };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string;
   /** It came from another agent (a handoff) or a trigger, not from a person's own words. */
@@ -91,7 +96,9 @@ export type Evidence = { criterion: number; how: "ran" | "saw" | "not_verified";
  * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task.
  * `extra`: worktrees of the repositories the agent declared while it worked (remote → its worktree). */
 /** setup: what came of the repository's .remi/setup.sh when the worktree was made ("" when it has none). */
-export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string; extra?: Record<string, Workdir>; setup?: string };
+/** restored: it moved here from another computer and came back from its checkpoint, from the task branch pushed
+ * there, or not at all ("none": it starts over). */
+export type Workdir = { cwd: string; repo?: string; base?: string; branch?: string; writable: string[]; files?: string; extra?: Record<string, Workdir>; setup?: string; restored?: "checkpoint" | "branch" | "none" };
 
 /** What happens after a run: push the branch and open or update the PR (M3: gitflow.ts). */
 export type AfterRun = (c: Claim, r: TaskResult, wd: Workdir) => Promise<{ pr?: PR; note?: string } | null>;
@@ -280,6 +287,28 @@ ${REACT}
 ${RESULT_SPEC}`;
 }
 
+/** The first run on the computer a task moved to: where it got to, as far as the checkpoint says. */
+export async function movedPrompt(c: Claim, wd: Workdir): Promise<string> {
+  const all = [wd, ...Object.values(wd.extra ?? {})];
+  const how = all.some((x) => x.restored === "checkpoint") ? "checkpoint" : all.some((x) => x.restored === "branch") ? "branch" : "none";
+  const at = c.task.checkpoint?.at ? new Date(c.task.checkpoint.at).toISOString().replace("T", " ").slice(0, 16) + " UTC" : "";
+  const state: string[] = [];
+  for (const x of all.filter((x) => x.repo)) {
+    const log = x.base ? (await git(x.cwd, "log", "--oneline", "-20", `${x.base}..HEAD`)).out : "";
+    const dirty = (await git(x.cwd, "status", "--porcelain")).out.split("\n").filter(Boolean).slice(0, 30).join("\n");
+    state.push(`${x.cwd}:\nCommits on ${x.branch}: ${log ? `\n${log}` : "(none)"}\nChanged, not committed: ${dirty ? `\n${dirty}` : "(none)"}`);
+  }
+  return `
+
+# Going on from another computer
+This task started on another of your owner's computers, which went away; your owner moved it to this one. This is a
+fresh session: the request and its thread above are the record of what happened (\`remi read --thread\` for all of it).
+${how === "checkpoint" ? `Your work directory was restored from the checkpoint${at ? ` of ${at}` : ""}: the commits and the files not yet committed are as they were then. Work done after it was lost (about 10 minutes at most): find what is missing and redo it.`
+  : how === "branch" ? "There was no checkpoint, only the task branch as it was last pushed: your branch starts from it; changes not committed then were lost."
+  : "There was no checkpoint: your work directory is fresh. Start over, taking the thread into account."}
+${state.length ? `\n${state.join("\n\n")}\n` : ""}Before redoing anything that acts outside (a submission, a deployment, a message), check whether it already happened.`;
+}
+
 /** The other agents it may turn to (the server's \`remi who\` list), and when to. */
 const AGENTS = (list: string) => `# Other agents you may turn to
 ${list.trim()}
@@ -452,7 +481,7 @@ async function git(cwd: string, ...args: string[]): Promise<{ ok: boolean; out: 
 /** The task's own worktree of its repository on its branch (made once, kept for its later turns), or an empty
  * directory for a general task. The repository is the task's own (found or cloned on this machine by `resolve`), or,
  * when the task names none, the agent's repo path. */
-export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: string) => Promise<string>): Promise<Workdir> {
+export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: string) => Promise<string>, fetchCheckpoint?: (taskId: string) => Promise<Uint8Array | null>): Promise<Workdir> {
   const dir = join(root, c.task.id);
   let repoPath = c.agent.repo ? expand(c.agent.repo) : "";
   if (c.task.repo) {
@@ -460,24 +489,41 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
     repoPath = await resolve(c.task.repo);
   }
   if (!repoPath) {
+    let restored: Workdir["restored"];
+    if (!existsSync(dir) && c.task.checkpoint?.files && fetchCheckpoint) { // it moved here: its directory as it was
+      restored = "none";
+      const data = await fetchCheckpoint(c.task.id).catch(() => null);
+      if (data) {
+        mkdirSync(dir, { recursive: true });
+        const tgz = join(root, `.${c.task.id}.restore.tgz`);
+        writeFileSync(tgz, data);
+        const x = Bun.spawnSync(["tar", "-xzf", tgz, "-C", dir]);
+        rmSync(tgz, { force: true });
+        if (x.exitCode === 0) restored = "checkpoint";
+      }
+    }
     mkdirSync(join(dir, "in"), { recursive: true });
     mkdirSync(join(dir, "out"), { recursive: true });
-    return { cwd: dir, writable: [], files: dir };
+    return { cwd: dir, writable: [], files: dir, ...(restored ? { restored } : {}) };
   }
   if (!existsSync(repoPath) || (!existsSync(join(repoPath, ".git")) && !(await git(repoPath, "rev-parse", "--git-dir")).ok)) {
     throw new Error(`@${c.agent.handle} 的仓库 ${c.agent.repo} 在这台机器上不存在或不是 git 仓库`);
   }
   const branch = c.task.branch || `agent/${c.task.id}`;
-  const { base, common, setup } = await worktree(repoPath, dir, branch);
+  const declared = new Set(c.task.repos ?? []);
+  const point = c.task.moves ? c.task.checkpoint?.repos.find((r) => !declared.has(r.repo)) : undefined;
+  const { base, common, setup, restored } = await worktree(repoPath, dir, branch, c.task.moves ? point ?? {} : undefined);
   const files = join(root, `${c.task.id}.files`);
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
-  return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files, ...(setup ? { setup } : {}) };
+  return { cwd: dir, repo: repoPath, base, branch, writable: [common, files], files, ...(setup ? { setup } : {}), ...(restored ? { restored } : {}) };
 }
 
 /** A worktree of the checkout at `repoPath` in `dir` on `branch` (made from the default branch the first time, kept
- * after), and the checkout's git directory (the run must be able to write it to commit). */
-async function worktree(repoPath: string, dir: string, branch: string): Promise<{ base: string; common: string; setup: string }> {
+ * after), and the checkout's git directory (the run must be able to write it to commit). `point`: the task moved here
+ * from another computer: a fresh worktree starts from its checkpoint (the branch at its first parent, the rest put
+ * back as changes not committed), or else from the task branch that computer pushed. */
+async function worktree(repoPath: string, dir: string, branch: string, point?: { commit?: string }): Promise<{ base: string; common: string; setup: string; restored?: Workdir["restored"] }> {
   const common = (await git(repoPath, "rev-parse", "--path-format=absolute", "--git-common-dir")).out;
   await git(repoPath, "fetch", "--quiet", "origin").catch(() => null);
   let base = (await git(repoPath, "rev-parse", "--abbrev-ref", "origin/HEAD")).out;
@@ -485,9 +531,27 @@ async function worktree(repoPath: string, dir: string, branch: string): Promise<
   if (!existsSync(dir)) {
     mkdirSync(dirname(dir), { recursive: true });
     const exists = (await git(repoPath, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)).ok;
-    const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, base);
+    let start = base, wip = "", restored: Workdir["restored"];
+    if (!exists && point) {
+      restored = "none";
+      if (point.commit) {
+        const got = await git(repoPath, "fetch", "--quiet", "origin", `+refs/heads/${branch}-wip:refs/remi/moved/${branch}-wip`);
+        if ((await git(repoPath, "cat-file", "-e", `${point.commit}^{commit}`)).ok) wip = point.commit;
+        else if (got.ok) wip = (await git(repoPath, "rev-parse", `refs/remi/moved/${branch}-wip`)).out;
+      }
+      if (wip) { start = `${wip}^1`; restored = "checkpoint"; }
+      else if ((await git(repoPath, "fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remi/moved/${branch}`)).ok) { start = `refs/remi/moved/${branch}`; restored = "branch"; }
+    }
+    const r = exists ? await git(repoPath, "worktree", "add", dir, branch) : await git(repoPath, "worktree", "add", "-b", branch, dir, start);
     if (!r.ok) throw new Error(`开 worktree 失败：${r.out}`);
-    return { base, common, setup: await runSetup(dir) };
+    if (wip) { // what was not committed there comes back as changes not committed here
+      const back = await git(dir, "restore", `--source=${wip}`, "--worktree", "--", ".");
+      if (!back.ok) restored = "none";
+    }
+    await git(repoPath, "for-each-ref", "--format=%(refname)", "refs/remi/moved/").then(async (x) => {
+      for (const ref of x.out.split("\n").filter(Boolean)) await git(repoPath, "update-ref", "-d", ref);
+    });
+    return { base, common, setup: await runSetup(dir), ...(restored ? { restored } : {}) };
   }
   return { base, common, setup: "" };
 }
@@ -511,8 +575,9 @@ export async function prepareDeclared(c: Claim, root: string, wd: Workdir, resol
     const repoPath = await resolve(remote);
     const dir = join(root, `${c.task.id}.repos`, remote.replace(/[^\w.-]+/g, "_"));
     const branch = c.task.branch || `agent/${c.task.id}`;
-    const { base, common, setup } = await worktree(repoPath, dir, branch);
-    const x: Workdir = { cwd: dir, repo: repoPath, base, branch, writable: [], ...(setup ? { setup } : {}) };
+    const point = c.task.moves ? c.task.checkpoint?.repos.find((r) => r.repo === remote) ?? {} : undefined;
+    const { base, common, setup, restored } = await worktree(repoPath, dir, branch, point);
+    const x: Workdir = { cwd: dir, repo: repoPath, base, branch, writable: [], ...(setup ? { setup } : {}), ...(restored ? { restored } : {}) };
     wd.extra = { ...wd.extra, [remote]: x };
     wd.writable.push(dir, common);
     made[remote] = x;
@@ -578,6 +643,8 @@ export type FileApi = {
   download(path: string): Promise<Uint8Array | null>;
   /** A general task's packed directory, its checkpoint (checkpoint.ts): its id on the server. */
   checkpoint?(taskId: string, data: Uint8Array): Promise<{ id: string; size: number } | null>;
+  /** The packed directory back, on the computer the task moved to. */
+  restore?(taskId: string): Promise<Uint8Array | null>;
 };
 
 const MAX_OUT_FILE = 50 << 20;
@@ -832,7 +899,7 @@ export function createWorker(o: WorkerOptions) {
   /** What happens once a run is over (its last checkpoint), by task. */
   const afterRuns = new Map<string, () => Promise<unknown>>();
   let stopped = false;
-  const ckDeps = { api: o.api, dir: join(root, ".checkpoints"), log, upload: o.files?.checkpoint?.bind(o.files) };
+  const ckDeps = { api: (path: string, init?: RequestInit) => o.api(withMoves(path, path.split("/")[4] ?? ""), init), dir: join(root, ".checkpoints"), log, upload: o.files?.checkpoint?.bind(o.files) };
   /** Saves are one at a time per task (the timer and the run's stop may meet). */
   const saving = new Map<string, Promise<unknown>>();
   const checkpoint = (id: string, wd: Workdir, filesAllowed: boolean) => {
@@ -849,7 +916,13 @@ export function createWorker(o: WorkerOptions) {
     try { await saving.get(id); await dropCheckpoint(ckDeps, id); } catch {} finally { dropping.delete(id); }
   };
 
-  const report = (id: string, body: Record<string, unknown>) => o.api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify(body) });
+  /** The move count each running task was claimed with: its calls name it, and the server refuses them once the task
+   * moved to another computer (server teammove.go). */
+  const runMoves = new Map<string, number>();
+  /** Running tasks that moved to another computer: their runs stop and leave nothing behind (no push, PR or report). */
+  const movedAway = new Set<string>();
+  const withMoves = (path: string, id: string) => runMoves.has(id) ? `${path}${path.includes("?") ? "&" : "?"}moves=${runMoves.get(id)}` : path;
+  const report = (id: string, body: Record<string, unknown>) => o.api(withMoves(`/api/v1/tasks/${id}/report`, id), { method: "POST", body: JSON.stringify(body) });
 
   // A run's final report is written to the outbox first and deleted once the server took it (or refused it for good),
   // so a report lost to a network blip or a restart is sent again instead of the task being run again. It names its
@@ -862,8 +935,8 @@ export function createWorker(o: WorkerOptions) {
     if (sending.has(file)) return false;
     sending.add(file);
     try {
-      const { id, body } = JSON.parse(readFileSync(join(outbox, file), "utf8"));
-      const res = await send(`/api/v1/tasks/${id}/report`, body);
+      const { id, body, moves } = JSON.parse(readFileSync(join(outbox, file), "utf8"));
+      const res = await send(`/api/v1/tasks/${id}/report${typeof moves === "number" ? `?moves=${moves}` : ""}`, body);
       if (res === "retry") return false;
       if (res === "drop") log(`${id} 的结果服务端不再接收（这次运行已经无效），丢弃`);
       rmSync(join(outbox, file), { force: true });
@@ -878,7 +951,7 @@ export function createWorker(o: WorkerOptions) {
   async function finish(t: TeamTask, body: Record<string, unknown>) {
     mkdirSync(outbox, { recursive: true });
     const file = `${t.id}-${t.runs || 0}.json`;
-    writeFileSync(join(outbox, file), JSON.stringify({ id: t.id, body: { ...body, ...(t.runs ? { run: t.runs } : {}) } }));
+    writeFileSync(join(outbox, file), JSON.stringify({ id: t.id, body: { ...body, ...(t.runs ? { run: t.runs } : {}) }, ...(runMoves.has(t.id) ? { moves: runMoves.get(t.id) } : {}) }));
     if (!(await sendOut(file))) log(`${t.id} 的结果暂时发不出去，连上后重发`);
   }
   /** Sends what is waiting in the outbox, oldest first. */
@@ -892,6 +965,7 @@ export function createWorker(o: WorkerOptions) {
 
   async function run(c: Claim) {
     const t = c.task;
+    runMoves.set(t.id, t.moves ?? 0);
     const rt = runtimes[c.agent.runtime || "codex"];
     if (!rt || !rt.available()) {
       await finish(t, { state: "blocked", summary: `这台机器上没有 ${c.agent.runtime || "codex"}，装好并登录后在线程里回复一句即可重试`, failure: "not_installed" });
@@ -904,7 +978,7 @@ export function createWorker(o: WorkerOptions) {
     }
     let wd: Workdir;
     try {
-      wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo)))(c, root);
+      wd = await (o.workdir ?? ((cl, r) => prepareWorkdir(cl, r, o.resolveRepo, o.files?.restore?.bind(o.files))))(c, root);
       await prepareDeclared(c, root, wd, o.resolveRepo);
     } catch (e) {
       await finish(t, { state: "blocked", summary: e instanceof Error ? e.message : String(e) });
@@ -918,7 +992,7 @@ export function createWorker(o: WorkerOptions) {
       afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
     }
     const resume = t.session;
-    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
@@ -963,6 +1037,7 @@ export function createWorker(o: WorkerOptions) {
       });
       handle = h;
       kills.set(t.id, () => { cancelled = true; h.kill(); });
+      if (movedAway.has(t.id)) kills.get(t.id)!(); // it moved while the folder was being made: stop before it works
       const res = await h.done;
       handle = undefined;
       if (res.usage) usage = addUsage(usage, res.usage);
@@ -1083,6 +1158,7 @@ export function createWorker(o: WorkerOptions) {
       log(`${t.id} → align`);
       return;
     }
+    if (await moved(t.id)) { log(`${t.id} 已经换到另一台电脑，这次运行作废：不推送、不开 PR`); return; }
     let extra: { pr?: PR; note?: string } | null = null;
     const morePRs: PR[] = [], moreNotes: string[] = [];
     if (o.afterRun && result.status === "review") {
@@ -1143,7 +1219,7 @@ export function createWorker(o: WorkerOptions) {
         log(`${t.id} 出错：${e instanceof Error ? e.message : e}`);
         await finish(c.task, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
       }).then(async () => { await afterRuns.get(t.id)?.(); }).catch(() => {})
-        .finally(() => { running.delete(t.id); kills.delete(t.id); steers.delete(t.id); afterRuns.delete(t.id); void poll(); });
+        .finally(() => { running.delete(t.id); kills.delete(t.id); steers.delete(t.id); afterRuns.delete(t.id); runMoves.delete(t.id); movedAway.delete(t.id); void poll(); });
       running.set(t.id, p);
     } finally {
       claiming.delete(t.id);
@@ -1196,9 +1272,26 @@ export function createWorker(o: WorkerOptions) {
     if (x.state === "queued" && mine(x.agent_id)) void claimAsk(x.id);
   }
 
+  /** Whether a running task moved to another computer since it was claimed here (asks the server when not told yet). */
+  async function moved(id: string): Promise<boolean> {
+    if (movedAway.has(id)) return true;
+    if (!runMoves.has(id)) return false;
+    const now: TeamTask | null = await o.api(`/api/v1/tasks/${id}`).catch(() => null);
+    if (now?.id === id && (now.moves ?? 0) !== runMoves.get(id)) movedAway.add(id);
+    return movedAway.has(id);
+  }
+  /** It moved: the run here stops and leaves nothing behind (its folder stays for the usual sweep). */
+  function stopMoved(id: string) {
+    if (!running.has(id)) return;
+    movedAway.add(id);
+    log(`${id} 换到了另一台电脑，停掉这里的运行`);
+    kills.get(id)?.();
+  }
+
   /** A task changed (socket frame, or the poll's list). */
   function onTask(t: TeamTask, mine: (agentId: string) => boolean) {
     if (!mine(t.agent_id)) return;
+    if (runMoves.has(t.id) && (t.moves ?? 0) !== runMoves.get(t.id)) return stopMoved(t.id);
     if (t.state === "queued") void claim(t);
     else if (t.state === "running" && t.news) steers.get(t.id)?.();
     else if (t.state === "closed" || t.state === "done") {
@@ -1252,9 +1345,13 @@ export function createWorker(o: WorkerOptions) {
     await flush(); // results from before a restart or a lost connection go first: those tasks must not run again
     const r = await o.api("/api/v1/machine/tasks");
     for (const t of (r?.tasks ?? []) as TeamTask[]) {
+      if (runMoves.has(t.id) && (t.moves ?? 0) !== runMoves.get(t.id)) { stopMoved(t.id); continue; }
       if (t.state === "queued" || (t.state === "running" && !running.has(t.id) && !unsent(t.id))) void claim(t);
       else if (t.state === "running" && t.news) steers.get(t.id)?.();
     }
+    // a task running here that the server no longer lists as this computer's: it may have moved (a missed frame)
+    const listed = new Set(((r?.tasks ?? []) as TeamTask[]).map((t) => t.id));
+    for (const id of runMoves.keys()) if (r && !listed.has(id)) void moved(id).then((m) => { if (m) stopMoved(id); });
     for (const x of (r?.asks ?? []) as { id: string }[]) void claimAsk(x.id);
   }
 

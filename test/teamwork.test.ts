@@ -324,6 +324,7 @@ function fakeRuntime(turns: { events?: string[]; text: string; hang?: boolean }[
 function fakeApi(claims: Record<string, Claim>, log: { path: string; body: any }[]) {
   return async (path: string, init: RequestInit = {}) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    path = path.replace(/[?&]moves=\d+$/, ""); // the run's fence (checkpoint.test.ts checks it)
     log.push({ path, body });
     const m = path.match(/^\/api\/v1\/tasks\/([^/]+)\/claim$/);
     if (m) { const c = claims[m[1]]; delete claims[m[1]]; return c ?? null; }
@@ -413,7 +414,7 @@ test("news while it runs: the run stops after the tool call in flight and the sa
   const claims = [claim(), claim({ news: false }, {})];
   claims[1]!.new = [{ id: "msg_4", seq: 4, channel_id: "c_1", thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: "先别动索引", mentions: [], created: 0 }];
   const api = async (path: string, init: RequestInit = {}) => {
-    calls.push({ path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    calls.push({ path: path.replace(/[?&]moves=\d+$/, ""), body: init.body ? JSON.parse(String(init.body)) : undefined });
     if (path.endsWith("/claim")) return claims.shift() ?? null;
     return path === "/api/v1/machine/tasks" ? { tasks: [] } : {};
   };

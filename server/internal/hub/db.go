@@ -143,6 +143,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'",    // per acceptance criterion, how its agent verified it (teamevidence.go)
 		"ALTER TABLE task_events ADD COLUMN who TEXT NOT NULL DEFAULT ''",        // the person the task needed then ("" = nobody); teammetrics.go
 		"ALTER TABLE tasks_v1 ADD COLUMN checkpoint TEXT",                        // its latest checkpoint (teamcheckpoint.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN moves INTEGER NOT NULL DEFAULT 0",       // times it moved to another computer: runs claimed before are void (teammove.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN move TEXT",                              // the 换电脑继续 card (teammove.go)
 		"ALTER TABLE machines ADD COLUMN checkpoint_files INTEGER",               // keep general tasks' directories here (NULL: on for a person's own, off for a team machine)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {

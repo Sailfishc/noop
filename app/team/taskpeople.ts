@@ -14,6 +14,8 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
   const isMe = (id?: string) => !!me && id === me.id;
   const by = (id: string | undefined, name: string | undefined, mine: [string, string], other: (n: string) => [string, string], tone: Tone) =>
     isMe(id) ? { label: L(...mine), mine: true, tone } : { label: L(...other(name ?? "?")), mine: false, tone };
+  // its computer is gone and another can take it: the agent's owner says go on there, or wait
+  if (task.move?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: move computers?", "等你决定换不换电脑"], (n) => [`Waits for ${n}: move computers?`, `等 ${n} 决定换不换电脑`], "warn");
   switch (task.state) {
     case "pending":
       return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "warn");

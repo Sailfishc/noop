@@ -182,6 +182,8 @@ type taskView struct {
 	Delegates   []delegateView  `json:"delegates"`    // the tasks its agent delegated (teamdelegate.go), oldest first
 	Calls       []callView      `json:"calls"`        // each time it needed a person, and why (calls.go)
 	Checkpoint  *checkpointView `json:"checkpoint"`   // where it got to, kept off its computer (teamcheckpoint.go); nil: none yet
+	Moves       int64           `json:"moves"`        // times it moved to another computer (teammove.go)
+	Move        *moveView       `json:"move"`         // the 换电脑继续 card, its last one
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -192,7 +194,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, '')`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, ''), moves, COALESCE(move, '')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -202,10 +204,10 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint string
+		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint, move string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -218,6 +220,10 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		t.Evidence = []evidenceView{}
 		_ = json.Unmarshal([]byte(evidence), &t.Evidence)
 		t.Checkpoint = parseCheckpoint(checkpoint)
+		if move != "" {
+			t.Move = &moveView{}
+			_ = json.Unmarshal([]byte(move), t.Move)
+		}
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
@@ -267,7 +273,7 @@ func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
 		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{},
-		Holder: t.Holder, Delegates: []delegateView{}}
+		Holder: t.Holder, Delegates: []delegateView{}, Moves: t.Moves, Move: t.Move}
 	// a handoff card still to click: its owner may be outside the channel (the card waits for them), so the row keeps
 	// which card and which agent, not its words
 	for _, x := range t.Handoffs {
@@ -652,9 +658,10 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 			AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
 			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
+		OR (json_extract(t.move, '$.state') = 'proposed' AND t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
 			AND json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?)))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me, me))
 	ts = h.withOutputs(ts)
 	for i := range ts {
 		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
@@ -882,6 +889,10 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 	}
 	if hold := h.holder(t); hold != "" && hold != q.who.machineID { // it stays on the computer that took it
 		errJSON(w, 409, "这个任务在另一台电脑上进行，留在那台")
+		return t, a, false
+	}
+	if staleRun(q, t) { // it moved to another computer since this run was claimed (teammove.go)
+		errJSON(w, 409, "这个任务已经换到另一台电脑，这次运行已经无效")
 		return t, a, false
 	}
 	return t, a, true

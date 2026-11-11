@@ -117,7 +117,7 @@ async function work(turns: Turn[], extra: Record<string, unknown> = {}) {
   const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
   let claims: Claim | null = claim();
   const api = async (path: string, init: RequestInit = {}) => {
-    calls.push({ path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    calls.push({ path: path.replace(/[?&]moves=\d+$/, ""), body: init.body ? JSON.parse(String(init.body)) : undefined });
     if (path.endsWith("/claim")) { const c = claims; claims = null; return c; }
     if (path === "/api/v1/machine/tasks") return { tasks: [] };
     return {};

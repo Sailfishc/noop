@@ -182,6 +182,7 @@ func (h *Hub) Tick() {
 	h.tickQuota()
 	h.tickAsks()
 	h.tickCheckpoints()
+	h.tickMoves()
 	h.fireReminders()
 	h.fireTriggers()
 }

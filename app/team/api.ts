@@ -75,6 +75,9 @@ export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: b
   via?: string[] | null; parent?: string; trigger?: string;
   /** The parent's agent delegated it (remi delegate): its result goes back to that agent; redos: times it sent it back. */
   delegated?: boolean; redos?: number };
+/** since: when the computer it ran on was last seen; proposed: the agent's owner decides; waited: they wait for it;
+ * moved; withdrawn: the computer came back, or it no longer needs to run. */
+export type Move = { from: string; to: string; at: number; since: number; state: "proposed" | "waited" | "moved" | "withdrawn"; decided_by?: string };
 /** A task's latest checkpoint: when it was saved, when it was last found still current, and why one was not. */
 export type Checkpoint = {
   at: number; checked: number; machine: string;
@@ -113,6 +116,10 @@ export type Task = {
   aligned?: boolean;
   /** Where it got to, kept off its computer (a wip branch, or its directory on the server); null: none yet. */
   checkpoint?: Checkpoint | null;
+  /** Times it moved to another computer; a run claimed before the last move is refused. */
+  moves?: number;
+  /** The 换电脑继续 card: its computer has been gone a while and another of the agent's can take it. */
+  move?: Move | null;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
@@ -143,7 +150,7 @@ export type Handoff = { id: string; to: string; what: string; message: string; a
   /** delegate: a part of the work that comes back to this task (remi delegate); else the work moves on. */
   kind?: "delegate" };
 /** Whose move it is, and why. */
-export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" };
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" | "move" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
@@ -859,8 +866,8 @@ export function createTeam(s: Session) {
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now) | move ({to} goes on there, {wait} waits for its computer; the agent's owner). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry" | "move", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
