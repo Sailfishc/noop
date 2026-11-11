@@ -142,6 +142,8 @@ export type Channel = { id: string; slug: string; name: string; topic: string; a
   /** Only its members see it, or that it exists (admins too); its creator may make it public, never the other way. */
   private?: boolean;
   created_by?: string;
+  /** A private chat between its creator and this agent: two members, fixed; its name is the agent's handle. */
+  dm_agent?: string;
   /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
   repo?: string;
   /** How the channel works, written by its members; every agent working here reads it. */
@@ -629,6 +631,14 @@ export function createTeam(s: Session) {
     if (r.ok) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
+  /** My private chat with the agent, made on the server now if there is none yet (on the first message). */
+  async function openDM(agentId: string): Promise<Reply> {
+    const r = await api("POST", "/api/v1/channels", { dm_agent: agentId });
+    if (r.ok) channels.update((cs) => upsert(cs, r.data as Channel));
+    return r;
+  }
+  /** My private chat with the agent, when there is one. */
+  const dmWith = (agentId: string) => channels().find((c) => c.dm_agent === agentId && c.created_by === me()?.id);
   async function join(channelId: string) {
     const r = await api("POST", `/api/v1/channels/${channelId}/members`, {});
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
@@ -799,7 +809,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    preferences, savePreferences,
+    preferences, savePreferences, openDM, dmWith,
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,
@@ -820,7 +830,7 @@ export type Metrics = {
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
 /** "#支付后端", or "私房菜（私有）" for a private channel: how a channel is named in a line of text. */
-export const channelLabel = (c: Channel) => (c.private ? L(`${c.name} (private)`, `${c.name}（私有）`) : `#${c.name}`);
+export const channelLabel = (c: Channel) => (c.dm_agent ? L(`chat with @${c.name}`, `和 @${c.name} 的私聊`) : c.private ? L(`${c.name} (private)`, `${c.name}（私有）`) : `#${c.name}`);
 
 /** Who may bring an agent into a private channel: its owner, or anyone when it takes the whole team's work. */
 export const mayBringAgent = (a: Agent, me: User | null) => !!me && (a.owner_id === me.id || a.dispatch === "team");
