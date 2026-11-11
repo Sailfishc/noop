@@ -14,6 +14,9 @@ import (
 //   - how many tasks were cancelled and asked again (the same person, the same channel, within a day): the agent went
 //     the wrong way and the only fix was to start over.
 //
+// How often tasks needed a person, and for what (calls.go): the person's own count, and the team's share outside the
+// three moments (align, decide, accept).
+//
 // And per agent: how many tasks it got and from how many people, which shows whether people go to a shared team
 // agent or to their own. All of it is read from what tasks already record (task_events, runs, cancelled_at). Tasks in
 // private channels are left out: the page is the whole team's, and who uses which agent there is nobody else's business.
@@ -60,6 +63,80 @@ type metricsView struct {
 	Cancelled int            `json:"cancelled"` // tasks cancelled in the window
 	Redone    int            `json:"redone"`    // of those, asked again
 	Agents    []agentMetrics `json:"agents"`
+	// Calls: how often tasks needed a person (calls.go). Mine: the calls on the person reading, their private channels
+	// included (nobody else sees this part); Team: everyone's, private channels left out, nobody named.
+	Mine callStats `json:"mine"`
+	Team callStats `json:"team"`
+}
+
+// callStats: calls on people in the window, by moment (align, decide, accept, outside) and by kind.
+type callStats struct {
+	Calls   int            `json:"calls"`
+	Tasks   int            `json:"tasks"`   // tasks they came from
+	Outside int            `json:"outside"` // of the calls, outside the three moments
+	ByClass map[string]int `json:"by_class"`
+	ByKind  map[string]int `json:"by_kind"`
+}
+
+func (c *callStats) add(task string, x callView, seen map[string]bool) {
+	c.Calls++
+	c.ByClass[x.Class]++
+	c.ByKind[x.Kind]++
+	if x.Class == "outside" {
+		c.Outside++
+	}
+	if !seen[task] {
+		seen[task] = true
+		c.Tasks++
+	}
+}
+
+// callMetrics: the calls since `since`, on this person and on the team. A call's moment depends on the task's earlier
+// calls (a second acceptance), so each task with a call in the window is read whole.
+func (h *Hub) callMetrics(since int64, userID string) (mine, team callStats) {
+	mine = callStats{ByClass: map[string]int{}, ByKind: map[string]int{}}
+	team = callStats{ByClass: map[string]int{}, ByKind: map[string]int{}}
+	rows, err := h.db.Query(`SELECT e.task_id, e.at, e.needs, e.who, t.channel_id IN (SELECT id FROM channels WHERE private = 1)
+		FROM task_events e JOIN tasks_v1 t ON t.id = e.task_id
+		WHERE e.who != '' AND e.task_id IN (SELECT task_id FROM task_events WHERE who != '' AND at >= ?) ORDER BY e.task_id, e.at, e.rowid`, since)
+	if err != nil {
+		panic(err)
+	}
+	type row struct {
+		task    string
+		private bool
+		calls   []callView
+	}
+	var tasks []*row
+	for rows.Next() {
+		var task string
+		var c callView
+		var private bool
+		if err := rows.Scan(&task, &c.At, &c.Kind, &c.Who, &private); err != nil {
+			panic(err)
+		}
+		if len(tasks) == 0 || tasks[len(tasks)-1].task != task {
+			tasks = append(tasks, &row{task: task, private: private})
+		}
+		r := tasks[len(tasks)-1]
+		r.calls = append(r.calls, c)
+	}
+	rows.Close()
+	seenMine, seenTeam := map[string]bool{}, map[string]bool{}
+	for _, r := range tasks {
+		for _, c := range classify(r.calls) {
+			if c.At < since {
+				continue
+			}
+			if c.Who == userID {
+				mine.add(r.task, c, seenMine)
+			}
+			if !r.private {
+				team.add(r.task, c, seenTeam)
+			}
+		}
+	}
+	return mine, team
 }
 
 func percentile(sorted []int64, p float64) int64 {
@@ -80,7 +157,7 @@ func durations(answered []int64, open []int64) durationStats {
 }
 
 // metrics: the numbers for the last `days` days.
-func (h *Hub) metrics(days int) metricsView {
+func (h *Hub) metrics(days int, userID string) metricsView {
 	now := h.nowMs()
 	since := now - int64(days)*24*time.Hour.Milliseconds()
 	v := metricsView{Days: days, Since: since, ReplyBy: map[string]durationStats{}}
@@ -91,7 +168,7 @@ func (h *Hub) metrics(days int) metricsView {
 		at                  int64
 	}
 	rows, err := h.db.Query(`SELECT e.task_id, e.at, e.status, e.needs FROM task_events e JOIN tasks_v1 t ON t.id = e.task_id
-		WHERE (t.created >= ? OR e.at >= ?) AND `+notPrivate("t")+` ORDER BY e.task_id, e.at, e.rowid`, since, since)
+		WHERE (t.created >= ? OR e.at >= ?) AND e.needs NOT IN `+sideKindsSQL+` AND `+notPrivate("t")+` ORDER BY e.task_id, e.at, e.rowid`, since, since)
 	if err != nil {
 		panic(err)
 	}
@@ -184,11 +261,12 @@ func (h *Hub) metrics(days int) metricsView {
 		v.Agents = append(v.Agents, a)
 	}
 	rows.Close()
+	v.Mine, v.Team = h.callMetrics(since, userID)
 	return v
 }
 
 // v1Metrics: GET /api/v1/metrics?days=7, for anyone in the team (the numbers are about how the team works, not about
 // what anyone wrote).
 func (h *Hub) v1Metrics(w http.ResponseWriter, q *request) {
-	writeJSON(w, 200, h.metrics(clampInt(q.query("days"), 7, 1, 90)))
+	writeJSON(w, 200, h.metrics(clampInt(q.query("days"), 7, 1, 90), q.who.userID))
 }

@@ -72,6 +72,10 @@ func TestHandoffAndHolder(t *testing.T) {
 	e.post(e.ll.session, "点过了，没问题", root)
 	tk = e.task(id)
 	check(t, "her reply reaches the agent and the ball goes back", tk["news"] == true && holder(id)["kind"] == "agent")
+	calls := tk["calls"].([]any)
+	c0, c1 := calls[0].(map[string]any), calls[1].(map[string]any)
+	check(t, "the card and the handoff to her are calls on people (deciding)", len(calls) == 2 && c0["kind"] == "handoff_card" && c0["who"] == e.zw.id &&
+		c1["kind"] == "handoff" && c1["who"] == e.ll.id && c1["class"] == "decide")
 
 	check(t, "an agent can't @ another agent through a reminder", e.do("POST", "/api/v1/agent/remind", tok,
 		bytes.NewBufferString("2h @bei 写发布说明"), "content-type", "text/plain").status == 400)

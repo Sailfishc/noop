@@ -24,7 +24,8 @@ async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
 const tasks = [
   task({ id: "T-0001", state: "running", tracked: true, title: "看下慢查询", step: "在读 slow log", created_by: "u_1",
     holder: { kind: "user", id: "u_1", why: "handoff_card" }, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" },
-    handoffs: [{ id: "ho_1", to: "a_2", what: "加完索引后跑一遍压测，把 P99 贴回线程", message: "msg_5", at: Date.now(), state: "proposed" }] }),
+    handoffs: [{ id: "ho_1", to: "a_2", what: "加完索引后跑一遍压测，把 P99 贴回线程", message: "msg_5", at: Date.now(), state: "proposed" }],
+    calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }] }),
   task({ id: "T-0002", thread_id: "msg_t2", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
   task({ id: "T-0003", thread_id: "msg_t3", state: "review", tracked: true, title: "写周报", created_by: "u_1",
     pr: { provider: "github", url: "https://github.com/acme/pay/pull/3", number: 3, state: "open", checks: "success" } }),
