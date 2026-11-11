@@ -10,9 +10,9 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Noted, Panel, PickCard, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
 import {
-  installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
+  installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn, runtimeTrouble,
   type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { momentsLine, outsideLine, statsLine } from "./calls";
@@ -1063,12 +1063,18 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <If when={reported()} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("Start the daemon on that computer; it reports its runtimes when it connects.", "在那台电脑上启动守护进程，连上后会上报它的 Runtime。")}</Text>}>
         <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
           <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Login", "登录"), 0.8, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1.4, colors.muted)}
+            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Status", "状态"), 1.6, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1, colors.muted)}
           </View>
           <Each of={[...RUNTIMES]}>
             {(r) => {
               const info = () => runtimeOn(m(), r().name);
               const users = () => agents().filter((a) => a.runtime === r().name);
+              const trouble = () => m().runtime_status?.[r().name];
+              // can it take work: its trouble (a quota it waits for, credit, login), else how it is logged in
+              const status = (): [string, TextTone] => !info()?.installed ? ["—", "faint"]
+                : trouble() ? [runtimeTrouble(trouble()!, lang() !== "zh"), trouble()!.state === "quota" ? "warn" : "danger"]
+                : info()!.logged_in === false ? [L("not logged in", "未登录"), "warn"]
+                : info()!.logged_in === true ? [L("✓ logged in", "✓ 已登录"), "default"] : [L("unknown", "未知"), "default"];
               return (
                 <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
                   <View style={{ flex: 1.2, flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1076,8 +1082,11 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
                     <If when={!r().ready}><Tag label={L("phase 2", "第二阶段")} /></If>
                   </View>
                   {cell(info()?.installed ? (info()!.version ? `v${info()!.version}` : L("installed", "已安装")) : L("not installed", "未安装"), 0.8, info()?.installed ? colors.text : colors.faint)}
-                  {cell(!info()?.installed ? "—" : info()!.logged_in === true ? L("✓ logged in", "✓ 已登录") : info()!.logged_in === false ? L("not logged in", "未登录") : L("unknown", "未知"), 0.8, info()?.logged_in === false ? colors.warn : colors.text)}
-                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1.4, colors.muted)}
+                  <View style={{ flex: 1.6 }}>
+                    <Noted testID={`machine-${m().id}-runtime-${r().name}-status`} note={trouble()?.note}
+                      label={<Txt lines={1} grow tone={status()[1]}>{status()[0]}</Txt>} />
+                  </View>
+                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1, colors.muted)}
                 </View>
               );
             }}

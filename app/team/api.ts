@@ -24,7 +24,13 @@ export type Machine = {
   skills?: string[] | null; mcp?: string[] | null;
   /** How the team config repository last synced there. */
   team_config?: TeamConfigStatus | null;
+  /** Its runtimes that take no work now, by name: a usage limit that resets, or something a person must fix. */
+  runtime_status?: Record<string, RuntimeStatus> | null;
 };
+/** Why a runtime on a machine takes no work now. quota: waits for its limit to reset (until: when the runtime said;
+ * next_at: when a task tries again); blocked: out of credit (billing), logged out (auth), missing (not_installed). */
+export type RuntimeStatus = { state: "quota" | "blocked"; reason: "quota" | "billing" | "auth" | "not_installed"; text: string; note?: string;
+  until?: number; next_at?: number; since: number; at: number; stale?: boolean };
 /** The team config repository (AGENTS.md, skills/, mcp.json) on one machine: which commit, when, what went wrong. */
 export type TeamConfigStatus = { repo: string; commit: string; synced: number; error?: string; instructions: boolean };
 /** A repository, named by its remote the same way on every machine: host/owner/name. */
@@ -47,9 +53,7 @@ export type Agent = { id: string; owner_id: string; machine_id: string | null; h
   /** Work from people other than the owner waits for the owner's yes. */
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
-  memory?: string;
-  /** Why it takes no work now (its runtime logged out, out of credit); its tasks wait in the queue. */
-  paused?: { reason: string; text: string; at: number } | null };
+  memory?: string };
 export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
 export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string;
   /** align: before it starts, what "done" will mean: the criteria it proposes, what it leaves alone, how, and whether it
@@ -130,9 +134,11 @@ export const openHandoffs = (t: Task) => (t.handoffs ?? []).filter((x) => x.stat
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
-  how: "callback" | "poll" | "timer" | "answer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  how: "callback" | "poll" | "timer" | "answer" | "quota"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
   checked?: number; checks?: number; errors?: number; note?: string; what?: string;
   wake?: { reason: string; note?: string; at: number } | null;
+  /** quota: the runtime's limit on that machine; stale: it waited a day and its people were told. */
+  machine?: string; runtime?: string; stale?: boolean;
 };
 /** How many times a task may hand work to an outside service before a person decides. */
 export const EXTERNAL_TRIES = 3;
@@ -267,9 +273,26 @@ export function runtimeOn(m: Machine | undefined, name: string): RuntimeInfo | u
   return m.runtime_info?.find((r) => r.name === name) ?? (m.runtimes.includes(name) ? { name, version: "", installed: true, logged_in: null } : undefined);
 }
 
-/** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing or logged out. */
-const PAUSE_EN: Record<string, string> = { auth: "its runtime is not logged in", billing: "its runtime is out of credit", not_installed: "its runtime is not installed" };
+/** "14:30", or "11/12 14:30" on another day, in this device's zone. */
+export const clock = (ms: number) => {
+  const d = new Date(ms), now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+};
 
+const TROUBLE_EN: Record<string, string> = { billing: "needs you: out of credit", auth: "not logged in", not_installed: "not installed" };
+
+/** A runtime's trouble on a machine in a few words: "等额度恢复，预计 14:30", "需要你处理：余额不足…". */
+export function runtimeTrouble(s: RuntimeStatus, en = false): string {
+  if (s.state === "quota") {
+    if (s.until) return en ? `waiting for its quota, back about ${clock(s.until)}` : `等额度恢复，预计 ${clock(s.until)}`;
+    return en ? `waiting for its quota, tries again ${clock(s.next_at ?? 0)}` : `等额度恢复，时间未知，${clock(s.next_at ?? 0)} 再试`;
+  }
+  return en ? TROUBLE_EN[s.reason] ?? s.text : s.text;
+}
+
+/** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing, logged
+ * out, out of credit or waiting for its quota there. */
 export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): string {
   const rt = runtimeLabel(a.runtime);
   if (!a.machine_id || !m) return en ? "no machine" : "没有机器";
@@ -277,7 +300,8 @@ export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): st
   const r = runtimeOn(m, a.runtime);
   if (!r || !r.installed) return en ? `${rt} isn’t installed on ${m.name}` : `${m.name} 上没装 ${rt}`;
   if (r.logged_in === false) return en ? `${rt} isn’t logged in on ${m.name}` : `${m.name} 上的 ${rt} 没登录`;
-  if (a.paused) return en ? `paused: ${PAUSE_EN[a.paused.reason] ?? a.paused.text}` : `已暂停：${a.paused.text}`;
+  const s = m.runtime_status?.[a.runtime];
+  if (s) return `${m.name}${en ? ": " : "："}${runtimeTrouble(s, en)}`;
   return "";
 }
 
@@ -767,8 +791,8 @@ export function createTeam(s: Session) {
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);

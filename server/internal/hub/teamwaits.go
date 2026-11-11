@@ -33,7 +33,7 @@ const answerWindow = 24 * time.Hour
 
 // waitView: what the task waits for (tasks_v1.wait).
 type waitView struct {
-	How      string `json:"how"`               // callback | poll | timer
+	How      string `json:"how"`               // callback | poll | timer | answer | quota
 	Every    int64  `json:"every,omitempty"`   // poll: seconds between checks (grows ×1.5 up to 30 minutes)
 	Expect   int64  `json:"expect,omitempty"`  // when the result should be there (unix ms)
 	Deadline int64  `json:"deadline"`          // when to stop waiting and wake the agent anyway (unix ms)
@@ -45,10 +45,15 @@ type waitView struct {
 	Note     string `json:"note,omitempty"`    // the latest progress line
 	What     string `json:"what,omitempty"`    // what it waits for, in the agent's words
 	Wake     *wake  `json:"wake,omitempty"`    // why it woke (until its next run takes it)
+	// quota: the runtime's limit on a machine (teamquota.go); Expect is when the runtime said it resets (0: it did
+	// not say), NextAt when it tries again, Stale that it waited a day and people were told
+	Machine string `json:"machine,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	Stale   bool   `json:"stale,omitempty"`
 }
 
 type wake struct {
-	Reason  string `json:"reason"` // callback | done | failed | errors | timer | deadline
+	Reason  string `json:"reason"` // callback | done | failed | errors | timer | deadline | message | quota
 	Note    string `json:"note,omitempty"`
 	Payload string `json:"payload,omitempty"` // the callback's body
 	At      int64  `json:"at"`
@@ -133,12 +138,12 @@ func (h *Hub) newWait(b *waitRequest) (*waitView, string) {
 func (h *Hub) wakeTask(id string, w *waitView, reason, note, payload string) {
 	w.Wake = &wake{Reason: reason, Note: trimmed(note, 500), Payload: payload, At: h.nowMs()}
 	step := map[string]string{"callback": "外部回调到了", "done": "外部结果好了", "failed": "外部任务失败了", "errors": "查不到外部状态",
-		"timer": "到时间了，去看结果", "deadline": "等到截止时间了，最后确认一次"}[reason]
+		"timer": "到时间了，去看结果", "deadline": "等到截止时间了，最后确认一次", "quota": "额度恢复了，接着干"}[reason]
 	h.setTask(id, map[string]any{"state": taskQueued, "step": step, "wait": jsonOrNil(w)})
 	h.taskChanged(id)
 }
 
-// Tick wakes the waits that are due (timers, deadlines) and fires the reminders that are. The server calls it every
+// Tick wakes the waits that are due (timers, deadlines, runtimes' limits) and fires the reminders that are. The server calls it every
 // half minute.
 func (h *Hub) Tick() {
 	h.mu.Lock()
@@ -157,6 +162,9 @@ func (h *Hub) Tick() {
 	rows.Close()
 	for _, id := range ids {
 		w := h.taskWait(id)
+		if w != nil && w.How == "quota" {
+			continue // the runtime's limit wakes it (tickQuota)
+		}
 		switch {
 		case w == nil:
 			h.wakeTask(id, &waitView{}, "deadline", "", "")
@@ -166,6 +174,7 @@ func (h *Hub) Tick() {
 			h.wakeTask(id, w, "timer", "", "")
 		}
 	}
+	h.tickQuota()
 	h.fireReminders()
 	h.fireTriggers()
 }

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify, planFor } from "../src/runfail";
 import { claudeEvent, codexEvent, jsonlRun, piEvent, stripImages, type RunOptions, type RunResult, type Runtime } from "../src/runtimes";
-import { createWorker, RESULT_ONLY, type Claim } from "../src/teamwork";
+import { createWorker, RESULT_ONLY, wakePrompt, type Claim } from "../src/teamwork";
 
 test("failures are told apart by what the runtime said", () => {
   const f = (error: string, stderr = "", exitCode = 1) => classify({ error, stderr, exitCode });
@@ -16,7 +16,7 @@ test("failures are told apart by what the runtime said", () => {
   expect(f("stream error: 429 Too Many Requests; rate limit exceeded, retrying in 20s")).toBe("rate_limited");
   expect(f("API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}")).toBe("rate_limited");
   expect(f("You exceeded your current quota, please check your plan and billing details.")).toBe("billing");
-  expect(f("Claude AI usage limit reached|1762700400")).toBe("billing");
+  expect(f("Claude AI usage limit reached|1762700400")).toBe("quota"); // more samples: runfail-samples.test.ts
   expect(f("Prompt is too long")).toBe("input_too_large");
   expect(f("context_length_exceeded: Your input exceeds the context window of this model.")).toBe("input_too_large");
   expect(f("", "Error: 502 Bad Gateway")).toBe("provider");
@@ -28,7 +28,7 @@ test("failures are told apart by what the runtime said", () => {
   expect(classify({ exitCode: 0 })).toBe(null);
   expect(classify({ exitCode: 143, stopped: "stall" })).toBe("stalled");
   expect(classify({ exitCode: 143, stopped: "timeout" })).toBe("timeout");
-  expect(planFor("rate_limited", "codex")).toEqual({ act: "retry", afterMs: [120_000, 480_000, 1_800_000] });
+  expect(planFor("rate_limited", "codex")).toEqual({ act: "retry", afterMs: [60_000, 240_000] });
   expect(planFor("auth", "claude").act).toBe("block");
   expect(planFor("unknown", "pi").act).toBe("fail");
 });
@@ -140,7 +140,7 @@ test("a busy provider is tried again in the same session, and the tokens of ever
   expect(run.seen[1].resume).toBe("thr_1");
   expect(run.seen[1].prompt).toContain("cut off by an error from the model service (429 Too Many Requests)");
   expect(run.seen[0].stallMs).toBe(20 * 60_000);
-  expect(run.reports()).toContainEqual({ step: "被限流，2 分钟后重试（第 1 次）" });
+  expect(run.reports()).toContainEqual({ step: "被限流，1 分钟后重试（第 1 次）" });
   expect(run.reports().at(-1)).toMatchObject({ state: "review", summary: "修好了", usage: { input: 15, output: 8 } });
 });
 
@@ -256,6 +256,40 @@ test("a report refused for good (a stale run) is dropped, not sent forever", asy
   await w.flush();
   expect(tries).toBe(1);
   rmSync(W, { recursive: true, force: true });
+});
+
+test("a usage limit: the task waits for the reset the runtime named, in its session, without retrying here", async () => {
+  const at = new Date(Date.now() + 3 * 3_600_000);
+  const hh = at.getHours() % 12 || 12, mm = String(at.getMinutes()).padStart(2, "0"), ap = at.getHours() < 12 ? "AM" : "PM";
+  const run = await work([{ session: "thr_1", exitCode: 1, error: `You’ve hit your usage limit. Try again at ${hh}:${mm} ${ap}.`, usage: { input: 3, output: 1 } }]);
+  await run.done();
+  expect(run.seen.length).toBe(1);
+  const last = run.reports().at(-1);
+  expect(last).toMatchObject({ state: "waiting", failure: "quota", session: "thr_1", summary: "", usage: { input: 3, output: 1 } });
+  expect(Math.abs(last.retry_at - Math.floor(at.getTime() / 60_000) * 60_000)).toBeLessThan(24 * 3_600_000 + 1);
+  expect(new Date(last.retry_at).getMinutes()).toBe(at.getMinutes());
+  expect(last.note).toContain("usage limit");
+});
+
+test("a limit that resets in a few minutes is waited for in the run; one that keeps limiting waits on the server", async () => {
+  const soon = await work([{ session: "thr_1", exitCode: 1, error: "429 rate limit exceeded. Please try again in 2m0s." }, { text: DONE, steps: 1 }]);
+  await soon.done();
+  expect(soon.seen.length).toBe(2);
+  expect(soon.seen[1].resume).toBe("thr_1");
+  expect(soon.reports()).toContainEqual({ step: "被限流，3 分钟后重试" });
+  expect(soon.reports().at(-1)).toMatchObject({ state: "review" });
+
+  const stuck = await work([{ session: "thr_1", exitCode: 1, error: "429 Too Many Requests" }]);
+  await stuck.done();
+  expect(stuck.seen.length).toBe(3); // the run and two retries
+  expect(stuck.reports().at(-1)).toMatchObject({ state: "waiting", failure: "quota", retry_at: 0 });
+});
+
+test("woken after the limit reset: the same session goes on, told why", () => {
+  const c = { ...claim(), task: { ...claim().task, session: "thr_1" }, wake: { reason: "quota" as const, at: 1 } };
+  const p = wakePrompt(c);
+  expect(p).toContain("cut off by the usage limit of your runtime; it has reset now");
+  expect(p).toContain("```json");
 });
 
 test("Codex out of OpenAI credits is a billing block, not a retry", () => {

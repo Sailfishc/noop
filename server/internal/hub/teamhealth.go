@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,9 +11,10 @@ import (
 // what is left over:
 //   - per task: runs in a row that failed, or that died with the daemon (the machine claims its own running task
 //     again after a restart). At maxFailures the task stops being run on its own and waits for a person.
-//   - per agent: a failure that is about the runtime, not the task (logged out, out of credit, not installed) pauses
-//     the agent: its tasks wait in the queue instead of failing one after another. It goes on by itself when its
-//     machine reports the runtime logged in again, or when a person writes in the thread of one of its tasks.
+//   - per runtime on a machine: a failure that is about the runtime, not the task (a usage limit, out of credit, logged
+//     out, not installed) holds back every task that would use it there, instead of each failing in turn
+//     (teamquota.go). It used to pause the agent; with an agent on several Computers that stops work the other ones
+//     can do.
 
 const maxFailures = 3
 
@@ -56,23 +56,16 @@ func (u *usageView) add(b usageView) usageView {
 	return usageView{u.Input + b.Input, u.CacheRead + b.CacheRead, u.CacheWrite + b.CacheWrite, u.Output + b.Output}
 }
 
-// pauseView: why an agent takes no work now.
-type pauseView struct {
-	Reason string `json:"reason"` // auth | billing | not_installed
-	Text   string `json:"text"`   // for people
-	At     int64  `json:"at"`
-}
-
-// failures about the runtime on the machine, not about the task
-var runtimeFailures = map[string]string{
-	"auth":          "runtime 没有登录",
-	"billing":       "runtime 额度不足",
-	"not_installed": "机器上没有这个 runtime",
-}
-
-// runEnded: a run ended with state (a final report). A failure is counted (and may pause the agent); anything else
-// clears the count.
-func (h *Hub) runEnded(t taskView, a agentView, state, failure string, cols map[string]any) {
+// runEnded: a run on machineID ended with state (a final report). A failure is counted (and one about the runtime holds
+// it back there); a wait for the runtime's limit is neither; anything else clears the count and shows the runtime
+// works. retryAt, note: what the runtime said about its limit.
+func (h *Hub) runEnded(t taskView, a agentView, machineID, state, failure string, retryAt int64, note string, cols map[string]any) {
+	if failure == "quota" {
+		return // waiting for the runtime's limit: not a failure of the task
+	}
+	if failure == "" {
+		h.runtimeWorked(machineID, a.Runtime)
+	}
 	if state != taskFailed && state != taskBlocked {
 		cols["failures"], cols["last_failure"] = 0, ""
 		return
@@ -82,23 +75,18 @@ func (h *Hub) runEnded(t taskView, a agentView, state, failure string, cols map[
 	}
 	failure = trimmed(failure, 40)
 	cols["failures"], cols["last_failure"] = t.Failures+1, failure
-	if text, ok := runtimeFailures[failure]; ok && a.Paused == nil {
-		p, _ := json.Marshal(pauseView{Reason: failure, Text: text, At: h.nowMs()})
-		h.must(h.db.Exec("UPDATE agents SET paused = ? WHERE id = ?", string(p), a.ID))
-		h.agentChanged(a.ID)
-	}
+	h.runtimeFailed(machineID, a.Runtime, failure, retryAt, note)
 }
 
-// mayRun: whether the claim may go ahead. A paused agent's task stays queued (409) until the pause ends; a task the
-// daemon keeps dying on (claimed again by its own machine maxFailures times) is handed to a person.
-func (h *Hub) mayRun(w http.ResponseWriter, t taskView, a agentView, again bool) bool {
-	if a.Paused != nil {
-		if !h.wroteSince(t.ThreadID, a.Paused.At) {
-			errJSON(w, 409, "Agent 暂停了："+a.Paused.Text)
+// mayRun: whether machineID's claim may go ahead. A task its runtime there cannot run now stays queued (409,
+// teamquota.go); a task the daemon keeps dying on (claimed again by its own machine maxFailures times) is handed to a
+// person.
+func (h *Hub) mayRun(w http.ResponseWriter, t taskView, a agentView, machineID string, again bool) bool {
+	if t.State == taskQueued {
+		if ok, why := h.runtimeGate(t, machineID, a.Runtime, true); !ok {
+			errJSON(w, 409, why)
 			return false
 		}
-		h.must(h.db.Exec("UPDATE agents SET paused = '' WHERE id = ?", a.ID)) // a person asked again: try
-		h.agentChanged(a.ID)
 	}
 	if !again {
 		return true
@@ -116,27 +104,15 @@ func (h *Hub) mayRun(w http.ResponseWriter, t taskView, a agentView, again bool)
 	return false
 }
 
-// wroteSince: a person wrote in the thread after at (ms).
-func (h *Hub) wroteSince(thread string, at int64) bool {
-	var n int
-	err := h.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE (thread_id = ? OR id = ?) AND author_kind = 'user' AND created > ?`, thread, thread, at).Scan(&n)
-	if err != nil && err != sql.ErrNoRows {
-		panic(err)
-	}
-	return n > 0
-}
-
-// resumeAgents: the machine says how its runtimes are; agents paused for a logged-out or missing runtime that is now
-// installed and logged in go on.
-func (h *Hub) resumeAgents(machineID string, info []runtimeInfo) {
-	ready := map[string]bool{}
+// resumeRuntimes: the machine says how its runtimes are; one held back as logged out or missing that is now installed
+// and logged in takes work again (a lack of credit or a limit no report can tell).
+func (h *Hub) resumeRuntimes(machineID string, info []runtimeInfo) {
 	for _, r := range info {
-		ready[r.Name] = r.Installed && (r.LoggedIn == nil || *r.LoggedIn)
-	}
-	for _, a := range scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? AND paused != ''", machineID)) {
-		if a.Paused.Reason != "billing" && ready[a.Runtime] {
-			h.must(h.db.Exec("UPDATE agents SET paused = '' WHERE id = ?", a.ID))
-			h.agentChanged(a.ID)
+		if !r.Installed || (r.LoggedIn != nil && !*r.LoggedIn) {
+			continue
+		}
+		if s := h.runtimeStatus(machineID, r.Name); s != nil && (s.Reason == "auth" || s.Reason == "not_installed") {
+			h.putRuntimeStatus(machineID, r.Name, nil)
 		}
 	}
 }

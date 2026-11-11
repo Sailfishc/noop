@@ -75,6 +75,8 @@ type machineView struct {
 	// SyncTeamConfig: a person's own machine takes the team config repository too: its MCP commands run there and
 	// its skills show up in the person's own runtimes, so only its owner turns this on. Team machines always do.
 	SyncTeamConfig bool `json:"sync_team_config"`
+	// RuntimeStatus: its runtimes that take no work now (a usage limit, no credit, logged out), by name (teamquota.go)
+	RuntimeStatus map[string]runtimeStatus `json:"runtime_status"`
 	machineInfo
 }
 
@@ -149,6 +151,10 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 		m.Online = h.socks.count("m:"+m.ID) > 0 || (m.LastSeen != nil && h.nowMs()-*m.LastSeen < machineOnlineSpan.Milliseconds())
 		out = append(out, m)
 	}
+	rows.Close()
+	for i := range out { // after the rows are closed: the database has one connection
+		out[i].RuntimeStatus = h.runtimeStatuses(out[i].ID)
+	}
 	return out
 }
 
@@ -174,11 +180,9 @@ type agentView struct {
 	// Memory: its memory.md, what it keeps between tasks. Its owner edits it; the agent rewrites it when it learns
 	// something lasting.
 	Memory string `json:"memory,omitempty"`
-	// Paused: why it takes no work now (its runtime is logged out, out of credit); nil = it does (teamhealth.go)
-	Paused *pauseView `json:"paused"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory, paused"
+const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -188,13 +192,8 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		var paused string
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory, &paused); err != nil {
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory); err != nil {
 			panic(err)
-		}
-		if paused != "" {
-			a.Paused = &pauseView{}
-			_ = json.Unmarshal([]byte(paused), a.Paused)
 		}
 		out = append(out, a)
 	}
@@ -615,7 +614,7 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 		trimmed(b.OS, 40), trimmed(b.Arch, 40), string(rt), maxS, h.nowMs(), string(infoJSON), q.who.machineID))
 	m := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))[0]
 	h.broadcastPeople(obj{"type": "machine", "machine": m})
-	h.resumeAgents(q.who.machineID, info.RuntimeInfo)
+	h.resumeRuntimes(q.who.machineID, info.RuntimeInfo)
 	cfg := teamConfig{} // "": the daemon clears what it synced before
 	if m.Team || m.SyncTeamConfig {
 		cfg = h.teamConfig()
