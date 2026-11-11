@@ -279,7 +279,6 @@ function MyPreferences(props: { team: Team }) {
   const saved = signal(false);
   const error = signal("");
   const changed = () => value().trim() !== t.preferences();
-  const grow = growing({ min: 76, max: 260, pad: 22, line: 20 });
   // loaded after the page opened, and nothing typed yet: show it
   effect(() => {
     const p = t.preferences();
@@ -295,15 +294,13 @@ function MyPreferences(props: { team: Team }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Input
+      <TextArea
         testID="preferences-input"
         value={value()}
-        multiline
+        min={76}
+        max={260}
         placeholder={L("e.g. Reply in Chinese. In a PR description, say what changed before why. Ask me when unsure.", "比如：回复用中文；PR 描述先写改了什么再写为什么；不确定的地方先问我。")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onChange={(v) => { value.set(v); saved.set(false); }}
       />
       <ErrorNote text={error()} testID="preferences-error" />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
