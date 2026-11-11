@@ -286,7 +286,10 @@ speciality). Two ways, both in this thread:
   results it can check. Delegate several parts if they are independent, then end with status waiting, wait
   {"how": "delegates"}: you are woken once with all their results, check them, and deliver the whole yourself.
 - \`remi handoff @AGENT WHAT\`: the work is theirs from then on and its result goes to a person, not to you.
-"no card": it starts at once; "needs a card": its owner says yes first.`;
+"no card": it starts at once; "needs a card": its owner says yes first.
+To only find something out (how its repository does a thing, a fact on its computer), \`remi ask @AGENT QUESTION\`:
+it answers in one read-only run, not a task, and the answer reaches you in this session; go on meanwhile. Only "no card"
+agents, at most 3 questions per task.`;
 
 /** The first thing the agent says: one emoji on the request, showing how it read it (the way a teammate reacts in chat). */
 const REACT = `Before anything else (before any tool call), send one short message whose first line is exactly
@@ -632,7 +635,7 @@ export const REMI_CLI = `#!/bin/sh
 #   remi memory                                            your memory.md as it is now
 #   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
-#   remi ask @WHO QUESTION                                 ask someone in the thread and go on; their answer reaches you
+#   remi ask @WHO QUESTION                                 ask a person or an agent in the thread and go on; the answer reaches you
 #   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
 #   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent now or once its owner agrees
 #   remi delegate @AGENT WHAT                              have another agent do a part; its result comes back to you
@@ -738,6 +741,76 @@ ${RESULT_SPEC}`;
 const SHORT_WAIT = 5 * 60_000;
 
 const hasResultBlock = (text: string) => /```json\s*\{[\s\S]*?"status"[\s\S]*?\}\s*```/.test(text);
+
+/** Another agent's question this machine's agent answers (server teamask.go): a read-only run, not a task. */
+export type AskClaim = {
+  ask: { id: string; question: string; task: string; repo?: string };
+  agent: TeamAgent & { repo?: string; memory?: string };
+  from: { handle: string; name: string };
+  requester: { handle: string; name: string };
+  channel: { name: string; topic?: string };
+  thread: TeamMessage[];
+  names: Record<string, string>;
+};
+
+/** The prompt of a run answering another agent's question. */
+export function askPrompt(c: AskClaim, wd: Workdir): string {
+  const a = c.agent;
+  const thread = c.thread.map((m) => `- ${c.names[m.author.id] ?? (m.author.kind === "agent" ? "an agent" : "someone")}: ${m.text.replace(/\n/g, "\n  ")}`).join("\n");
+  return `You are ${a.name} (@${a.handle}), an AI teammate in a Remi workspace, running headless on your owner's machine.
+${a.description ? `Your role: ${a.description}\n` : ""}
+@${c.from.handle} (${c.from.name}), another agent working on a task for ${c.requester.name} (@${c.requester.handle}), asks you a
+question in a thread of #${c.channel.name}. Answer it from what you can read: files on this computer${wd.repo ? `, and the
+repository checked out (read-only) in ${wd.cwd}` : ""}.
+
+This is a read-only run, not a task: do not create, change or delete any file, do not run anything that changes
+something, and do not push, post or send anything. Whatever you change is thrown away. You cannot ask anyone else,
+delegate or hand anything on: answer with what you can find.
+
+Reply with the answer only, in the language of the question, as plain text (no result block): short and specific, and
+say where you found it (file paths, lines). If you cannot find out, say so and what would tell.
+
+# Your memory (memory.md)
+${a.memory?.trim() || "(empty)"}
+
+# The thread (oldest first)
+${thread || "(none)"}
+
+# The question
+${c.ask.question}`;
+}
+
+/** Where a question is answered: a detached worktree of the repository the asking task works in (when this machine has
+ * it) or of the agent's own repository, else an empty directory. It is removed after the run. */
+export async function askWorkdir(c: AskClaim, root: string, resolveRepo?: (remote: string) => Promise<string>): Promise<Workdir> {
+  const dir = join(root, `ask-${c.ask.id}`);
+  let repoPath = "";
+  if (c.ask.repo && resolveRepo) repoPath = await resolveRepo(c.ask.repo).catch(() => "");
+  if (!repoPath && c.agent.repo) repoPath = expand(c.agent.repo);
+  if (repoPath && existsSync(repoPath) && (await git(repoPath, "rev-parse", "--git-dir")).ok) {
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dirname(dir), { recursive: true });
+    const head = (await git(repoPath, "rev-parse", "HEAD")).out;
+    const r = await git(repoPath, "worktree", "add", "--detach", dir, "HEAD");
+    if (r.ok) return { cwd: dir, repo: repoPath, base: head, writable: [] };
+  }
+  mkdirSync(dir, { recursive: true });
+  return { cwd: dir, writable: [] };
+}
+
+/** Whether the run changed anything in its directory (what is then thrown away). */
+export async function askTouched(wd: Workdir): Promise<boolean> {
+  if (wd.repo) return !!(await git(wd.cwd, "status", "--porcelain")).out || (await git(wd.cwd, "rev-parse", "HEAD")).out !== wd.base;
+  try { return readdirSync(wd.cwd).length > 0; } catch { return false; }
+}
+
+async function removeAskDir(wd: Workdir) {
+  if (wd.repo) {
+    await git(wd.repo, "worktree", "remove", "--force", wd.cwd);
+    await git(wd.repo, "worktree", "prune");
+  }
+  rmSync(wd.cwd, { recursive: true, force: true });
+}
 
 export function createWorker(o: WorkerOptions) {
   const log = o.log ?? ((s: string) => console.log(`remi: ${s}`));
@@ -1044,6 +1117,52 @@ export function createWorker(o: WorkerOptions) {
     }
   }
 
+  /** Another agent's question for one of this machine's agents: answered in one read-only run, then thrown away. */
+  async function runAsk(c: AskClaim) {
+    const id = c.ask.id, runtime = c.agent.runtime || "codex";
+    const answer = (body: Record<string, unknown>) => o.api(`/api/v1/asks/${id}/answer`, { method: "POST", body: JSON.stringify(body) }).catch(() => null);
+    const rt = runtimes[runtime];
+    if (!rt || !rt.available()) { await answer({ error: `@${c.agent.handle} 的电脑上没有 ${runtime}` }); return; }
+    const notReady = await o.runtimeReady?.(runtime);
+    if (notReady) { await answer({ error: notReady }); return; }
+    let wd: Workdir;
+    try { wd = await askWorkdir(c, root, o.resolveRepo); } catch (e) { await answer({ error: e instanceof Error ? e.message : String(e) }); return; }
+    log(`@${c.agent.handle} 回答 @${c.from.handle} 的问题（只读）`);
+    try {
+      const h = rt.start({ cwd: wd.cwd, prompt: askPrompt(c, wd), readOnly: true, model: c.agent.model || undefined,
+        stallMs: Math.min(o.stallMs ?? 20 * 60_000, 10 * 60_000), timeoutMs: Math.min(o.timeoutMs ?? 60 * 60_000, 20 * 60_000),
+        env: (o.env ?? gateEnv)({ cwd: wd.cwd, writable: [] }), logFile: o.logDir ? join(o.logDir, `${id}-${Date.now()}.jsonl`) : undefined });
+      kills.set(id, () => h.kill());
+      const r = await h.done;
+      if (r.killed && stopped) return;
+      const discarded = await askTouched(wd);
+      const text = (r.text ?? "").replace(/```json[\s\S]*?```/g, "").replace(REACT_LINE, "").trim();
+      await answer(text ? { text, discarded } : { error: r.error ?? (r.stopped ? "运行超时" : `退出码 ${r.exitCode}`), discarded });
+      log(`@${c.agent.handle} 答完了 @${c.from.handle} 的问题${discarded ? "（改动已丢弃）" : ""}`);
+    } finally {
+      await removeAskDir(wd).catch(() => null);
+    }
+  }
+
+  async function claimAsk(id: string) {
+    if (stopped || running.has(id) || claiming.has(id) || running.size + claiming.size >= o.maxParallel) return;
+    claiming.add(id);
+    try {
+      const c: AskClaim | null = await o.api(`/api/v1/asks/${id}/claim`, { method: "POST" }).catch(() => null);
+      if (!c?.ask) return;
+      const p = runAsk(c).catch((e) => log(`问题 ${id} 出错：${e instanceof Error ? e.message : e}`))
+        .finally(() => { running.delete(id); kills.delete(id); void poll(); });
+      running.set(id, p);
+    } finally {
+      claiming.delete(id);
+    }
+  }
+
+  /** A question changed (socket frame, or the poll's list). */
+  function onAsk(x: { id: string; agent_id: string; state: string }, mine: (agentId: string) => boolean) {
+    if (x.state === "queued" && mine(x.agent_id)) void claimAsk(x.id);
+  }
+
   /** A task changed (socket frame, or the poll's list). */
   function onTask(t: TeamTask, mine: (agentId: string) => boolean) {
     if (!mine(t.agent_id)) return;
@@ -1102,6 +1221,7 @@ export function createWorker(o: WorkerOptions) {
       if (t.state === "queued" || (t.state === "running" && !running.has(t.id) && !unsent(t.id))) void claim(t);
       else if (t.state === "running" && t.news) steers.get(t.id)?.();
     }
+    for (const x of (r?.asks ?? []) as { id: string }[]) void claimAsk(x.id);
   }
 
   /** The folders of tasks that ended a week ago or more (the server says which; it keeps them that long in case
@@ -1124,7 +1244,7 @@ export function createWorker(o: WorkerOptions) {
   }
 
   return {
-    onTask, poll, checkWaits, flush, sweep,
+    onTask, onAsk, poll, checkWaits, flush, sweep,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },

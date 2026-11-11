@@ -17,6 +17,9 @@
 //               the server said (no @ in the tag: a person's @x would call that agent itself)
 //   [delegate:x,y] runs `remi delegate @x …` for each, then waits for them (wait how "delegates"); woken with the
 //               receipt, it reports review with how many came back
+//   [ask:x]     runs `remi ask @x …` (another agent) and waits for the answer (wait how "answer"); the answer wakes it
+//               and it does the work. [ask!:x]: the same, and x's read-only run writes a file anyway (it is thrown away)
+//   Asked by another agent (its prompt says "read-only run"), it answers in one plain message.
 // FAKE_CODEX_DELAY_MS: the pause between its steps (default 1200).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,12 +68,24 @@ const remi = (...args: string[]) => {
   return (r.stdout.toString() + r.stderr.toString()).trim();
 };
 
+if (prompt.includes("This is a read-only run, not a task")) { // another agent's question
+  const q = prompt.slice(prompt.lastIndexOf("# The question") + 15).trim();
+  if (/\[ask!:/.test(prompt)) writeFileSync(join(cwd, "fake-codex-scribble.md"), "a read-only run should not write this\n");
+  out({ type: "item.completed", item: { type: "agent_message", text: `（假 Codex，只读）关于「${q.slice(0, 60)}」：订单接口返回 JSON，字段 id、amount、state，见 api/orders.md。` } });
+  out({ type: "turn.completed", usage: { input_tokens: 600, cached_input_tokens: 0, output_tokens: 60 } });
+  process.exit(0);
+}
+const asked = named([request.match(/\[ask!?:([a-z][a-z0-9_-]*)\]/)?.[1] ?? ""].filter(Boolean))[0];
 const delegates = named(request.match(/\[delegate:([a-z0-9_,-]+)\]/)?.[1]?.split(",").filter(Boolean) ?? []);
 const receipt = prompt.includes("all of them are back. What came back:");
 
 if (receipt) {
   const back = (prompt.match(/^## T-\d+ @\S+: \w+/gm) ?? []).join("；");
   finish({ status: "review", summary: `（假 Codex）委派的都交回了，汇总好了：${back}` });
+} else if (asked && !resume) {
+  await step(`remi ask @${asked}`);
+  const said = remi("ask", `@${asked}`, "（假 Codex）订单接口返回什么格式？");
+  finish({ status: "waiting", summary: `（假 Codex）问了 @${asked}，等它回答：${said.split("\n")[0]}`, wait: { how: "answer", what: `@${asked} 的回答` } });
 } else if (delegates.length && !resume) {
   const said: string[] = [];
   for (const d of delegates) {

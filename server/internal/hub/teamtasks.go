@@ -577,14 +577,16 @@ func (h *Hub) followUp(t taskView) {
 }
 
 // unseen: people's messages in the thread the agent has not been given yet.
-// A delegated task also hears the agent that delegated it (what to redo).
+// A delegated task also hears the agent that delegated it (what to redo), and any task the answers to the questions it
+// put to other agents (teamask.go).
 func (h *Hub) unseen(t taskView) []messageView {
 	parent := ""
 	if t.Mandate != nil && t.Mandate.Delegated && len(t.Mandate.Via) > 0 {
 		parent = t.Mandate.Via[len(t.Mandate.Via)-1]
 	}
 	return scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE (m.thread_id = ? OR m.id = ?) AND m.seq > ?
-		AND (m.author_kind = 'user' OR (m.author_kind = 'agent' AND m.author_id = ?)) ORDER BY m.seq`, t.ThreadID, t.ThreadID, t.seenSeq, parent))
+		AND (m.author_kind = 'user' OR (m.author_kind = 'agent' AND m.author_id = ?)
+		OR m.id IN (SELECT answer_msg FROM agent_asks WHERE task_id = ?)) ORDER BY m.seq`, t.ThreadID, t.ThreadID, t.seenSeq, parent, t.ID))
 }
 
 // ---------------------------------------------------------------- people
@@ -935,7 +937,7 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 			out = append(out, t)
 		}
 	}
-	writeJSON(w, 200, obj{"tasks": out})
+	writeJSON(w, 200, obj{"tasks": out, "asks": h.machineAsks(q.who.machineID)})
 }
 
 // contextMessages: the channel's latest messages the claim brings; the agent reads further itself (teamcontext.go).

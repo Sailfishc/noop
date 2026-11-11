@@ -116,14 +116,19 @@ func (h *Hub) v1AgentAsk(w http.ResponseWriter, q *request) {
 	text := strings.TrimSpace(textBody(q))
 	var target mention
 	for _, m := range h.mentions(text) {
-		if m.Kind == "user" {
+		if m.Kind == "user" || m.Kind == "agent" {
 			target = m
 			break
 		}
 	}
 	question := strings.TrimSpace(strings.Replace(text, "@"+target.Handle, "", 1))
 	if target.ID == "" || question == "" {
-		errJSON(w, 400, "用法：remi ask @某人 问题")
+		errJSON(w, 400, "用法：remi ask @某人 问题，或者 remi ask @某个Agent 问题")
+		return
+	}
+	if target.Kind == "agent" { // another agent answers in a read-only run (teamask.go)
+		b, _ := h.agent(target.ID)
+		h.askAgent(w, t, a, b, question)
 		return
 	}
 	if !h.memberOrAdmin(t.ChannelID, target.ID) {
