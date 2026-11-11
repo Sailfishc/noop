@@ -43,6 +43,8 @@ describe("team sign in", () => {
     expect(phone.shows("id:scan-camera")).toBe(false);
     await phone.press("id:team-scan");
     await phone.waitFor("id:scan-camera");
+    // headless has no web page to answer: the box says why instead of staying black
+    await phone.waitFor("id:scan-camera-problem", { timeout: 5000 });
     await phone.press("id:scan-close");
     await phone.waitFor("id:scan-camera", { state: "gone" });
 

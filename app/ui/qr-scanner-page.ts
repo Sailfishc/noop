@@ -25,6 +25,7 @@ body.still #photo{display:block}
   var canvas = document.createElement("canvas"), cx = canvas.getContext("2d", { willReadFrequently: true });
   var last = "", lastAt = 0;
   function post(o) { if (window.nsh && window.nsh.postMessage) window.nsh.postMessage(JSON.stringify(o)); }
+  post({ type: "ready", secure: !!window.isSecureContext, media: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) });
   function found(t) {
     var now = Date.now();
     if (t === last && now - lastAt < 2000) return;
@@ -40,7 +41,7 @@ body.still #photo{display:block}
     var r = self.jsQR(d.data, d.width, d.height, { inversionAttempts: "attemptBoth" });
     return r && r.data ? r.data : null;
   }
-  function still(why) { document.body.className = "still"; msg.textContent = why; }
+  function still(why, code) { document.body.className = "still"; msg.textContent = why + (code ? " (" + code + ")" : ""); if (code) post({ type: "error", code: code }); }
   file.addEventListener("change", function () {
     var f = file.files && file.files[0];
     if (!f) return;
@@ -52,11 +53,13 @@ body.still #photo{display:block}
     };
     img.src = url;
   });
-  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return still(T.none);
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return still(T.none, window.isSecureContext ? "NoMediaDevices" : "InsecureContext");
   navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false }).then(function (stream) {
     video.srcObject = stream;
-    var p = video.play(); if (p && p.catch) p.catch(function () {});
+    var p = video.play(); if (p && p.catch) p.catch(function (e) { post({ type: "error", code: "Play" + ((e && e.name) || "") }); });
     msg.textContent = T.aim;
+    // a stream that never shows a frame (an iPhone web view that won't play video inline): offer the photo instead
+    setTimeout(function () { if (video.readyState < 2 || !video.videoWidth) still(T.stalled, "NoFrames"); }, 4000);
     window.addEventListener("pagehide", function () { stream.getTracks().forEach(function (t) { t.stop(); }); });
     var at = 0;
     (function tick(now) {
@@ -67,7 +70,7 @@ body.still #photo{display:block}
       if (t) found(t);
     })(0);
   }, function (e) {
-    still(e && (e.name === "NotAllowedError" || e.name === "SecurityError") ? T.denied : T.none);
+    still(e && (e.name === "NotAllowedError" || e.name === "SecurityError") ? T.denied : T.none, (e && e.name) || "GetUserMediaFailed");
   });
 })();
 </script></body></html>`;
