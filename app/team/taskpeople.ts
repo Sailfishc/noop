@@ -27,6 +27,11 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
       const mine = isMe(task.created_by) || isMe(agent?.owner_id);
       return { label: task.state === "blocked" ? L("Blocked", "被阻塞") : L("Run failed", "执行失败"), mine, tone: "danger" };
     }
+    case "waiting":
+      // a day waiting for its runtime's quota: its people are told once (the server puts it in their inbox)
+      if (task.wait?.how === "quota" && task.wait.stale) {
+        return { label: L("Quota out for a day", "等额度超过一天"), mine: isMe(task.created_by) || isMe(agent?.owner_id), tone: "warn" };
+      }
   }
   return null;
 }
@@ -52,7 +57,7 @@ export function liveLine(task: Task): string {
   switch (task.state) {
     case "running": return mins(Date.now() - task.created);
     case "queued": return L("Queued", "排队中");
-    case "waiting": return L("Waiting for an outside result", "等外部结果");
+    case "waiting": return task.wait?.how === "quota" ? L("Waiting for quota", "等额度恢复") : L("Waiting for an outside result", "等外部结果");
   }
   return "";
 }

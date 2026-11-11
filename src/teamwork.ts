@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
-import { addUsage, classify, FAILURE_TEXT, type Failure, planFor, type Usage } from "./runfail";
+import { addUsage, classify, FAILURE_TEXT, type Failure, failureText, planFor, resetAt, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 import type { TeamContext } from "./teamconfig";
 
@@ -56,7 +56,7 @@ export type Claim = {
    * drops it anyway, this only spares the agent the effort. Missing (an older server): it may. */
   memory_writable?: boolean;
 };
-export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message"; note?: string; payload?: string; at: number };
+export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message" | "quota"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
 export type WaitSpec = { how: "callback" | "poll" | "timer"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
 export type TaskResult = {
@@ -292,11 +292,15 @@ const WAKE: Record<Wake["reason"], string> = {
   timer: "the time you set has come",
   deadline: "the deadline of your wait passed without a result: check once more; if you still cannot confirm it, report review with result unconfirmed (or blocked if it clearly went wrong)",
   message: "a person said something in the thread",
+  quota: "the usage limit of your runtime that stopped your last turn has reset",
 };
 
 /** A woken turn: why it woke, what was posted, what people said meanwhile. */
 export function wakePrompt(c: Claim): string {
   const w = c.wake!;
+  if (w.reason === "quota") return `Your last turn was cut off by the usage limit of your runtime; it has reset now. Continue from where you got to; do not redo steps that already took effect.
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+${RESULT_SPEC}`;
   return `You were waiting; you are woken because ${WAKE[w.reason] ?? w.reason}.${w.note ? `\nLast note: ${w.note}` : ""}${w.payload ? `\nWhat was posted to your callback address:\n${w.payload.slice(0, 20000)}` : ""}
 ${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
 Look at the result, check it against the acceptance criteria, save what people should see in out/ (a preview picture of
@@ -698,6 +702,9 @@ export const RESULT_ONLY = `Your last message did not end with the result block.
 
 ${RESULT_SPEC}`;
 
+/** A limit that resets within this long is waited for inside the run; a later one by the server. */
+const SHORT_WAIT = 5 * 60_000;
+
 const hasResultBlock = (text: string) => /```json\s*\{[\s\S]*?"status"[\s\S]*?\}\s*```/.test(text);
 
 export function createWorker(o: WorkerOptions) {
@@ -832,7 +839,7 @@ export function createWorker(o: WorkerOptions) {
     });
     log(`${t.id} @${c.agent.handle} 开工：${t.title}${resume ? "（续）" : ""}`);
     let r: RunResult = await go(resume, prompt), resumed = !!resume;
-    let failure: Failure | null = null, retries = 0, fresh = false, continued = false, emptyRetried = false;
+    let failure: Failure | null = null, retries = 0, fresh = false, continued = false, emptyRetried = false, shortWaits = 0, quotaAt = 0;
     for (;;) {
       if (cancelled) break;
       if (r.killed && steered) { // stopped for news: take it (the server hands it over with a claim) and go on
@@ -854,6 +861,23 @@ export function createWorker(o: WorkerOptions) {
       const f = classify({ ...r, resumed });
       if (!f) break;
       const plan = planFor(f, c.agent.runtime || "codex");
+      if (f === "quota" || f === "rate_limited") {
+        // a limit: a reset a few minutes out is waited for here, a later one (or none, once the short retries are
+        // used up) by the server, which wakes the task in this session when it is time (design 「额度等重置」)
+        const at = resetAt(failureText(r));
+        if (at !== undefined && at - Date.now() <= SHORT_WAIT && shortWaits < 2) {
+          shortWaits++;
+          const wait = at - Date.now() + 5_000;
+          log(`${t.id} ${FAILURE_TEXT[f]}，${Math.ceil(wait / 60_000)} 分钟后重试`);
+          void report(t.id, { step: `${FAILURE_TEXT[f]}，${Math.ceil(wait / 60_000)} 分钟后重试` });
+          await pause(wait);
+          if (cancelled) break;
+          r = r.session ? await go(r.session, retryPrompt(r.error ?? f)) : await go(resume, prompt);
+          resumed = !!(r.session || resume);
+          continue;
+        }
+        if (f === "quota" || at !== undefined || retries >= (plan.act === "retry" ? plan.afterMs.length : 0)) { quotaAt = at ?? 0; failure = "quota"; break; }
+      }
       if (plan.act === "retry" && retries < plan.afterMs.length) {
         const wait = plan.afterMs[retries++]!;
         log(`${t.id} ${FAILURE_TEXT[f]}，${Math.round(wait / 60_000)} 分钟后重试（第 ${retries} 次）`);
@@ -889,6 +913,12 @@ export function createWorker(o: WorkerOptions) {
     }
     clearTimeout(stepTimer);
     if (r.killed || cancelled) { log(`${t.id} 已停止`); return; }
+    if (failure === "quota") { // the server keeps it waiting, says so on the card and the machine's runtime, and wakes it
+      const detail = failureText(r).trim().split("\n").slice(-2).join(" ").slice(0, 300);
+      await finish(t, { state: "waiting", failure: "quota", retry_at: quotaAt, note: detail, summary: "", session: r.session || resume, ...(usage ? { usage } : {}) });
+      log(`${t.id} → 等额度恢复${quotaAt ? `（${new Date(quotaAt).toLocaleString()}）` : "（时间未知）"}`);
+      return;
+    }
     if (failure) {
       const plan = planFor(failure, c.agent.runtime || "codex");
       const detail = (r.error ?? r.stderr ?? "").trim().split("\n").slice(-3).join("\n").slice(0, 600);

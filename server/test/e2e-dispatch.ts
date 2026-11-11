@@ -45,6 +45,14 @@ const prompt = await new Response(Bun.stdin.stream()).text();
 const out = (o) => console.log(JSON.stringify(o));
 out({ type: "thread.started", thread_id: resume || "thr_fake_1" });
 const done = (summary, evidence) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary, evidence }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
+if (/# Request .*QUOTA-TEST/.test(prompt) && !resume) { // Codex's words at a usage limit, two hours out, on its own request (not the channel lines the prompt quotes)
+  const at = new Date(Date.now() + 2 * 3600000), h = at.getHours();
+  const msg = "You\u2019ve hit your usage limit. Try again at " + (h % 12 || 12) + ":" + String(at.getMinutes()).padStart(2, "0") + (h < 12 ? " AM." : " PM.");
+  out({ type: "error", message: msg });
+  out({ type: "turn.failed", error: { message: msg } });
+  process.exit(1);
+}
+if (resume && prompt.includes("usage limit of your runtime; it has reset now")) done("额度恢复后接着做完了");
 if (prompt.includes("paused you between two steps")) done("插话后：" + (prompt.includes("改主意") ? "按新的要求做了" : "没收到新要求"));
 if (prompt.includes("ALIGN-TEST") && !resume && prompt.includes("# Align first")) { // aligns before it works
   out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "align", summary: "先对一下", acceptance: ["对账一致", "10 分钟内跑完"], approach: "按天分批" }) + "\\n\`\`\`" } });
@@ -147,6 +155,26 @@ await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text:
 await until("a reply instead: it goes on and delivers, no second card", async () => ["review", "done"].includes((await get("T-0003")).state));
 a = await get("T-0003");
 check("it followed the reply", a.summary.startsWith("对齐后开工：按回复改了标准") && a.aligned === true, a.summary);
+
+// a usage limit: the task waits for the reset in its session, nobody is called, the machine says why; 现在就试 goes on
+await alignAsk("@acha QUOTA-TEST 导出订单", "T-0004");
+await until("it hits the limit and waits", async () => (await get("T-0004")).state === "waiting");
+let q = await get("T-0004");
+const back = q.wait?.expect - Date.now();
+check("for the time Codex named", q.wait?.how === "quota" && back > 115 * 60_000 && back < 121 * 60_000, JSON.stringify(q.wait));
+check("not a failure, nobody's inbox", q.failures === 0 && !(await api("GET", "/api/v1/inbox", zw.session)).json.tasks.some((x: any) => x.id === "T-0004"));
+const machines = async () => (await api("GET", "/api/v1/machines", wl.session)).json.machines as any[];
+check("the machine says codex waits for its quota", (await machines())[0].runtime_status?.codex?.state === "quota");
+await alignAsk("@acha 另一件小事 直接做", "T-0005");
+await Bun.sleep(1500);
+check("the runtime's other task waits too, untried", (await get("T-0005")).state === "queued" && (await get("T-0005")).runs === 0);
+check("现在就试", (await api("POST", "/api/v1/tasks/T-0004/retry", zw.session)).status === 200);
+await until("it goes on in the same session and delivers", async () => ["review", "done"].includes((await get("T-0004")).state));
+q = await get("T-0004");
+check("told the limit reset, in the session it had", q.summary.startsWith("额度恢复后接着做完了") && q.session === "thr_fake_1", q.summary);
+if (!await until("the runtime takes work again and the other task runs", async () => !(await machines())[0].runtime_status?.codex && (await get("T-0005")).runs === 1)) {
+  console.log(JSON.stringify((await machines())[0].runtime_status), JSON.stringify(await get("T-0005")).slice(0, 400));
+}
 
 ta.stop();
 rmSync(W, { recursive: true, force: true });

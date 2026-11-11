@@ -4,7 +4,7 @@ import { type JSX, Text, View } from "nsh";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
 import { colors, Icon, IconBtn, type IconName, Tag } from "../ui";
-import { blockedReason, insecureRefused, runtimeLabel, type Agent, type Team } from "./api";
+import { blockedReason, clock, insecureRefused, runtimeTrouble, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
 
@@ -30,11 +30,7 @@ export const unreachable = (url: string, error?: string) =>
         `这个 App 不允许用不加密的 http 连接 ${url}。请给服务端配上 https 地址（见服务端 README），或换用允许 http 的版本。`)
     : L(`Can’t reach ${url}. Check the address and your network.`, `连不上服务器 ${url}，请检查地址和网络`);
 
-export const time = (ms: number) => {
-  const d = new Date(ms), now = new Date();
-  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
-};
+export const time = clock;
 
 export function Header(props: { title: string; subtitle?: string; back?: boolean; onBack?: () => void; right?: JSX.Element; backLabel?: string; icon?: IconName; iconLabel?: string }) {
   return (
@@ -77,12 +73,14 @@ export function RuntimeBadge(props: { runtime: string; testID?: string }) {
 }
 
 /** An agent's status dot (as in Raft): grey offline (no machine, or it is off), orange an error it can't get past by
- * itself (its runtime missing or logged out, or its last run failed), yellow working, green ready. What a task needs
+ * itself (its runtime missing or logged out, or its last run failed), yellow working or waiting for its runtime's quota, green ready. What a task needs
  * from people is on the task, not here. */
 export function agentState(t: Team, a: Agent): { label: string; tone: "up" | "warn" | "danger" | "muted" | "accent"; blocked: boolean } {
   const m = t.machines().find((x) => x.id === a.machine_id);
   const why = blockedReason(a, m, lang() !== "zh");
   if (!a.machine_id || !m || !m.online) return { label: L(`Offline: ${why}`, `离线：${why}`), tone: "muted", blocked: true };
+  const quota = m.runtime_status?.[a.runtime];
+  if (quota?.state === "quota") return { label: runtimeTrouble(quota, lang() !== "zh"), tone: "warn", blocked: false }; // not broken: it goes on by itself
   if (why) return { label: L(`Error: ${why}`, `出错：${why}`), tone: "danger", blocked: true };
   const ts = Object.values(t.tasks()).filter((x) => x.agent_id === a.id);
   const working = ts.filter((x) => x.state === "running" || x.state === "queued").length;

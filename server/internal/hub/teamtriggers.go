@@ -351,13 +351,13 @@ func (h *Hub) fire(t triggerView, extra string) string {
 }
 
 // noteStuckTrigger: a schedule skipped because its last task has sat queued for stuckAfter (no machine takes it: the
-// machine is offline, the agent paused) tells the person who set it up, once for that task, in the task's thread.
+// machine is offline, its runtime there out of quota or logged out) tells the person who set it up, once for that task, in the task's thread.
 func (h *Hub) noteStuckTrigger(t triggerView, last taskView, a agentView) {
 	if last.State != taskQueued || h.nowMs()-last.Updated < stuckAfter.Milliseconds() || t.stuckNoted == last.ID {
 		return
 	}
 	mins := (h.nowMs() - last.Updated) / 60_000
-	text := fmt.Sprintf("%s 触发器（%s）这次没有跑：上一次的 %s 已经排队 %d 分钟，还没有机器接手（机器离线，或 @%s 暂停了）。它跑起来以后，触发器会照常继续。",
+	text := fmt.Sprintf("%s 触发器（%s）这次没有跑：上一次的 %s 已经排队 %d 分钟，还没有机器接手（机器离线，或 @%s 用的运行时在那台机器上额度用完、没有登录）。它跑起来以后，触发器会照常继续。",
 		h.handle(t.CreatedBy), describeTrigger(t), last.ID, mins, a.Handle)
 	h.insertMessage(last.ChannelID, &last.ThreadID, member{"agent", a.ID}, text)
 	h.must(h.db.Exec("UPDATE triggers SET stuck_noted = ? WHERE id = ?", last.ID, t.ID))

@@ -10,6 +10,9 @@
 //   [block]     reports blocked
 //   [fail]      reports failed
 //   [slow]      takes ten times as long (to look at a running task)
+//   [quota]     first hits Codex's usage limit, "try again at" FAKE_CODEX_QUOTA_MIN minutes from now (default 10; at 5
+//               or less the daemon waits inside the run); woken after the reset (or 现在就试), it does the work
+//   [quota?]    the same, but the limit names no time (the server tries again after 5 minutes, 15, an hour, …)
 // FAKE_CODEX_DELAY_MS: the pause between its steps (default 1200).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +41,16 @@ const finish = (report: Record<string, unknown>, text = "好了。") => {
 const session = resume || `thr_fake_${Date.now().toString(36)}`;
 out({ type: "thread.started", thread_id: session });
 await step("rg -n TODO .");
+
+if ((has("quota") || has("quota?")) && !resume) {
+  // Codex's own words (codex-rs/protocol/src/error.rs; test/runfail-samples.test.ts)
+  const at = new Date(Date.now() + (Number(process.env.FAKE_CODEX_QUOTA_MIN) || 10) * 60_000), h = at.getHours();
+  const msg = has("quota?") ? "You\u2019ve hit your usage limit. To get more access now, send a request to your admin or try again later."
+    : `You\u2019ve hit your usage limit. Try again at ${h % 12 || 12}:${String(at.getMinutes()).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}.`;
+  out({ type: "error", message: msg });
+  out({ type: "turn.failed", error: { message: msg } });
+  process.exit(1);
+}
 
 if (has("fail")) finish({ status: "failed", summary: "（假 Codex）按要求失败了：[fail]。" });
 else if (has("block")) finish({ status: "blocked", summary: "（假 Codex）缺数据库只读账号，拿到之前做不下去。" });

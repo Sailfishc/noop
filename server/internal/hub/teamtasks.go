@@ -589,11 +589,13 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state = 'needs_decision' AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		OR (t.state = 'waiting' AND json_extract(t.wait, '$.how') = 'quota' AND json_extract(t.wait, '$.stale') = 1
+			AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
 			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
 			AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?))))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me, me))
 	ts = h.withOutputs(ts)
 	for i := range ts {
 		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
@@ -855,8 +857,18 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')
 		AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
 	out := []taskView{}
+	runtimeOf := map[string]string{}
 	for _, t := range ts {
-		if t.State == taskQueued || (t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID) {
+		if t.State == taskQueued {
+			rt, ok := runtimeOf[t.AgentID]
+			if !ok {
+				a, _ := h.agent(t.AgentID)
+				rt, runtimeOf[t.AgentID] = a.Runtime, a.Runtime
+			}
+			if ok, _ := h.runtimeGate(t, q.who.machineID, rt, false); ok { // held back by its runtime here: not offered
+				out = append(out, t)
+			}
+		} else if t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID {
 			out = append(out, t)
 		}
 	}
@@ -889,7 +901,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	}
 	// claimed again by its own machine: a restart of the daemon (counted), unless it stopped the run to take up news
 	// (a reply, an answer, a repository it asked for): that is the run going on, not dying
-	if !h.mayRun(w, t, a, mine && !t.News) {
+	if !h.mayRun(w, t, a, q.who.machineID, mine && !t.News) {
 		return
 	}
 	fresh := h.unseen(t)
@@ -976,8 +988,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		// Run: which run of the task this is (its runs when claimed). A final report of an earlier run is refused, so a
 		// report the machine sends again (it kept it until the server took it) never lands twice.
 		Run int64 `json:"run"`
-		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go)
+		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go); with state waiting,
+		// "quota": the runtime hit a usage limit, and the task waits for it to reset (teamquota.go)
 		Failure string `json:"failure"`
+		// RetryAt, Note: with failure quota, when the runtime said the limit resets (unix ms, 0: it did not say) and
+		// what it said
+		RetryAt int64  `json:"retry_at"`
+		Note    string `json:"note"`
 		// Usage: tokens this run used
 		Usage *usageView `json:"usage"`
 		// Evidence: with state review, how each acceptance criterion was verified (teamevidence.go)
@@ -1055,7 +1072,11 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			errJSON(w, 400, "state 只能是 review、needs_decision、blocked、failed 或 waiting")
 			return
 		}
-		if b.State == taskWaiting {
+		quota := b.State == taskWaiting && b.Failure == "quota"
+		if quota {
+			s := h.runtimeFailed(q.who.machineID, a.Runtime, "quota", b.RetryAt, b.Note)
+			cols["wait"] = jsonOrNil(quotaWait(q.who.machineID, a.Runtime, s, h.nowMs()))
+		} else if b.State == taskWaiting {
 			wt, msg := h.newWait(b.Wait)
 			if wt == nil {
 				errJSON(w, 400, msg)
@@ -1066,7 +1087,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		if b.Result == "confirmed" || b.Result == "unconfirmed" {
 			cols["result"] = b.Result
 		}
-		h.runEnded(t, a, b.State, b.Failure, cols)
+		h.runEnded(t, a, q.who.machineID, b.State, b.Failure, b.RetryAt, b.Note, cols)
 		state := b.State
 		summary := trimmed(b.Summary, 8000)
 		cols["summary"], cols["step"] = summary, ""
@@ -1107,7 +1128,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" {
 			state = taskDone
-		} else if state == taskReview || state == taskWaiting {
+		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
 		}
 		if t.News {

@@ -116,7 +116,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                                  // tokens its runs used, added up
-		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",               // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",               // no longer read: runtimes on machines are held back instead (teamquota.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0",           // its title was given (by the agent or a person), not cut from the request
 		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",            // who takes it when it stops for people ("" = its creator)
 		"ALTER TABLE tasks_v1 ADD COLUMN cancelled_at INTEGER",                        // when a person cancelled it (teammetrics.go: was it asked again)
@@ -164,6 +164,9 @@ func initSchema(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(remindersSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(runtimeStatusSchema); err != nil {
 		return err
 	}
 	return initSearch(db)

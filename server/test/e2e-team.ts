@@ -98,6 +98,8 @@ check("nor their inbox", !trace(await api("GET", "/api/v1/inbox", zw.session)));
 for (const path of [`/api/v1/channels/${priv.json.id}`, `/api/v1/channels/${priv.json.id}/messages`, `/api/v1/messages/${secret.json.id}/thread`, `/api/v1/tasks/${secretTask.id}`]) {
   check(`by id it is not found: ${path.replace(/\/(?:[a-z]+_[0-9a-f]+|T-\d+)/g, "/…")}`, (await api("GET", path, zw.session)).status === 404);
 }
+// the daemon above found no codex here and held codex back on this machine (teamquota.go): say it is there now
+await api("PUT", "/api/v1/machine", token, { runtimes: ["codex"], runtime_info: [{ name: "codex", installed: true, logged_in: true }] });
 const claim = await api("POST", `/api/v1/tasks/${secretTask.id}/claim`, token);
 check("on its owner's task the agent finds the private words", (await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim.json.read_token}` } })).text()).includes("zebra"));
 await api("POST", `/api/v1/tasks/${secretTask.id}/report`, token, { state: "review", summary: "好了", run: claim.json.task.runs });

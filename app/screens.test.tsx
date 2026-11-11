@@ -235,6 +235,51 @@ describe("screens", () => {
   });
 });
 
+// Step 3 「额度等重置」: codex on the Mac waits for its 5-hour limit, claude there needs its owner (out of credit), and
+// the first task waits in its session for the reset, with 「现在就试」.
+const RESET = Date.now() + 3 * 3_600_000;
+const quotaBox = { ...box, runtimes: ["codex", "claude"],
+  runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }, { name: "claude", version: "2.1.322", installed: true, logged_in: true }],
+  runtime_status: {
+    codex: { state: "quota", reason: "quota", text: "等额度恢复", note: "You’ve hit your usage limit. Try again at 2:30 PM.", until: RESET, next_at: RESET + 90_000, since: T0, at: T0 },
+    claude: { state: "blocked", reason: "billing", text: "需要你处理：余额不足", note: "Credit balance is too low", since: T0, at: T0 },
+  } };
+const quotaTask = task({ id: "T-0001", state: "waiting", tracked: true, title: "看下慢查询", created_by: "u_1", session: "thr_1",
+  wait: { how: "quota", expect: RESET, next_at: RESET + 90_000, deadline: 0, since: T0, machine: "m_1", runtime: "codex", note: "You’ve hit your usage limit. Try again at 2:30 PM." } });
+const quotaNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [quotaBox] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [quotaTask, ...tasks.slice(1)]);
+
+describe("quota", () => {
+  test("a task waits for its runtime's quota; the machine card says how each runtime is", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: quotaNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-retry");
+    await shot(app, "thread-quota");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings");
+    await app.press("id:settings-nav-machines");
+    await app.waitFor("id:machine-m_1-runtime-codex-status-info");
+    await shot(app, "settings-machines-quota");
+  });
+
+  test("on a phone", async () => {
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 390, height: 844, network: quotaNet() });
+    await app.waitFor("id:channel-pay");
+    await app.press("id:channel-pay");
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-retry");
+    await shot(app, "phone-quota-thread");
+  });
+});
+
 // Phones: the tab bar's four tabs, a channel and its thread, one agent's page.
 const PHONE = { width: 390, height: 844 };
 const phone = () => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...PHONE, network: net() });

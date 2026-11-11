@@ -48,30 +48,47 @@ func TestRunHealth(t *testing.T) {
 	r = report(map[string]any{"state": "review", "summary": "好了", "run": 3})
 	check(t, "a good run clears the count", r.status == 200 && r.body["failures"] == float64(0), r)
 
-	// logged out: the agent pauses, its tasks wait instead of failing one after another
+	// logged out: the runtime on that machine is held back, its tasks wait in the queue instead of failing one after another
 	e.post(e.wl.session, "还有个问题", m["id"].(string))
 	claim()
 	r = report(map[string]any{"state": "blocked", "summary": "codex 没登录", "failure": "auth", "run": 4})
 	check(t, "a runtime failure counts", r.status == 200 && r.body["failures"] == float64(1) && r.body["last_failure"] == "auth", r)
-	a := agent()
-	check(t, "and pauses the agent", a["paused"] != nil && a["paused"].(map[string]any)["reason"] == "auth", resp{body: a})
+	st := e.runtimeStatus(e.wl.session, "codex")
+	check(t, "and holds back codex on that machine", st != nil && st["state"] == "blocked" && st["reason"] == "auth" && st["text"] == "没有登录", resp{body: st})
+	check(t, "the agent itself is not paused any more", agent()["paused"] == nil)
 	m2 := e.post(e.ll.session, "@acha 另一件事", "")
 	id2 := e.do("GET", "/api/v1/tasks?thread="+m2["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
-	check(t, "a paused agent's new task stays queued", e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil).status == 409 && e.task(id2)["state"] == "queued")
+	check(t, "a held-back runtime's new task stays queued", e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil).status == 409 && e.task(id2)["state"] == "queued")
+	check(t, "and the machine is not offered it", len(e.do("GET", "/api/v1/machine/tasks", e.token, nil).body["tasks"].([]any)) == 0)
 	no, yes := false, true
 	e.do("PUT", "/api/v1/machine", e.token, map[string]any{"runtimes": []any{"codex"}, "runtime_info": []any{map[string]any{"name": "codex", "installed": true, "logged_in": no}}})
-	check(t, "still logged out: still paused", agent()["paused"] != nil)
+	check(t, "still logged out: still held back", e.runtimeStatus(e.wl.session, "codex") != nil)
 	e.do("PUT", "/api/v1/machine", e.token, map[string]any{"runtimes": []any{"codex"}, "runtime_info": []any{map[string]any{"name": "codex", "installed": true, "logged_in": yes}}})
-	check(t, "logged in again: it goes on", agent()["paused"] == nil)
+	check(t, "logged in again: it goes on", e.runtimeStatus(e.wl.session, "codex") == nil)
 	check(t, "and takes the queued task", e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil).status == 200)
 
-	// out of credit: no probe can tell, so a person asking again lifts it
-	r = e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"state": "blocked", "summary": "额度用完", "failure": "billing", "run": 1})
-	check(t, "billing pauses", r.status == 200 && agent()["paused"] != nil, r)
+	// out of credit: no report can tell, so a person asking again lifts it
+	r = e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"state": "blocked", "summary": "余额不足", "failure": "billing", "run": 1})
+	st = e.runtimeStatus(e.wl.session, "codex")
+	check(t, "billing holds the runtime back", r.status == 200 && st != nil && st["reason"] == "billing", r)
 	e.do("PUT", "/api/v1/machine", e.token, map[string]any{"runtimes": []any{"codex"}, "runtime_info": []any{map[string]any{"name": "codex", "installed": true, "logged_in": yes}}})
-	check(t, "a login does not lift a billing pause", agent()["paused"] != nil)
+	check(t, "a login does not lift it", e.runtimeStatus(e.wl.session, "codex") != nil)
 	e.advance(time.Second)
 	e.post(e.ll.session, "充好了", m2["id"].(string))
-	check(t, "a person's reply lifts it", e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil).status == 200 &&
-		agent()["paused"] == nil)
+	check(t, "a person's reply lets that task try", e.do("POST", "/api/v1/tasks/"+id2+"/claim", e.token, nil).status == 200)
+	e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"state": "review", "summary": "好了", "run": 2})
+	check(t, "and its run getting through lifts it", e.runtimeStatus(e.wl.session, "codex") == nil)
+}
+
+// runtimeStatus: how the agent's machine says its runtime is ("" state: it takes work).
+func (e *taskEnv) runtimeStatus(session, runtime string) map[string]any {
+	for _, m := range e.do("GET", "/api/v1/machines", session, nil).body["machines"].([]any) {
+		mm := m.(map[string]any)
+		if mm["id"] != e.mid {
+			continue
+		}
+		st, _ := mm["runtime_status"].(map[string]any)[runtime].(map[string]any)
+		return st
+	}
+	return nil
 }
