@@ -7,7 +7,7 @@ Remi: a self-hosted place where a team's people and agents work together. Three 
 |---|---|---|---|
 | Server | `server/` (API in `internal/hub/v1.go`) | Go, one SQLite file | `gofmt`, `go vet`, `go test -race` |
 | Machine daemon | `src/` (tests in `test/`) | Bun / TypeScript | `bunx tsc --noEmit`, `bun test` |
-| Client app | `app/` (`team/` screens, `ui/` shared) | NSH TSX | `nsh check app`, `nsh test`, layout, screenshots |
+| Client app | `app/` (`team/` screens, `ui/` components) | NSH TSX | `nsh check app`, `nsh test`, layout, `check-ui`, screenshots |
 | Both ends together | `server/test/e2e-*.ts` | Bun against a real server | `scripts/e2e.sh` |
 
 ## Before you push: `scripts/check.sh`
@@ -49,8 +49,30 @@ After changing `app/`, `scripts/check.sh` runs these; what each one is for:
 - `cd app && nsh test`: the UI tests, including `screens.test.tsx`.
 - `scripts/screens.sh`, then open the PNGs in `app/.nsh/screens/` and look at the screens you changed. Add a screen to `app/screens.test.tsx` when you build a new one.
 - Layout a test can't see (things side by side, aligned, not overlapping): add a rule to `scripts/check-layout.ts`; run it with `(cd app && nsh test screens.test.tsx --trace) > /tmp/trace.txt; bun scripts/check-layout.ts /tmp/trace.txt`.
+- `bun scripts/check-ui.ts`: pages don't style themselves (see "Client components" below).
 
 In the PR, say which screens changed, attach or describe the screenshots you looked at, and list anything you could not run.
+
+### Client components: pages use `app/ui`, only `app/ui` decides the look
+
+Four layers, each using only the one below: pages (`app/team/`: layout and logic) → Remi's component library
+(`app/ui/`, one component per file) → `nsh/base` and `nsh` → the theme (`app/theme.json`: colors and the scales:
+text 12/13/14/16/22, radius 6/8/12, spacing 2/4/6/8/12/16/24, control height 30/40; `scale` in `app/ui/theme.ts`).
+
+1. Before building or changing a screen, look at the component showcase (`showcase-light.png` / `showcase-dark.png`
+   from `scripts/screens.sh`, source `app/ui/showcase.tsx`) to see what exists.
+2. Pages only use `app/ui`: no font sizes, radii, color values, off-scale spacing, `nsh/base` imports or Views made
+   pressable with `role="button"` in `app/team/`. A component takes a few named variants (`kind`, `size`), not
+   arbitrary styles.
+3. Missing something? Add it (or a variant) to `app/ui` first, with an entry in the showcase, then use it.
+4. Any task that adds a page or touches an old one switches the parts it touches to `app/ui` components instead of
+   hand-written styles. There is no separate clean-up pass: old pages get paid down this way.
+
+`scripts/check-ui.ts` enforces 2: `scripts/ui-baseline.json` holds the old pages' debt per file. A count above it
+fails; a count below it fails until you lock the lower number in with `bun scripts/check-ui.ts --update`. Never raise
+the baseline by hand. NSH's `nsh/base` gives behavior (focus, keyboard, dismissal, accessibility) and no look:
+`app/ui` wraps each one once. Check a base component exists at the pinned NSH (`app/.nsh/types/nsh/base.d.ts` after
+`nsh check app`) before wrapping it. New icons: take the path from Lucide (ISC) into `app/ui/icons.tsx`.
 
 ### Explanations go behind an ⓘ, not under the label
 
@@ -58,7 +80,7 @@ Bad case, repeated (settings pages before #63's fix, then the private channel sc
 with a sentence or two of explanation printed under it. A few of those and the screen reads as paragraphs.
 
 - A label or control keeps one short line. Why it exists, what it means, what happens later: put it in the `note`
-  of `Noted` (or `Label` / `Panel`, which take a `note`) in `app/team/ui.tsx`. It shows a small ⓘ that opens the
+  of `Noted` (or `Label` / `Panel`, which take a `note`) in `app/ui`. It shows a small ⓘ that opens the
   note on press, the same on a phone.
 - An empty state is a word ("没有"), with the explanation in the section label's ⓘ.
 - A disabled row says why in its ⓘ, not in a second line.

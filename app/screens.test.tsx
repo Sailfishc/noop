@@ -48,6 +48,17 @@ const net = () => server(newLog(), {
 }, tasks);
 const start = () => open("./App.tsx", { storage: SESSION, ...SIZE, network: net() });
 
+// The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
+describe("showcase", () => {
+  for (const scheme of ["light", "dark"] as const) {
+    test(`showcase-${scheme}`, async () => {
+      const app = await open("./Showcase.tsx", { width: 1280, height: 1400, colorScheme: scheme });
+      await app.waitFor("id:showcase");
+      await shot(app, `showcase-${scheme}`);
+    });
+  }
+});
+
 describe("screens", () => {
   test("channel", async () => {
     const app = await start();
