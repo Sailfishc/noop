@@ -3,10 +3,10 @@
     "nsh-base": 1
   },
   "app/team/TeamApp.tsx": {
-    "font-size": 15,
-    "radius": 8,
-    "spacing": 16,
-    "pressable": 7
+    "font-size": 13,
+    "radius": 7,
+    "spacing": 14,
+    "pressable": 6
   },
   "app/team/channel.tsx": {
     "nsh-base": 1,
