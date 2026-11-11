@@ -180,7 +180,7 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
       <Noted
         testID="channel-repo-head"
         label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>}
-        note={L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs changes there. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要改代码时再检出。消息里写了仓库地址的，一开始就用那个。")}
+        note={L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs to read or change its code. PR and CI status needs no checkout. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要看或改代码时再检出；看 PR、CI 状态不用检出。消息里写了仓库地址的，一开始就用那个。")}
       />
       <If when={!editing()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>

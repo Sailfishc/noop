@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Cfg, HOME_DIR } from "./config";
-import { createWorker, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
+import { createWorker, setGateCredentials, type AfterRun, type TeamTask, type WorkerOptions } from "./teamwork";
 import { gitAfterRun, refreshPRs } from "./gitflow";
 import { repoBook, type RepoBook } from "./repos";
 import { claudeMcpServers } from "./runtimes";
@@ -129,6 +129,10 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
   const base = String(cfg.cloud.url).replace(/\/$/, "");
   const auth = { Authorization: `Bearer ${cfg.server.token}` };
   const log = opts.log ?? ((s: string) => console.log(`remi: ${s}`));
+  // the agents' read-only gh and glab use this machine's logins (teamwork.ts readOnlyGitTools)
+  const gitlabs: any[] = Array.isArray(cfg.git?.gitlab) ? cfg.git.gitlab : cfg.git?.gitlab ? [cfg.git.gitlab] : [];
+  setGateCredentials({ github: String(cfg.git?.github?.token ?? process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? "") || undefined,
+    gitlab: gitlabs.map((g) => ({ host: String(g.host ?? "").toLowerCase(), token: String(g.token ?? "") })) });
   const stateFile = opts.stateFile ?? join(HOME_DIR, "teamagent.json");
   const state = (() => { try { return JSON.parse(readFileSync(stateFile, "utf8")) as { url?: string; after?: number }; } catch { return {}; } })();
   let after = state.url === base ? Number(state.after) || 0 : 0;

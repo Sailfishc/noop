@@ -228,7 +228,7 @@ function TaskRepo(props: { team: Team; task: Task }) {
   const label = () => props.task.repo
     ? repoLabel(props.task.repo)
     : declared().length ? L(`${declared().map(repoLabel).join(", ")} (the agent checked it out)`, `${declared().map(repoLabel).join("、")}（Agent 自己检出的）`)
-    : agent()?.repo ? L(`the agent’s checkout ${agent()!.repo}`, `Agent 的本地仓库 ${agent()!.repo}`) : L("none yet: the agent checks one out if the work needs it", "暂时没有：要改代码时 Agent 自己检出");
+    : agent()?.repo ? L(`the agent’s checkout ${agent()!.repo}`, `Agent 的本地仓库 ${agent()!.repo}`) : L("none yet: the agent checks one out to read or change code", "暂时没有：要看或改代码时 Agent 自己检出");
   return (
     <View testID={`task-${props.task.id}-repo`} style={{ gap: 6 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 22 }}>

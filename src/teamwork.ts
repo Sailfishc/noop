@@ -204,8 +204,12 @@ export const SETUP = (x: Workdir) => !x.setup ? "" : x.setup === "ok"
   ? ` Its ${SETUP_SCRIPT} already ran there (dependencies are installed).`
   : ` Its ${SETUP_SCRIPT} ${x.setup}: fix or work around that first, and say so in the summary.`;
 
-/** How to get a repository when the work turns out to need one. */
-const DECLARE = (c?: Claim) => `\n- If the request needs changes in a repository, first declare it with \`remi repo owner/name\` (or its address)${c?.channel.repo ? `; this channel usually works in ${c.channel.repo}` : ""}: your machine checks it out on your task branch and resumes you with its path. Do not clone repositories yourself to change them.`;
+/** How to get a repository when the work turns out to need one. Reading counts: a task about a repository's code or
+ * commits ("what changed this week", "how does X work") stalled when the prompt said to declare only before changes. */
+const DECLARE = (c?: Claim) => `\n- If the request needs a repository's files or commit history, to read them or to change them, first declare it with \`remi repo owner/name\` (or its address)${c?.channel.repo ? `; this channel usually works in ${c.channel.repo}` : ""}: your machine checks it out on your task branch and resumes you with its path. Do not clone repositories yourself. A pull request's or CI run's status needs no checkout: read it with gh or glab (below).`;
+
+/** The read-only gh and glab (gateEnv): what agents may look at on the Git platforms without a checkout. */
+const GIT_READ = (c?: Claim) => `\n- \`gh\` (GitHub) and \`glab\` (GitLab, including the company's GitLab-based platform) work here read-only, with this machine's login: pull and merge requests, CI runs, issues, commits, and GET requests (\`gh api\`, \`glab api\`). Name the repository with \`-R owner/name\`${c?.channel.repo ? ` (this channel's usual one is ${c.channel.repo})` : ""}. Anything that changes something is refused: the machine pushes and opens pull requests, people merge.`;
 
 // The machine is shared with its owner and other agents: an agent that cleaned up with `pkill -f "headless=new"`
 // stopped everyone's headless Chrome (upstream noop #145).
@@ -213,15 +217,15 @@ const PROCESSES = `\n- Stop only processes you started, by the PID you noted whe
 
 const RULES = (wd: Workdir, c?: Claim) => c?.task.readonly
   ? `# Rules
-- Work in ${wd.cwd}${wd.repo ? `, a git worktree of ${wd.repo}: read it, do not change it` : " (this task's own directory)"}.${FILES(wd)}
+- Work in ${wd.cwd}${wd.repo ? `, a git worktree of ${wd.repo}: read it, do not change it` : " (this task's own directory)"}.${FILES(wd)}${GIT_READ(c)}
 - Never push, merge, or publish anything.${PROCESSES}`
   : wd.repo
   ? `# Rules (enforced: breaking them fails)
 - Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${SETUP(wd)}${EXTRA(wd)}
-- Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
+- Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop.${GIT_READ(c)}
 - Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${PROCESSES}${FILES(wd)}`
   : `# Rules
-- Work in ${wd.cwd} (this task's own directory).${EXTRA(wd) || DECLARE(c)}${FILES(wd)}
+- Work in ${wd.cwd} (this task's own directory).${EXTRA(wd) || DECLARE(c)}${GIT_READ(c)}${FILES(wd)}
 - Never push to remote repositories, merge, or publish anything: the machine pushes your task branches and opens pull requests after you stop.${PROCESSES}${EXTRA(wd) ? "\n- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran." : ""}`;
 
 const AUTONOMY: Record<string, string> = {
@@ -744,7 +748,9 @@ export async function fetchInputs(files: FileApi, c: Claim, dir: string) {
 }
 
 /** Git configuration for the agent's process only: every push goes to an address that refuses it, and gh/glab see
- * no credentials. The daemon pushes the task branch itself, with its normal environment. */
+ * no credentials of their own. The daemon pushes the task branch itself, with its normal environment. First on the
+ * PATH are read-only gh and glab (readOnlyGitTools): agents can look at PRs, CI and commits with the machine's own
+ * login, and nothing else. */
 export function gateEnv(wd: Workdir): Record<string, string> {
   const prefixes = ["https://", "http://", "ssh://", "git@", "git://", "file://", "/"];
   const env: Record<string, string> = { GIT_CONFIG_COUNT: String(prefixes.length) };
@@ -754,7 +760,96 @@ export function gateEnv(wd: Workdir): Record<string, string> {
   });
   const empty = join(wd.cwd, "..", ".no-credentials");
   mkdirSync(empty, { recursive: true });
-  return { ...env, GH_CONFIG_DIR: empty, GLAB_CONFIG_DIR: empty, GH_TOKEN: "", GITHUB_TOKEN: "", GITLAB_TOKEN: "" };
+  readOnlyGitTools();
+  return { ...env, GH_CONFIG_DIR: empty, GLAB_CONFIG_DIR: empty, GH_TOKEN: "", GITHUB_TOKEN: "", GITLAB_TOKEN: "",
+    PATH: `${gateBin()}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+}
+
+/** The machine's own Git platform logins, for the read-only gh and glab (startTeamAgent sets them from the config;
+ * gh's and glab's own stored logins work without). `dir`: where the two commands are written (tests). */
+type GateCreds = { github?: string; gitlab?: { host: string; token: string }[]; dir?: string };
+let gateCreds: GateCreds = {};
+export function setGateCredentials(c: GateCreds) { gateCreds = c; }
+const gateBin = () => gateCreds.dir ?? join(process.env.NOOP_HOME || join(homedir(), ".noop"), "teamagent", "gate-bin");
+
+const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+const DENY = "推分支和开 PR 由机器做，合并由人做";
+
+/** `gh api` / `glab api`: GET only (a request with fields and no method is a POST); a GraphQL query, not a mutation. */
+const API_CHECK = `api)
+    method=""; body=""; graphql=""; prev=""
+    for a in "$@"; do
+      case "$prev" in -X|--method) method=$a ;; esac
+      case "$a" in
+        -X?*) method=\${a#-X} ;;
+        --method=*) method=\${a#--method=} ;;
+        -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*) body=1 ;;
+        graphql) graphql=1 ;;
+      esac
+      case "$a" in *mutation*) no "api（GraphQL mutation）" ;; esac
+      prev=$a
+    done
+    method=$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')
+    if [ -n "$method" ]; then [ "$method" = GET ] || [ "$method" = HEAD ] || { [ -n "$graphql" ] && [ "$method" = POST ]; } || no "api -X $method"
+    elif [ -n "$body" ] && [ -z "$graphql" ]; then no "api（带字段就是 POST，读用 -X GET）"; fi ;;`;
+
+/** The read-only gh and glab, written where gateEnv puts them first on the agents' PATH. Each lets through what only
+ * reads (PRs / MRs, CI runs, issues, releases, the repository, GET requests) and runs the real command with the
+ * machine's own login; anything else is refused with a line that says who does it. A guardrail, as the push gate is:
+ * the Computer is the permission boundary. */
+export function readOnlyGitTools(): void {
+  const dir = gateBin();
+  mkdirSync(dir, { recursive: true });
+  const real = (bin: string) => {
+    const path = (process.env.PATH ?? "").split(":").filter((p) => p && resolve(p) !== resolve(dir)).join(":");
+    return Bun.which(bin, { PATH: path });
+  };
+  const write = (name: string, text: string | null) => {
+    const p = join(dir, name);
+    if (text === null) { rmSync(p, { force: true }); return; }
+    if (!existsSync(p) || readFileSync(p, "utf8") !== text) writeFileSync(p, text, { mode: 0o700 });
+  };
+  const gh = real("gh");
+  const ghConfig = process.env.GH_CONFIG_DIR;
+  write("gh", gh && `#!/bin/sh
+# gh for agents (Remi), read-only: pull requests, CI runs, issues, releases and the repository, with this machine's
+# own login. ${DENY}.
+no() { echo "remi: 这里的 gh 只读（看 PR、CI、issue、提交），不能 gh $1。${DENY}。" >&2; exit 1; }
+case "$1" in
+  ""|help|--help|-h|version|--version|status|search) ;;
+  pr) case "$2" in list|view|checks|diff|status) ;; *) no "pr $2" ;; esac ;;
+  issue) case "$2" in list|view|status) ;; *) no "issue $2" ;; esac ;;
+  run) case "$2" in list|view|watch) ;; *) no "run $2" ;; esac ;;
+  workflow|release) case "$2" in list|view) ;; *) no "$1 $2" ;; esac ;;
+  repo) case "$2" in view|list) ;; *) no "repo $2" ;; esac ;;
+  ${API_CHECK}
+  *) no "$1" ;;
+esac
+${ghConfig ? `export GH_CONFIG_DIR=${sq(ghConfig)}` : "unset GH_CONFIG_DIR"}
+${gateCreds.github ? `export GH_TOKEN=${sq(gateCreds.github)}` : "unset GH_TOKEN GITHUB_TOKEN"}
+export GH_NO_UPDATE_NOTIFIER=1 GH_PROMPT_DISABLED=1
+exec ${sq(gh)} "$@"
+`);
+  const glab = real("glab");
+  const glabConfig = process.env.GLAB_CONFIG_DIR;
+  const gl = (gateCreds.gitlab ?? []).filter((g) => g.host && g.token);
+  write("glab", glab && `#!/bin/sh
+# glab for agents (Remi), read-only: merge requests, CI pipelines, issues, releases and the repository, with this
+# machine's own login. ${DENY}.
+no() { echo "remi: 这里的 glab 只读（看 MR、CI、issue、提交），不能 glab $1。${DENY}。" >&2; exit 1; }
+case "$1" in
+  ""|help|--help|-h|version|--version) ;;
+  mr) case "$2" in list|view|diff) ;; *) no "mr $2" ;; esac ;;
+  ci|pipeline) case "$2" in list|status|get|trace) ;; *) no "$1 $2" ;; esac ;;
+  issue|release) case "$2" in list|view) ;; *) no "$1 $2" ;; esac ;;
+  repo) case "$2" in view|list) ;; *) no "repo $2" ;; esac ;;
+  ${API_CHECK}
+  *) no "$1" ;;
+esac
+${glabConfig ? `export GLAB_CONFIG_DIR=${sq(glabConfig)}` : "unset GLAB_CONFIG_DIR"}
+${gl.length === 1 ? `export GITLAB_TOKEN=${sq(gl[0].token)} GITLAB_HOST=${sq(gl[0].host)}` : "unset GITLAB_TOKEN"}
+exec ${sq(glab)} "$@"
+`);
 }
 
 /** The agent's own read-only command for the team chat (as in Raft, where agents read and search with a CLI): it
@@ -773,14 +868,14 @@ export const REMI_CLI = `#!/bin/sh
 #   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
 #   remi ask @WHO QUESTION                                 ask a person or an agent in the thread and go on; the answer reaches you
-#   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
+#   remi repo OWNER/NAME                                   you will read or change this repository: it is checked out for you
 #   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent now or once its owner agrees
 #   remi delegate @AGENT WHAT                              have another agent do a part; its result comes back to you
 #   remi submit WHAT                                       count a submission to an outside service (at most 3 per task)
 #   remi propose [--key KEY] [--urgent] TITLE --why WHY --plan PLAN
 #                                                          propose work for a person to say yes to (it is not done now)
-#   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
-#                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
+#   remi remind [daily|weekdays|weekly|every 30m] [WHEN] [@WHO] TEXT    remind @WHO (default: you, in this thread)
+#                                                          at WHEN: 20m, 2h, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
 usage() { sed -n '2,22p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
@@ -838,7 +933,8 @@ export function cliEnv(root: string, server: string, token: string): Record<stri
     const p = join(bin, name);
     if (!existsSync(p) || readFileSync(p, "utf8") !== REMI_CLI) writeFileSync(p, REMI_CLI, { mode: 0o755 });
   }
-  return { REMI_URL: server.replace(/\/$/, ""), REMI_TOKEN: token, PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` };
+  // the read-only gh and glab (gateEnv) stay right after it
+  return { REMI_URL: server.replace(/\/$/, ""), REMI_TOKEN: token, PATH: `${bin}:${gateBin()}:${process.env.PATH ?? "/usr/bin:/bin"}` };
 }
 
 const LOOKUP = `# The remi command
@@ -853,8 +949,9 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi file /media/…  > FILE     a file someone attached (remi read shows them)
 Look up only what the request needs. When you need someone's answer to go on (a choice only they can make, a fact
 only they know), ask with \`remi ask @WHO QUESTION\` and keep working on what does not depend on it: their reply
-reaches you in this session. Ask only what you cannot find out yourself. When the work needs changes in a repository
-you do not have here, declare it with \`remi repo owner/name\` first. When part of the work is someone else's to do (a
+reaches you in this session. Ask only what you cannot find out yourself. When the work needs a repository's files or
+commit history you do not have here, to read or to change them, declare it with \`remi repo owner/name\` first; the
+status of a pull request or CI run needs no checkout (\`gh pr view N -R owner/name\`, \`glab mr list -R group/name\`). When part of the work is someone else's to do (a
 person must do or check something; another agent is the right one for the next step), pass it on with
 \`remi handoff @WHO WHAT\`: a person gets the ball at once; another agent gets it at once where the person who asked
 may use it directly ("no card" in \`remi who\`), else only once its owner agrees on a card. Do not @-mention agents to
@@ -863,7 +960,9 @@ most every 5 minutes, only when people would want to know), and hand over a file
 \`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
 2 minutes", "remind me on Friday…", "every morning…"), always set it with
 \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` (WHEN: 2m, 1h, 3d, 9:30, tomorrow 9:00, fri 17:00), then finish
-at once. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
+at once. For "every N minutes / hours" (report on a merge request every 10 minutes), \`remi remind every 10m TEXT\` (at
+least 10m) brings you back to this thread each time: look, say what changed in your result, and finish. It is skipped
+while you are still on it and stops by itself after a day; a person who wants it longer sets it themselves. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
 person's "Waiting for you" and their system notifications. When you notice work worth doing beyond what you were asked
 (a failing check, an outdated dependency), do not do it: propose it with
 \`remi propose --key SHORT-WORD TITLE --why WHAT-YOU-SAW --plan WHAT-DONE-LOOKS-LIKE\`. It reaches the person this task
