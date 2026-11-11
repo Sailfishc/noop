@@ -159,13 +159,15 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 }
 
 type agentView struct {
-	ID          string  `json:"id"`
-	OwnerID     string  `json:"owner_id"`
-	MachineID   *string `json:"machine_id"`
-	Handle      string  `json:"handle"`
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Runtime     string  `json:"runtime"`
+	ID        string  `json:"id"`
+	OwnerID   string  `json:"owner_id"`
+	MachineID *string `json:"machine_id"` // the first of Machines
+	// Machines: the computers it runs on, in its owner's order (teampool.go); one for a team machine's agent
+	Machines    []string `json:"machines"`
+	Handle      string   `json:"handle"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Runtime     string   `json:"runtime"`
 	// Dispatch: who may hand it work: owner (只有我), channel (members of a channel it is in), team (anyone; an
 	// @mention in a channel it is not in brings it there). Confirm: work from people other than the owner waits for
 	// the owner's yes.
@@ -182,7 +184,8 @@ type agentView struct {
 	Memory string `json:"memory,omitempty"`
 }
 
-const agentCols = "id, owner_id, machine_id, handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory"
+const agentCols = "id, owner_id, machine_id, (SELECT json_group_array(machine_id ORDER BY rank) FROM agent_machines am WHERE am.agent_id = agents.id), " +
+	"handle, name, description, runtime, dispatch, confirm, autonomy, model, repo, memory"
 
 func scanAgents(rows *sql.Rows, err error) []agentView {
 	if err != nil {
@@ -192,8 +195,13 @@ func scanAgents(rows *sql.Rows, err error) []agentView {
 	out := []agentView{}
 	for rows.Next() {
 		var a agentView
-		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory); err != nil {
+		var ms string
+		if err := rows.Scan(&a.ID, &a.OwnerID, &a.MachineID, &ms, &a.Handle, &a.Name, &a.Description, &a.Runtime, &a.Dispatch, &a.Confirm, &a.Autonomy, &a.Model, &a.Repo, &a.Memory); err != nil {
 			panic(err)
+		}
+		_ = json.Unmarshal([]byte(ms), &a.Machines)
+		if a.Machines == nil {
+			a.Machines = []string{}
 		}
 		out = append(out, a)
 	}
@@ -444,7 +452,7 @@ func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 	if q.who.machineID != "" {
 		ms := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))
 		out["machine"] = ms[0]
-		out["agents"] = scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID))
+		out["agents"] = scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE "+onMachine("id")+" ORDER BY created", q.who.machineID))
 	}
 	writeJSON(w, 200, out)
 }
@@ -547,7 +555,16 @@ func (h *Hub) v1MachineDelete(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM machines WHERE id = ?", id))
-	h.must(h.db.Exec("UPDATE agents SET machine_id = NULL WHERE machine_id = ?", id))
+	for _, a := range scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE "+onMachine("id"), id)) {
+		left := []string{}
+		for _, m := range a.Machines {
+			if m != id {
+				left = append(left, m)
+			}
+		}
+		h.setAgentMachines(a.ID, left)
+		h.agentChanged(a.ID)
+	}
 	writeJSON(w, 200, obj{"ok": true})
 }
 
@@ -619,7 +636,7 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 	if m.Team || m.SyncTeamConfig {
 		cfg = h.teamConfig()
 	}
-	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE machine_id = ? ORDER BY created", q.who.machineID)),
+	writeJSON(w, 200, obj{"machine": m, "agents": scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE "+onMachine("id")+" ORDER BY created", q.who.machineID)),
 		"team_config": cfg})
 }
 
@@ -637,14 +654,16 @@ type agentBody struct {
 	Handle      *string `json:"handle"`
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
-	MachineID   *string `json:"machine_id"`
-	Runtime     *string `json:"runtime"`
-	Dispatch    *string `json:"dispatch"`
-	Confirm     *bool   `json:"confirm"`
-	Autonomy    *string `json:"autonomy"`
-	Model       *string `json:"model"`
-	Repo        *string `json:"repo"`
-	Memory      *string `json:"memory"`
+	MachineID   *string `json:"machine_id"` // one computer ("" none); Machines says several
+	// Machines: its computers in order, the first tried first (teampool.go)
+	Machines *[]string `json:"machines"`
+	Runtime  *string   `json:"runtime"`
+	Dispatch *string   `json:"dispatch"`
+	Confirm  *bool     `json:"confirm"`
+	Autonomy *string   `json:"autonomy"`
+	Model    *string   `json:"model"`
+	Repo     *string   `json:"repo"`
+	Memory   *string   `json:"memory"`
 	// OwnerID: hand the agent to another responsible person (an admin, for a team agent)
 	OwnerID *string `json:"owner_id"`
 }
@@ -663,14 +682,18 @@ func (h *Hub) applyAgent(id, owner, actor string, b agentBody) *httpError {
 	if b.Description != nil {
 		set("description", trimmed(*b.Description, 300))
 	}
-	if b.MachineID != nil {
-		if *b.MachineID == "" {
-			set("machine_id", nil)
-		} else if !h.mayRunAgentsOn(actor, *b.MachineID) && !h.mayRunAgentsOn(owner, *b.MachineID) {
-			return &httpError{400, "只能用你自己的机器，或者（管理员）团队机器"}
-		} else {
-			set("machine_id", *b.MachineID)
+	if b.Machines == nil && b.MachineID != nil {
+		list := []string{}
+		if *b.MachineID != "" {
+			list = append(list, *b.MachineID)
 		}
+		b.Machines = &list
+	}
+	if b.Machines != nil {
+		if e := h.checkMachines(owner, actor, *b.Machines); e != nil {
+			return e
+		}
+		h.setAgentMachines(id, *b.Machines)
 	}
 	if b.Runtime != nil {
 		if !runtimes[*b.Runtime] {
@@ -738,7 +761,13 @@ func (h *Hub) v1AgentCreate(w http.ResponseWriter, q *request) {
 	}
 	id := newID("a_")
 	h.must(h.db.Exec("INSERT INTO agents (id, owner_id, handle, name, created) VALUES (?, ?, ?, ?, ?)", id, q.who.userID, handle, handle, h.nowMs()))
-	if b.MachineID != nil && *b.MachineID != "" && h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND team = 1", *b.MachineID) > 0 {
+	first := ""
+	if b.Machines != nil && len(*b.Machines) > 0 {
+		first = (*b.Machines)[0]
+	} else if b.Machines == nil && b.MachineID != nil {
+		first = *b.MachineID
+	}
+	if first != "" && h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND team = 1", first) > 0 {
 		// a team agent: anyone may ask it, and nobody has to say yes first (unless said otherwise)
 		if b.Dispatch == nil {
 			team := "team"
@@ -751,6 +780,7 @@ func (h *Hub) v1AgentCreate(w http.ResponseWriter, q *request) {
 	}
 	if e := h.applyAgent(id, q.who.userID, q.who.userID, b); e != nil { // all fields or none (the lock hides the half-made row)
 		h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", id))
+		h.must(h.db.Exec("DELETE FROM agent_machines WHERE agent_id = ?", id))
 		errJSON(w, e.status, e.msg)
 		return
 	}
@@ -795,6 +825,7 @@ func (h *Hub) v1AgentDelete(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", a.ID))
+	h.must(h.db.Exec("DELETE FROM agent_machines WHERE agent_id = ?", a.ID))
 	h.must(h.db.Exec("DELETE FROM channel_members WHERE kind = 'agent' AND member_id = ?", a.ID))
 	h.broadcastPeople(obj{"type": "agent_removed", "id": a.ID})
 	writeJSON(w, 200, obj{"ok": true})

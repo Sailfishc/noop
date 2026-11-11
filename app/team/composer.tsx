@@ -3,7 +3,7 @@ import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, u
 import fs from "fs/promises";
 import { L, lang } from "../i18n";
 import { alpha, Avatar, Btn, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
-import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
+import { blockedReason, dispatchFor, machineNow, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
 
@@ -105,7 +105,7 @@ function dispatchLine(t: Team, channelId: string, text: string, implied?: string
       warn = true;
       continue;
     }
-    const m = t.machines().find((x) => x.id === a.machine_id);
+    const m = machineNow(t, a);
     const owner = t.users().find((u) => u.id === a.owner_id);
     const how = dispatchFor(a, t.me());
     if (how === "refused") {

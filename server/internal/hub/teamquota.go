@@ -3,6 +3,7 @@ package hub
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -23,6 +24,10 @@ const (
 	quotaMargin = 90 * time.Second // after the time the runtime named: clocks differ, resets are not to the second
 	quotaNotice = 24 * time.Hour   // waited this long without getting through: people are told
 )
+
+// addressRE: an account's address in what a runtime said. The note goes to everyone with the machine card, and a runtime
+// may name the account it is logged in as ("…limit for you@corp.com"); the address is not theirs to see.
+var addressRE = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
 
 // quotaBackoff: when a limit gave no time, how long before the next try (the tries-th without a time).
 func quotaBackoff(tries int) time.Duration {
@@ -101,7 +106,7 @@ func (h *Hub) putRuntimeStatus(machineID, runtime string, s *runtimeStatus) {
 		h.must(h.db.Exec("DELETE FROM runtime_status WHERE machine_id = ? AND runtime = ?", machineID, runtime))
 		// the tasks it held back in the queue: their machine hears of them now, not at its next poll
 		for _, t := range scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'queued'
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ? AND runtime = ?) ORDER BY num`, machineID, runtime)) {
+			AND `+onMachine("agent_id")+` AND agent_id IN (SELECT id FROM agents WHERE runtime = ?) ORDER BY num`, machineID, runtime)) {
 			h.taskChanged(t.ID)
 		}
 	} else {
@@ -146,7 +151,7 @@ func (h *Hub) runtimeFailed(machineID, runtime, failure string, retryAt int64, n
 	if s == nil || s.Reason != failure {
 		s = &runtimeStatus{Since: now}
 	}
-	s.Reason, s.Text, s.At, s.Probe, s.Note = failure, text, now, "", trimmed(note, 300)
+	s.Reason, s.Text, s.At, s.Probe, s.Note = failure, text, now, "", trimmed(addressRE.ReplaceAllString(note, "…"), 300)
 	if failure != "quota" {
 		s.State, s.Until, s.NextAt, s.Tries = "blocked", 0, 0, 0
 	} else {

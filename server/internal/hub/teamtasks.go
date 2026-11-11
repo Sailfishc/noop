@@ -271,8 +271,29 @@ func (h *Hub) taskOut(q *request, t taskView) taskView {
 }
 
 func (h *Hub) taskChanged(id string) {
-	if t, ok := h.task(id); ok {
-		h.broadcastChannel(t.ChannelID, obj{"type": "task", "task": t})
+	t, ok := h.task(id)
+	if !ok {
+		return
+	}
+	h.broadcastChannel(t.ChannelID, obj{"type": "task", "task": t})
+	// its people outside the channel (the agent's owner who confirms it, a requester who left) see it in their inbox
+	// too: the whole task where they may read the channel, else as redacted as the inbox shows it
+	people := []string{t.CreatedBy, t.Handler}
+	if a, ok := h.agent(t.AgentID); ok {
+		people = append(people, a.OwnerID)
+	}
+	told := map[string]bool{}
+	for _, u := range people {
+		if u == "" || told[u] || h.isMember(t.ChannelID, "user", u) {
+			continue
+		}
+		told[u] = true
+		out := t
+		if !h.userCanRead(u, t.ChannelID) {
+			out = redact(t)
+		}
+		b, _ := json.Marshal(obj{"type": "task", "task": out})
+		h.socks.send("u:"+u, b)
 	}
 }
 
@@ -816,8 +837,12 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 		return t, agentView{}, false
 	}
 	a, _ := h.agent(t.AgentID)
-	if a.MachineID == nil || *a.MachineID != q.who.machineID {
+	if !h.agentOn(a.ID, q.who.machineID) {
 		errJSON(w, 403, "这个任务的 Agent 不在这台机器上")
+		return t, a, false
+	}
+	if hold := h.holder(t); hold != "" && hold != q.who.machineID { // it stays on the computer that took it
+		errJSON(w, 409, "这个任务在另一台电脑上进行，留在那台")
 		return t, a, false
 	}
 	return t, a, true
@@ -830,13 +855,13 @@ const endedKeep = 7 * 24 * time.Hour
 func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("waiting") == "1" { // its tasks that wait on a check command it runs
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'waiting' AND json_extract(wait, '$.how') = 'poll'
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+			AND claimed_by = ? ORDER BY num`, q.who.machineID))
 		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
 		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
+			AND claimed_by = ? ORDER BY num`, q.who.machineID))})
 		return
 	}
 	if ids := q.query("ended"); ids != "" { // of the task folders it keeps, the ones whose task ended a week ago or more
@@ -849,23 +874,26 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 			args = append(args, id)
 		}
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('done', 'closed')
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) AND updated < ?
+			AND claimed_by = ? AND updated < ?
 			AND id IN (?`+strings.Repeat(", ?", len(list)-1)+`) ORDER BY num`, args...))
 		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')
-		AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+		AND `+onMachine("agent_id")+` ORDER BY num`, q.who.machineID))
 	out := []taskView{}
-	runtimeOf := map[string]string{}
+	agents := map[string]agentView{}
 	for _, t := range ts {
 		if t.State == taskQueued {
-			rt, ok := runtimeOf[t.AgentID]
+			a, ok := agents[t.AgentID]
 			if !ok {
-				a, _ := h.agent(t.AgentID)
-				rt, runtimeOf[t.AgentID] = a.Runtime, a.Runtime
+				a, _ = h.agent(t.AgentID)
+				agents[t.AgentID] = a
 			}
-			if ok, _ := h.runtimeGate(t, q.who.machineID, rt, false); ok { // held back by its runtime here: not offered
+			if ok, _ := h.pickable(t, a, q.who.machineID); !ok { // another of its computers takes it (teampool.go)
+				continue
+			}
+			if ok, _ := h.runtimeGate(t, q.who.machineID, a.Runtime, false); ok { // held back by its runtime here: not offered
 				out = append(out, t)
 			}
 		} else if t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID {

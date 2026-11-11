@@ -4,7 +4,7 @@ import { type JSX, Text, View } from "nsh";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
 import { colors, Icon, IconBtn, type IconName, Tag } from "../ui";
-import { blockedReason, clock, insecureRefused, runtimeTrouble, runtimeLabel, type Agent, type Team } from "./api";
+import { blockedReason, clock, machineNow, insecureRefused, runtimeTrouble, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
 
@@ -76,7 +76,7 @@ export function RuntimeBadge(props: { runtime: string; testID?: string }) {
  * itself (its runtime missing or logged out, or its last run failed), yellow working or waiting for its runtime's quota, green ready. What a task needs
  * from people is on the task, not here. */
 export function agentState(t: Team, a: Agent): { label: string; tone: "up" | "warn" | "danger" | "muted" | "accent"; blocked: boolean } {
-  const m = t.machines().find((x) => x.id === a.machine_id);
+  const m = machineNow(t, a); // with several computers: the one its new work goes to
   const why = blockedReason(a, m, lang() !== "zh");
   if (!a.machine_id || !m || !m.online) return { label: L(`Offline: ${why}`, `离线：${why}`), tone: "muted", blocked: true };
   const quota = m.runtime_status?.[a.runtime];

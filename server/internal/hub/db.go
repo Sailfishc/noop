@@ -169,5 +169,8 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(runtimeStatusSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(agentMachinesSchema); err != nil {
+		return err
+	}
 	return initSearch(db)
 }

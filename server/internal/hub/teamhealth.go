@@ -63,7 +63,9 @@ func (h *Hub) runEnded(t taskView, a agentView, machineID, state, failure string
 	if failure == "quota" {
 		return // waiting for the runtime's limit: not a failure of the task
 	}
-	if failure == "" {
+	if failure == "" && state != taskFailed && state != taskBlocked {
+		// a run that went through: its runtime works. A failed one with no failure named proves nothing either way
+		// (it may be the one trying after a limit): waking every task that waits would have each hit the limit again.
 		h.runtimeWorked(machineID, a.Runtime)
 	}
 	if state != taskFailed && state != taskBlocked {
@@ -83,6 +85,10 @@ func (h *Hub) runEnded(t taskView, a agentView, machineID, state, failure string
 // person.
 func (h *Hub) mayRun(w http.ResponseWriter, t taskView, a agentView, machineID string, again bool) bool {
 	if t.State == taskQueued {
+		if ok, why := h.pickable(t, a, machineID); !ok { // another of its computers takes it (teampool.go)
+			errJSON(w, 409, why)
+			return false
+		}
 		if ok, why := h.runtimeGate(t, machineID, a.Runtime, true); !ok {
 			errJSON(w, 409, why)
 			return false

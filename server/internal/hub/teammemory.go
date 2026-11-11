@@ -20,7 +20,7 @@ const preferencesChars = 4000
 // mayReadMemory: the asker may see the agent's memory.
 func (h *Hub) mayReadMemory(w *principal, a agentView) bool {
 	if w.machineID != "" {
-		return a.MachineID != nil && *a.MachineID == w.machineID
+		return h.agentOn(a.ID, w.machineID)
 	}
 	return h.mayManageAgent(w.userID, a)
 }
