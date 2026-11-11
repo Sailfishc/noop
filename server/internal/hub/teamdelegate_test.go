@@ -188,3 +188,49 @@ func TestDelegateFuses(t *testing.T) {
 	_, r = e.delegate(ftok, "@d9 再拆")
 	check(t, "the ninth under one first task is refused", r.status == 429 && strings.Contains(string(r.raw), "最多 8 个"), r)
 }
+
+func TestDelegateDelivery(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	e.zwAgent("bei")
+	e.zwAgent("san")
+	e.agentOf(e.wl.session, e.mid, "wu", "channel", true, true) // 王磊's, his yes first
+
+	// a task that delegated is accepted by a person, even when @acha's own run changed nothing
+	id, tok, _ := e.claimed("@acha 查一下退款")
+	b, _ := e.delegate(tok, "@bei 查退款日志")
+	e.waitDelegates(id, e.token, 1)
+	e.claimChild(b, e.otherToken)
+	e.do("POST", "/api/v1/tasks/"+b+"/report", e.otherToken, map[string]any{"state": "review", "summary": "日志里没有异常", "run": 1})
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r := e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "查过了，没问题", "answer": true, "run": 2})
+	check(t, "not done by itself: in review", r.status == 200 && r.body["state"] == "review", r)
+	check(t, "on the requester's list", hasTask(e.inbox(e.zw.session), id))
+
+	// delivering before everything is back: what still runs is cancelled, the card withdrawn, the thread told
+	id2, tok2, m2 := e.claimed("@acha 再查一下")
+	s, _ := e.delegate(tok2, "@san 查数据库")
+	_, r = e.delegate(tok2, "@wu 查网关")
+	check(t, "a card", strings.Contains(string(r.raw), "proposed"), r)
+	r = e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"state": "review", "summary": "先交了", "run": 1})
+	check(t, "delivered", r.status == 200 && r.body["state"] == "review", r)
+	check(t, "the child still running is cancelled", e.task(s)["state"] == "closed")
+	hs := e.task(id2)["handoffs"].([]any)
+	check(t, "the card is withdrawn", hs[len(hs)-1].(map[string]any)["state"] == "declined", resp{raw: []byte(fmt.Sprint(hs))})
+	check(t, "the thread says so", strings.Contains(e.lastReply(m2["id"].(string)), "没交回的委派不再需要"), resp{raw: []byte(e.lastReply(m2["id"].(string)))})
+
+	// a child a person cancelled is not sent back; a failed child's ball is gone once its parent is over
+	id3, tok3, _ := e.claimed("@acha 第三件")
+	c1, _ := e.delegate(tok3, "@bei 做 A")
+	c2, _ := e.delegate(tok3, "@san 做 B")
+	e.waitDelegates(id3, e.token, 1)
+	check(t, "the requester cancels one", e.do("POST", "/api/v1/tasks/"+c1+"/cancel", e.zw.session, nil).status == 200)
+	e.claimChild(c2, e.otherToken)
+	e.do("POST", "/api/v1/tasks/"+c2+"/report", e.otherToken, map[string]any{"state": "failed", "summary": "做不了", "run": 1})
+	c := e.do("POST", "/api/v1/tasks/"+id3+"/claim", e.token, nil)
+	check(t, "woken with the receipt", c.status == 200, c)
+	_, r = e.delegate(c.body["read_token"].(string), "@bei 再做一遍")
+	check(t, "a cancelled child is not sent back", r.status == 409 && strings.Contains(string(r.raw), "被取消了"), r)
+	check(t, "the failed child is with @acha while its parent goes on", e.task(c2)["holder"].(map[string]any)["why"] == "receipt")
+	e.do("POST", "/api/v1/tasks/"+id3+"/cancel", e.zw.session, nil)
+	check(t, "and with nobody once the parent is over", e.task(c2)["holder"] == nil, resp{raw: []byte(fmt.Sprint(e.task(c2)["holder"]))})
+}

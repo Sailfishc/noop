@@ -167,6 +167,10 @@ func (h *Hub) v1AgentDelegate(w http.ResponseWriter, q *request) {
 
 // redo: A sends a delegated task back with what to change: it runs again in its own session, at most maxRedos times.
 func (h *Hub) redo(w http.ResponseWriter, t taskView, a, b agentView, c taskView, what string) {
+	if c.State == taskClosed {
+		errJSON(w, 409, c.ID+" 被取消了（人取消的，或上级任务取消了），不能打回重做：自己做，或者用 needs_decision 请人决定")
+		return
+	}
 	if !returnedStates[c.State] {
 		errJSON(w, 409, "@"+b.Handle+" 还在做 "+c.ID+"：等它交回（回执会叫醒你），再决定要不要打回")
 		return
@@ -270,5 +274,47 @@ func (h *Hub) cancelDelegates(id string) {
 		h.setTask(c.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(c.Summary + "\n上级任务取消了"), "cancelled_at": h.nowMs()})
 		h.taskChanged(c.ID)
 		h.cancelDelegates(c.ID)
+	}
+}
+
+// delegated: t's agent delegated something (a child task, or a card for one), so what it delivers is the whole and a
+// person accepts it, even when its own run changed nothing.
+func (h *Hub) delegated(t taskView) bool {
+	for _, x := range t.Handoffs {
+		if x.Kind == "delegate" {
+			return true
+		}
+	}
+	return len(h.children(t.ID)) > 0
+}
+
+// delegatesDropped: t delivered (review or done) before everything it delegated was back. What still runs is
+// cancelled (and theirs), cards not clicked yet are withdrawn, and the thread says so in a line: nobody would take
+// those results any more.
+func (h *Hub) delegatesDropped(id string) {
+	t, ok := h.task(id)
+	if !ok {
+		return
+	}
+	var gone []string
+	hs, changed := append([]handoffView{}, t.Handoffs...), false
+	for i, x := range hs {
+		if x.Kind == "delegate" && x.State == "proposed" {
+			hs[i].State, changed = "declined", true
+			gone = append(gone, "给 @"+h.agentHandle(x.To)+" 的委派卡片")
+		}
+	}
+	if changed {
+		h.setTask(id, map[string]any{"handoffs": jsonOrNil(hs)})
+	}
+	for _, c := range h.children(id) {
+		if !returnedStates[c.State] {
+			gone = append(gone, c.ID+" @"+h.agentHandle(c.AgentID))
+		}
+	}
+	h.cancelDelegates(id)
+	if len(gone) > 0 {
+		h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", t.AgentID}, "已经交付，没交回的委派不再需要，取消了："+strings.Join(gone, "，"))
+		h.taskChanged(id)
 	}
 }

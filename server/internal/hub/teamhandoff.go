@@ -93,6 +93,11 @@ func (h *Hub) holderOf(t taskView) *holderView {
 		return user(t.CreatedBy, "unblock")
 	case taskFailed:
 		if t.Mandate != nil && t.Mandate.Delegated && len(t.Mandate.Via) > 0 {
+			var ps string
+			h.db.QueryRow("SELECT state FROM tasks_v1 WHERE id = ?", t.Mandate.Parent).Scan(&ps)
+			if ps == taskDone || ps == taskClosed {
+				return nil // the task that delegated it is over: nobody owes it anything
+			}
 			return &holderView{"agent", t.Mandate.Via[len(t.Mandate.Via)-1], "receipt"} // back to the agent that delegated it
 		}
 		return user(t.CreatedBy, "retry")

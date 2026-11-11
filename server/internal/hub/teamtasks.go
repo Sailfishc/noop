@@ -1195,7 +1195,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if state == taskReview && t.Mandate != nil && t.Mandate.Delegated {
 			state = taskDone // delivered back to the agent that delegated it: it checks it, not a person (teamdelegate.go)
-		} else if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) {
+		} else if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) && !h.delegated(t) {
 			state = taskDone
 		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
@@ -1210,6 +1210,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if len(cols) > 0 || len(b.Outputs) > 0 {
 		h.taskChanged(t.ID)
+	}
+	if cols["state"] == taskReview || cols["state"] == taskDone {
+		h.delegatesDropped(t.ID) // delivered: what it delegated and is not back yet is not wanted any more
 	}
 	if cols["state"] == taskWaiting && b.Wait != nil && b.Wait.How == "delegates" {
 		h.checkReceipt(t.ID) // everything it delegated may be back already
