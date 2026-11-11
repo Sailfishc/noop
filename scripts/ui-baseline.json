@@ -3,11 +3,9 @@
     "nsh-base": 1
   },
   "app/team/TeamApp.tsx": {
-    "nsh-base": 1,
-    "font-size": 18,
-    "radius": 11,
-    "color": 1,
-    "spacing": 19,
+    "font-size": 16,
+    "radius": 9,
+    "spacing": 17,
     "pressable": 7
   },
   "app/team/channel.tsx": {
@@ -39,11 +37,9 @@
     "pressable": 6
   },
   "app/team/reminders.tsx": {
-    "nsh-base": 1,
-    "font-size": 6,
-    "radius": 4,
-    "color": 1,
-    "spacing": 5,
+    "font-size": 4,
+    "radius": 2,
+    "spacing": 2,
     "pressable": 2
   },
   "app/team/search.tsx": {
@@ -53,11 +49,10 @@
     "pressable": 2
   },
   "app/team/settings.tsx": {
-    "nsh-base": 1,
-    "font-size": 106,
-    "radius": 20,
-    "spacing": 51,
-    "pressable": 7
+    "font-size": 105,
+    "radius": 18,
+    "spacing": 45,
+    "pressable": 6
   },
   "app/team/signin.tsx": {
     "font-size": 4,
@@ -82,11 +77,9 @@
     "pressable": 4
   },
   "app/team/tasks.tsx": {
-    "nsh-base": 1,
-    "font-size": 16,
-    "radius": 9,
-    "color": 1,
-    "spacing": 14,
+    "font-size": 13,
+    "radius": 6,
+    "spacing": 11,
     "pressable": 4
   },
   "app/team/ui.tsx": {

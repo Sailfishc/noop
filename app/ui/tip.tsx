@@ -12,8 +12,8 @@ export function Tip(props: { label: string; shortcut?: string; placement?: Popup
   const presence = createPresence(props.placement ?? "top");
   return (
     <Tooltip placement={props.placement} delay={props.delay} onOpen={presence.show} onClose={presence.hide}>
-      <View class="flex-row items-center gap-2 rounded-md border border-border bg-popover px-2 py-1" style={presence.style}>
-        <Text class="text-xs text-popover-foreground">{props.label}</Text>
+      <View class="max-w-80 flex-row items-center gap-2 rounded-md border border-border bg-popover px-2 py-1" style={presence.style}>
+        <Text class="shrink text-xs leading-4 text-popover-foreground">{props.label}</Text>
         <If when={props.shortcut}>
           <Text class="text-xs text-muted-foreground" style={{ fontVariant: ["tabular-nums"] }}>
             {props.shortcut}

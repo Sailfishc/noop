@@ -1,9 +1,8 @@
 // Reminders: "remind me later" on a message, the ones that went off (in 待你决定), and the ones still to come. /remind
 // in the composer and an agent's `remi remind` make them too; the server parses the time words (reminders.go).
-import { signal, Text, View, type ViewStyle } from "nsh";
-import { Menu, MenuItem } from "nsh/base";
+import { signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, Btn, colors, hovered, Icon } from "../ui";
+import { Btn, colors, hovered, Icon, MenuHeading, MenuRow, PopMenu } from "../ui";
 import { reminderUp, type Reminder, type Team } from "./api";
 import { time } from "./ui";
 
@@ -63,13 +62,10 @@ const LATER: { when: string; label: () => string }[] = [
 
 /** A bell on a message: remind me of it later. */
 export function RemindMenu(props: { team: Team; messageId: string; onError: (e: string) => void }) {
-  const row = (): ViewStyle => ({ height: 32, flexDirection: "row", alignItems: "center", paddingHorizontal: 10, borderRadius: 7 });
   return (
-    <Menu
+    <PopMenu
       align="end"
-      offset={4}
-      margin={8}
-      popupStyle={{ minWidth: 180, padding: 5, borderRadius: 12, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
+      minWidth={180}
       trigger={
         <View role="button" testID={`remind-${props.messageId}`} accessibilityLabel={L("Remind me later", "稍后提醒")} tooltip={<Text>{L("Remind me later", "稍后提醒")}</Text>}
           hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
@@ -77,14 +73,12 @@ export function RemindMenu(props: { team: Team; messageId: string; onError: (e: 
         </View>
       }
     >
-      <Text style={{ paddingHorizontal: 10, paddingTop: 4, paddingBottom: 6, fontSize: 12, fontWeight: "600", color: colors.faint }}>{L("Remind me", "提醒我")}</Text>
+      <MenuHeading text={L("Remind me", "提醒我")} />
       {LATER.map((x) => (
-        <MenuItem testID={`remind-${props.messageId}-${x.when.replace(/\W+/g, "-")}`} hoverStyle={hovered()} activeStyle={hovered()} style={row()}
-          onSelect={async () => props.onError((await props.team.remind({ message_id: props.messageId, when: x.when })) ?? "")}>
-          <Text style={{ fontSize: 13.5, color: colors.text }}>{x.label()}</Text>
-        </MenuItem>
+        <MenuRow testID={`remind-${props.messageId}-${x.when.replace(/\W+/g, "-")}`} label={x.label()}
+          onSelect={async () => props.onError((await props.team.remind({ message_id: props.messageId, when: x.when })) ?? "")} />
       ))}
-    </Menu>
+    </PopMenu>
   );
 }
 

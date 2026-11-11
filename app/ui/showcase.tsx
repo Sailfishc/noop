@@ -16,6 +16,10 @@ import { PickCard } from "./pick-card";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
 import { Tag } from "./tag";
+import { Modal } from "./dialog";
+import { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
+import { Dropdown } from "./select";
+import { toast, Toaster } from "./toast";
 import { Txt } from "./text";
 import { colors, scale } from "./theme";
 
@@ -38,6 +42,8 @@ export function Showcase() {
   const pick = signal<"a" | "b" | "c">("a");
   const on = signal(true);
   const card = signal("one");
+  const dialog = signal(false);
+  const pickOne = signal<string | null>("codex");
   return (
     <Scroll testID="showcase" style={{ flex: 1, backgroundColor: colors.background }} contentStyle={{ padding: 24, gap: 24 }}>
       <Text style={{ fontSize: scale.text.display, fontWeight: "700", color: colors.text }}>Remi components</Text>
@@ -130,13 +136,38 @@ export function Showcase() {
       <Section title="Label, Noted (ⓘ), Panel">
         <View style={{ flexDirection: "row", gap: 16, alignItems: "flex-start" }}>
           <View style={{ flex: 1, gap: 12 }}>
-            <Label text="A label with a note" note="The explanation lives behind the ⓘ, never under the label." />
+            <Label testID="showcase-label" text="A label with a note" note="The explanation lives behind the ⓘ, never under the label." />
             <Noted label={<Text style={{ fontSize: scale.text.body, color: colors.text }}>Noted, with something on the right</Text>} note="Pressing ⓘ shows this." right={<Tag label="right" />} />
           </View>
           <Panel title="Panel" note="A panel's note is behind its ⓘ too." style={{ flex: 1 }}>
             <Text style={{ fontSize: scale.text.body, color: colors.muted }}>Content</Text>
           </Panel>
         </View>
+      </Section>
+
+      <Section title="Overlays: Dropdown, PopMenu, Modal, toast (Tip shows on hover; confirm() is the system alert)">
+        <Row>
+          <View style={{ width: 200 }}>
+            <Dropdown testID="showcase-dropdown" options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude Code" }, { value: "pi", label: "Pi" }]} value={pickOne()} onChange={pickOne.set} label="Runtime" />
+          </View>
+          <View style={{ width: 120 }}>
+            <Dropdown small options={[{ value: "a", label: "Small" }]} value={null} placeholder="Placeholder" onChange={() => {}} />
+          </View>
+          <PopMenu trigger={<View testID="showcase-menu" style={{ height: 30, justifyContent: "center", paddingHorizontal: 12, borderRadius: scale.radius.md, borderWidth: 1, borderColor: colors.fieldBorder }}><Text style={{ fontSize: scale.text.body, color: colors.text }}>Menu</Text></View>}>
+            <MenuHeading text="Heading" />
+            <MenuRow icon="settings" label="With an icon" right="⌘," onSelect={() => {}} />
+            <MenuRow label="Checked" checked onSelect={() => {}} />
+            <MenuRow label="Not checked" checked={false} onSelect={() => {}} />
+            <MenuLine />
+            <MenuRow icon="external" label="Danger" danger onSelect={() => {}} />
+          </PopMenu>
+          <Btn small testID="showcase-dialog-open" label="Open a Modal" onPress={() => dialog.set(true)} />
+          <Btn small testID="showcase-toast" label="Toasts" onPress={() => { toast("Saved"); toast("Couldn’t save: the server returned 500", "error"); }} />
+        </Row>
+        <Modal open={dialog()} onClose={() => dialog.set(false)} title="A Modal" testID="showcase-dialog" width={480}
+          footer={<View style={{ flex: 1, flexDirection: "row", justifyContent: "flex-end", gap: 8 }}><Btn kind="ghost" label="Cancel" onPress={() => dialog.set(false)} /><Btn kind="primary" label="Create" onPress={() => dialog.set(false)} /></View>}>
+          <Field label="Name" value="" onChange={() => {}} placeholder="Its content scrolls; the footer stays." />
+        </Modal>
       </Section>
 
       <Section title="Tag tones, Dot, StateDot, Spinner">
@@ -178,6 +209,7 @@ export function Showcase() {
           <Each of={ICONS}>{(n) => <Icon name={n()} size={18} tint={colors.text} />}</Each>
         </Row>
       </Section>
+      <Toaster />
     </Scroll>
   );
 }

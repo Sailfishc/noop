@@ -57,6 +57,23 @@ describe("showcase", () => {
       await shot(app, `showcase-${scheme}`);
     });
   }
+  test("showcase-overlays", async () => {
+    const app = await open("./Showcase.tsx", { width: 1280, height: 1400 });
+    await app.waitFor("id:showcase");
+    await app.press("id:showcase-label-info");
+    await app.waitFor("id:showcase-label-note");
+    await shot(app, "showcase-note");
+    await app.press("id:showcase-toast");
+    await app.waitFor("id:toast-error");
+    await shot(app, "showcase-toast");
+    await app.press("id:showcase-dialog-open");
+    await app.waitFor("id:showcase-dialog-close");
+    await shot(app, "showcase-dialog");
+    await app.press("id:showcase-dialog-close");
+    await app.press("id:showcase-menu");
+    await app.waitFor("text:With an icon");
+    await shot(app, "showcase-menu");
+  });
 });
 
 describe("screens", () => {

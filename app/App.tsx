@@ -4,7 +4,7 @@ import { mount, platform, safeArea, Storage, View } from "nsh";
 import { Scrollbar } from "nsh/base";
 import { currentWindow, isAvailable as hasWindow } from "nsh/desktop";
 import { lang, LANG_KEY } from "./i18n";
-import { colors, scrollbarTheme } from "./ui";
+import { colors, scrollbarTheme, Toaster } from "./ui";
 import { loadAppearance } from "./team/appearance";
 import { TeamApp } from "./team/TeamApp";
 import { watchUpdates } from "./team/updates";
@@ -22,6 +22,7 @@ function Root() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background, paddingTop: touch ? safeArea().top : 0 }}>
       <TeamApp />
+      <Toaster />
     </View>
   );
 }
