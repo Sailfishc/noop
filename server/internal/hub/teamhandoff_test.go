@@ -161,6 +161,13 @@ func TestTriggers(t *testing.T) {
 	check(t, "and goes again next time", tv["fires"] == float64(1) && int64(tv["due"].(float64)) > e.now().UnixMilli())
 	check(t, "a bystander can't remove it", e.do("DELETE", "/api/v1/triggers/"+trg, e.ll.session, nil).status == 403)
 	check(t, "nonsense is refused", e.do("POST", "/api/v1/triggers", e.zw.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "schedule", "when": "9:00", "text": "x"}).status == 400)
+	r = e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "schedule", "repeat": "每 10 分钟", "text": "看一下 MR 进展"})
+	check(t, "every 10 minutes, from now, as often as that allows", r.status == 200 && r.body["repeat"] == "10m" && r.body["max_per_day"] == float64(144) &&
+		int64(r.body["due"].(float64)) == e.now().Add(10*time.Minute).UnixMilli(), r)
+	every, _ := e.h.trigger(r.body["id"].(string))
+	check(t, "said as 每 10 分钟", describeTrigger(every) == "每 10 分钟")
+	check(t, "not every 5", e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "schedule", "repeat": "5m", "text": "x"}).status == 400)
+	e.do("DELETE", "/api/v1/triggers/"+every.ID, e.wl.session, nil)
 
 	// pull requests and pushes (the owner sets these up: confirmed at once)
 	r = e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "pr", "repo": "https://github.com/acme/pay", "text": "review 这个 PR"})

@@ -6,14 +6,17 @@ import { signal, View } from "nsh";
 import { L } from "../i18n";
 import { Btn, Card, Choice, ErrorNote, Field, Label, Noted, Tag, Toggle, Txt } from "../ui";
 import { repoLabel, type Agent, type Team, type Trigger, type TriggerOutcome, type TriggerRun } from "./api";
+import { repeatLabel } from "./reminders";
 import { failed, time } from "./ui";
 
-const REPEAT: Record<string, () => string> = { daily: () => L("every day", "每天"), weekdays: () => L("weekdays", "每个工作日"), weekly: () => L("every week", "每周") };
-/** "每个工作日 09:00" / "acme/pay 有新 PR" / "推送到 ledger main". */
+/** The repeats to pick from; "every" takes an interval (10m, 2h). */
+const REPEAT: Record<string, () => string> = { daily: () => L("every day", "每天"), weekdays: () => L("weekdays", "每个工作日"), weekly: () => L("every week", "每周"), every: () => L("interval", "按间隔") };
+/** "每个工作日 09:00" / "每 10 分钟" / "acme/pay 有新 PR" / "推送到 ledger main". */
 export function triggerLabel(x: Trigger): string {
   if (x.kind === "schedule") {
+    if (/^\d+[mh]$/.test(x.repeat ?? "")) return repeatLabel(x.repeat!);
     const d = x.due ? new Date(x.due) : null;
-    return `${REPEAT[x.repeat ?? ""]?.() ?? ""} ${d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : ""}`.trim();
+    return `${repeatLabel(x.repeat ?? "")} ${d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : ""}`.trim();
   }
   if (x.kind === "pr") return L(`new PR in ${repoLabel(x.repo ?? "")}${x.branch ? ` into ${x.branch}` : ""}`, `${repoLabel(x.repo ?? "")} 有新 PR${x.branch ? `（合入 ${x.branch}）` : ""}`);
   return L(`push to ${repoLabel(x.repo ?? "")}${x.branch ? ` ${x.branch}` : ""}`, `推送到 ${repoLabel(x.repo ?? "")}${x.branch ? ` ${x.branch}` : ""}`);
@@ -59,9 +62,10 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
   const text = signal("");
   const when = signal("9:00");
   const repeat = signal("weekdays");
+  const every = signal("10m");
   const repo = signal("");
   const branch = signal("");
-  const perDay = signal("10");
+  const perDay = signal("");
   const duty = signal("");
   const readonly = signal(true);
   const check = signal("");
@@ -77,8 +81,8 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
   async function add() {
     busy.set(true);
     const ok = await run(t.createTrigger({ channel_id: props.channelId, agent: agent() || props.agents[0]?.id || "", kind: kind(), text: text().trim(),
-      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat(), ...(check().trim() ? { check_cmd: check().trim() } : {}) } : { repo: repo().trim(), branch: branch().trim() }),
-      ...(perDay().trim() && perDay().trim() !== "10" ? { max_per_day: Number(perDay().trim()) } : {}),
+      ...(kind() === "schedule" ? { ...(repeat() === "every" ? { when: "", repeat: every().trim() } : { when: when().trim(), repeat: repeat() }), ...(check().trim() ? { check_cmd: check().trim() } : {}) } : { repo: repo().trim(), branch: branch().trim() }),
+      ...(perDay().trim() ? { max_per_day: Number(perDay().trim()) } : {}),
       ...(duty().trim() ? { duty: duty().trim() } : {}), readonly: readonly() }));
     busy.set(false);
     if (ok) { adding.set(false); text.set(""); check.set(""); }
@@ -111,7 +115,9 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
             </>
           }>
             <Choice testID="trigger-repeat" options={Object.keys(REPEAT).map((k) => ({ value: k, label: REPEAT[k]!() }))} value={repeat()} onChange={(v) => repeat.set(v)} />
-            <Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID="trigger-when" />
+            <If when={repeat() === "every"} else={<Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID="trigger-when" />}>
+              <Field label={L("Every (10 min at least)", "每隔（最短 10 分钟）")} value={every()} onChange={(v) => every.set(v)} placeholder="10m / 2h" testID="trigger-every" />
+            </If>
             <Noted
               testID="trigger-check-about"
               label={<Txt weight="semibold">{L("Check first (optional)", "先跑检查命令（可选）")}</Txt>}
@@ -120,7 +126,7 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
             />
             <Field value={check()} onChange={(v) => check.set(v)} placeholder="gh run list -b main -s failure -L 5" testID="trigger-check" />
           </If>
-          <Field label={L("At most a day", "每天最多触发（次）")} value={perDay()} onChange={(v) => perDay.set(v)} placeholder="10" testID="trigger-max" />
+          <Field label={L("At most a day", "每天最多触发（次）")} value={perDay()} onChange={(v) => perDay.set(v)} placeholder={kind() === "schedule" && repeat() === "every" ? L("as the interval allows", "按间隔算") : "10"} testID="trigger-max" />
           <Field label={L("What to ask", "让它做什么")} value={text()} onChange={(v) => text.set(v)} placeholder={L("Summarize last night’s alerts", "汇总一下昨晚的告警")} testID="trigger-text" />
           <Field label={L("Duty (optional)", "职责名（可选）")} value={duty()} onChange={(v) => duty.set(v)} placeholder={L("Watch main", "看住主干")} testID="trigger-duty" />
           <Noted

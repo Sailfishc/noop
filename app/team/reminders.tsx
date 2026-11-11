@@ -12,6 +12,13 @@ export const REPEAT: Record<string, () => string> = {
   weekly: () => L("every week", "每周"),
 };
 
+/** "每天" / "每 10 分钟" / "每 2 小时": a repeat as the server keeps it (an interval is "10m" or "2h"). */
+export function repeatLabel(repeat: string): string {
+  const m = /^(\d+)(m|h)$/.exec(repeat);
+  if (!m) return REPEAT[repeat]?.() ?? repeat;
+  return m[2] === "h" ? L(`every ${m[1]} h`, `每 ${m[1]} 小时`) : L(`every ${m[1]} min`, `每 ${m[1]} 分钟`);
+}
+
 const CN_NUM: Record<string, number> = { 一: 1, 两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 const ZH_UNIT: Record<string, string> = { 分钟: "分钟", 分: "分钟", 小时: "小时", 个小时: "小时", 个钟头: "小时", 钟头: "小时", 天: "天" };
 const EN_UNIT: Record<string, string> = { m: "m", min: "m", mins: "m", minute: "m", minutes: "m", h: "h", hr: "h", hrs: "h", hour: "h", hours: "h", d: "d", day: "d", days: "d" };
@@ -48,7 +55,7 @@ function zhTime(num: string, unit: string): [number, string] {
 /** When it fires next, and how often. */
 export function dueText(r: Reminder): string {
   const when = time(r.due);
-  return r.repeat ? `${REPEAT[r.repeat]?.() ?? r.repeat} · ${L("next", "下次")} ${when}` : when;
+  return r.repeat ? `${repeatLabel(r.repeat)} · ${L("next", "下次")} ${when}` : when;
 }
 
 /** The later times a message's menu (and a reminder that went off) offers. */

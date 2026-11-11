@@ -188,6 +188,10 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(remindersSchema); err != nil {
 		return err
 	}
+	// it stops by itself after this (an agent's interval reminder, reminders.go)
+	if _, err := db.Exec("ALTER TABLE reminders ADD COLUMN until INTEGER"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
 	if _, err := db.Exec(runtimeStatusSchema); err != nil {
 		return err
 	}

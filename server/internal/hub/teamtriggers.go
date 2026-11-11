@@ -37,7 +37,7 @@ const (
 	stuckAfter       = 30 * time.Minute // a schedule's last task queued this long: no machine is taking it
 	maxTriggers      = 20               // per channel
 	defaultMaxPerDay = 10               // firings a day
-	ceilingMaxPerDay = 100              // the most anyone can set
+	ceilingMaxPerDay = 144              // the most anyone can set: every 10 minutes, all day
 )
 
 var triggerKinds = map[string]bool{"schedule": true, "pr": true, "push": true}
@@ -202,19 +202,29 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	repeat, repo, branch := "", "", trimmed(strings.TrimSpace(b.Branch), 120)
 	switch b.Kind {
 	case "schedule":
-		r, ok := repeats[strings.ToLower(strings.TrimSpace(b.Repeat))]
+		r, ok, bad := normRepeat(b.Repeat)
+		if bad != "" {
+			errJSON(w, 400, bad)
+			return
+		}
 		if !ok || r == "" {
-			errJSON(w, 400, "定时触发要选重复：daily、weekdays 或 weekly")
+			errJSON(w, 400, "定时触发要选重复：daily、weekdays、weekly 或间隔（如 10m、2h）")
 			return
 		}
 		now := h.now()
 		words := strings.Fields(b.When)
 		t, n := parseWhen(words, now)
-		if n == 0 || n != len(words) {
+		every := interval(r)
+		if every > 0 && len(words) == 0 { // an interval from now
+			t, n = now.Add(every), 0
+		} else if n == 0 || n != len(words) {
 			errJSON(w, 400, "看不懂这个时间："+b.When)
 			return
 		}
 		repeat, due = r, t.UnixMilli()
+		if every > 0 && b.MaxPerDay == nil { // as often as the interval allows, unless set lower
+			perDay = min(int64(ceilingMaxPerDay), int64(24*time.Hour/every))
+		}
 	default:
 		repo = normRemote(b.Repo)
 		if repo == "" {
@@ -269,7 +279,10 @@ func describeTrigger(t triggerView) string {
 		if t.Due != nil {
 			at = time.UnixMilli(*t.Due).Format("15:04")
 		}
-		return map[string]string{"daily": "每天 ", "weekdays": "每个工作日 ", "weekly": "每周 "}[t.Repeat] + at
+		if interval(t.Repeat) > 0 {
+			return repeatText(t.Repeat)
+		}
+		return repeatText(t.Repeat) + " " + at
 	case "pr":
 		return repoName(t.Repo) + " 有新 PR"
 	}
