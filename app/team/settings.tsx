@@ -255,6 +255,11 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
           "你发起的每个任务，Agent 开工时都会读到这段话；排在频道约定和团队约定之后，冲突时以约定为准。它会随任务发到 Agent 所在的电脑上，别写密码和密钥。")}>
         <MyPreferences team={t} />
       </Panel>
+      <Panel title={L("When proposals come", "提案什么时候给我")} testID="digest"
+        note={L("What agents propose for you (from triggers you set up or tasks you asked for) waits and comes on one card at these times, in the server's time zone. Urgent ones come at once, at most 2 per agent a day, held during quiet hours.",
+          "Agent 提给你的提案（来自你设的触发器或你发起的任务）先攒着，到这些时间合成一张卡片给你，按服务器的时区。紧急的立刻给，每个 Agent 每天最多 2 条，安静时段里先压着。")}>
+        <DigestSetting team={t} />
+      </Panel>
       <LoginCodePanel team={t} />
       <DevicesPanel team={t} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 4 }}>
@@ -269,6 +274,46 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
         <Btn testID="sign-out" kind="danger" label={L("Sign out", "退出登录")} onPress={props.onSignOut} />
       </View>
     </>
+  );
+}
+
+/** 「提案什么时候给我」: once or twice each workday, or once a week, and the quiet hours. */
+function DigestSetting(props: { team: Team }) {
+  const t = props.team;
+  const d = () => t.digest() ?? { every: "daily" as const, at: "09:30", at2: "14:00", quiet: "22:00-08:00" };
+  const every = signal(untracked(d).every);
+  const at = signal(untracked(d).at);
+  const at2 = signal(untracked(d).at2);
+  const quiet = signal(untracked(d).quiet);
+  effect(() => { const x = d(); every.set(x.every); at.set(x.at); at2.set(x.at2); quiet.set(x.quiet); });
+  const busy = signal(false);
+  const saved = signal(false);
+  const error = signal("");
+  const changed = () => every() !== d().every || at().trim() !== d().at || at2().trim() !== d().at2 || quiet().trim() !== d().quiet;
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.saveDigest({ every: every(), at: at().trim(), at2: at2().trim(), quiet: quiet().trim() });
+    busy.set(false);
+    saved.set(r.ok);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <View style={{ gap: 8 }}>
+      <Choice testID="digest-every" value={every()} onChange={(v) => { every.set(v); saved.set(false); }}
+        options={[{ value: "daily", label: L("Each workday", "每个工作日一次") }, { value: "twice", label: L("Twice each workday", "每个工作日两次") }, { value: "weekly", label: L("Mondays", "每周一次（周一）") }]} />
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Field grow label={L("At", "时间")} value={at()} onChange={(v) => { at.set(v); saved.set(false); }} placeholder="9:30" testID="digest-at" />
+        <If when={every() === "twice"}>
+          <Field grow label={L("And at", "第二次")} value={at2()} onChange={(v) => { at2.set(v); saved.set(false); }} placeholder="14:00" testID="digest-at2" />
+        </If>
+        <Field grow label={L("Quiet hours", "安静时段")} value={quiet()} onChange={(v) => { quiet.set(v); saved.set(false); }} placeholder="22:00-08:00" testID="digest-quiet" />
+      </View>
+      <ErrorNote text={error()} testID="digest-error" />
+      <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+        <Btn small testID="digest-save" label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+    </View>
   );
 }
 

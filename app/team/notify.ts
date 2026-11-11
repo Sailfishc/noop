@@ -6,7 +6,7 @@
 import { cleanup, effect, Notifications, platform, signal, Storage, untracked, type NotificationPermission } from "nsh";
 import { focusedWindow, isAvailable as hasWindow } from "nsh/desktop";
 import { L } from "../i18n";
-import { reminderUp, type Message, type Reminder, type Task, type Team } from "./api";
+import { reminderUp, type Message, type ProposalBatch, type Reminder, type Task, type Team } from "./api";
 
 export const NOTIFY_KEY = "team.notify";
 /** Older than this, it's news no more: no notification. */
@@ -50,6 +50,18 @@ export function taskAlert(t: Task, channelName: string | undefined, now: number)
     title: (t.state === "needs_decision" && t.decision?.kind === "align" ? L("Wants to align with you first", "开工前想和你对齐") : NEED[t.state]?.()) ?? L("Waiting for you", "待你决定"),
     body: t.redacted ? `${t.id}  ${L("in a private channel", "在一个私有频道里")}` : `${where}  ${t.title}`,
     channelId: t.channel_id, threadId: t.thread_id,
+  };
+}
+
+/** A card of proposals that just came (pressing it opens the channel of its first one). */
+export function proposalsAlert(b: ProposalBatch, now: number): Alert | null {
+  const first = b.proposals[0];
+  if (!first || now - b.at > FRESH_MS) return null;
+  return {
+    key: `prop:${b.id}`,
+    title: b.urgent ? L("Urgent proposal", "紧急提案") : L(`Proposals (${b.proposals.length})`, `提案（${b.proposals.length}）`),
+    body: b.proposals.map((p) => `${p.num}. ${p.title}`).join("\n").slice(0, 200),
+    channelId: first.channel_id, threadId: null,
   };
 }
 
@@ -134,6 +146,14 @@ export function watchNotifications(team: Team, onOpen: (channelId: string, threa
     closeGone("task:", new Set(items.map((x) => `task:${x.id}`)));
   });
 
+  // cards of proposals in 待你决定
+  effect(() => {
+    const now = Date.now();
+    const cards = t.proposals();
+    for (const b of cards) show(proposalsAlert(b, now));
+    closeGone("prop:", new Set(cards.map((b) => `prop:${b.id}`)));
+  });
+
   // @mentions of me, unless I'm looking at that channel
   const stop = t.onLiveMessage((m) => {
     if (appInFront() && t.viewingNow() === m.channel_id) return;
@@ -145,7 +165,7 @@ export function watchNotifications(team: Team, onOpen: (channelId: string, threa
   // the count on the app's icon
   effect(() => {
     const me = t.me()?.id;
-    const n = notifyOn() ? t.inbox().length + t.reminders().filter((r) => reminderUp(r, me)).length : 0;
+    const n = notifyOn() ? t.inbox().length + t.proposals().length + t.reminders().filter((r) => reminderUp(r, me)).length : 0;
     void Notifications.setBadge(n).catch(() => {});
   });
 

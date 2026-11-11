@@ -273,7 +273,9 @@ A trigger of your team started this run to look at something regularly. Look and
 - Do not change, commit or delete files in any repository: whatever you change there is thrown away when you stop,
   and nothing is pushed. You may write a report into out/ (it is handed over) and say things in the thread.
 - You cannot open pull requests, hand work on (remi handoff) or delegate (remi delegate). When something should be
-  done, say what and why in your summary; a person decides.
+  done, propose it: \`remi propose --key SHORT-WORD TITLE --why WHAT-YOU-SAW --plan WHAT-DONE-LOOKS-LIKE\`, always
+  with --key (the same word each time you see the same thing), --urgent only when waiting until tomorrow does harm
+  today. A person decides; after proposing you may end with "nothing" (the proposal is what they will see).
 - Do not add a "task:" line to your first message.
 When nothing you found is worth a person's attention (all is as it should be), end with exactly:
 \`\`\`json
@@ -775,11 +777,13 @@ export const REMI_CLI = `#!/bin/sh
 #   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent now or once its owner agrees
 #   remi delegate @AGENT WHAT                              have another agent do a part; its result comes back to you
 #   remi submit WHAT                                       count a submission to an outside service (at most 3 per task)
+#   remi propose [--key KEY] [--urgent] TITLE --why WHY --plan PLAN
+#                                                          propose work for a person to say yes to (it is not done now)
 #   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
 #                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,20p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -793,6 +797,18 @@ case "$1" in
   handoff) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/handoff" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   delegate) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/delegate" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   submit) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/submit" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  propose) shift; key=""; urgent=""; why=""; plan=""; title=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --key) key=$2; shift 2 ;;
+        --why) why=$2; shift 2 ;;
+        --plan) plan=$2; shift 2 ;;
+        --urgent) urgent=1; shift ;;
+        *) title="\${title:+$title }$1"; shift ;;
+      esac
+    done
+    [ -n "$title" ] && [ -n "$plan" ] || usage
+    exec curl -sS "$api/propose" -H "$auth" --data-urlencode "title=$title" --data-urlencode "why=$why" --data-urlencode "plan=$plan" --data-urlencode "key=$key" --data-urlencode "urgent=$urgent" ;;
   repo) [ -n "$2" ] || usage; exec curl -sS "$api/repo" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$2" ;;
   upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;
   *) usage ;;
@@ -848,7 +864,12 @@ most every 5 minutes, only when people would want to know), and hand over a file
 2 minutes", "remind me on Friday…", "every morning…"), always set it with
 \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` (WHEN: 2m, 1h, 3d, 9:30, tomorrow 9:00, fri 17:00), then finish
 at once. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
-person's "Waiting for you" and their system notifications. Your result still goes in the result block at the end.`;
+person's "Waiting for you" and their system notifications. When you notice work worth doing beyond what you were asked
+(a failing check, an outdated dependency), do not do it: propose it with
+\`remi propose --key SHORT-WORD TITLE --why WHAT-YOU-SAW --plan WHAT-DONE-LOOKS-LIKE\`. It reaches the person this task
+is for with their next batch of proposals; if they say yes, it becomes a task with your plan as its acceptance. Use the
+same --key for the same thing every time (a newer one replaces the older); add --urgent only when leaving it until
+tomorrow does harm today. Your result still goes in the result block at the end.`;
 
 /** The run went quiet or hit its limit and was stopped: the same session goes on once, told so. */
 export function stoppedPrompt(why: "stall" | "timeout", minutes: number): string {

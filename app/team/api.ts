@@ -439,6 +439,10 @@ export function createTeam(s: Session) {
   const me = signal<User | null>(null);
   /** 「我的偏好」: one's own words for the agents on the tasks one asks for (only GET /me has them). */
   const preferences = signal("");
+  /** 「提案什么时候给我」 (only GET /me has it). */
+  const digest = signal<Digest | null>(null);
+  /** The cards of proposals in 待你决定. */
+  const proposals = signal<ProposalBatch[]>([]);
   /** The address others reach the server at, as the server is set up (-public-url); "" when it isn't. */
   const publicUrl = signal("");
   /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
@@ -527,6 +531,9 @@ export function createTeam(s: Session) {
       case "workspace":
         if (f.workspace) workspace.set(f.workspace as Workspace);
         break;
+      case "proposals": // a card came, or went
+        refreshInbox();
+        break;
       case "signup":
         if (untracked(me)?.role === "admin") refreshInbox();
         break;
@@ -578,6 +585,7 @@ export function createTeam(s: Session) {
     if (!r.ok) return;
     putTasks(r.data.tasks as Task[]);
     inbox.set((r.data.tasks as Task[]).map((t) => t.id));
+    proposals.set((r.data.proposals as ProposalBatch[] | undefined) ?? []);
     signups.set((r.data.signups as Signup[] | undefined) ?? []);
     const w = await api("GET", "/api/v1/tasks?state=waiting&limit=100");
     if (!w.ok) return;
@@ -618,7 +626,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) { me.set(m.data.user as User); preferences.set(String(m.data.preferences ?? "")); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
+    if (m.ok) { me.set(m.data.user as User); preferences.set(String(m.data.preferences ?? "")); if (m.data.digest) digest.set(m.data.digest as Digest); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -851,6 +859,24 @@ export function createTeam(s: Session) {
     }
     return r;
   }
+  async function saveDigest(d: Digest) {
+    const r = await api("PATCH", `/api/v1/users/${me()?.id ?? ""}`, { digest: d });
+    if (r.ok) digest.set(d);
+    return r;
+  }
+  /** 做 or 不做 one proposal; the cards as they are after. */
+  async function answerProposal(id: string, yes: boolean) {
+    const r = await api("POST", `/api/v1/proposals/${id}/answer`, { do: yes });
+    if (r.ok) proposals.set(r.data.batches as ProposalBatch[]);
+    else refreshInbox();
+    return r;
+  }
+  /** "1 3" does those on the card; "1 3 其余不做" also turns down the rest. */
+  async function answerBatch(id: string, text: string) {
+    const r = await api("POST", `/api/v1/proposal-batches/${id}/answer`, { text });
+    if (r.ok) proposals.set(r.data.batches as ProposalBatch[]);
+    return r;
+  }
   async function savePreferences(text: string) {
     const r = await api("PATCH", `/api/v1/users/${me()?.id ?? ""}`, { preferences: text });
     if (r.ok) preferences.set(text.trim());
@@ -951,7 +977,7 @@ export function createTeam(s: Session) {
   });
 
   return {
-    preferences, savePreferences, openDM, dmWith,
+    preferences, savePreferences, digest, saveDigest, proposals, answerProposal, answerBatch, openDM, dmWith,
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, triggerRuns, pauseDuty, logout, dispose, applyFrame, catchUp,
@@ -971,7 +997,17 @@ export type Metrics = {
   /** How often tasks needed a person: the reader's own (their private channels included), and the team's (without). */
   mine?: CallStats; team?: CallStats;
 };
-export type CallStats = { calls: number; tasks: number; outside: number; by_class: Partial<Record<CallClass, number>>; by_kind: Record<string, number> };
+export type CallStats = { calls: number; tasks: number; outside: number; by_class: Partial<Record<CallClass, number>>; by_kind: Record<string, number>;
+  /** of the calls, cards of proposals (they come from no task) */
+  cards?: number };
+
+/** Something an agent proposes to do (server: teamproposals.go): not a task until its person says 做. */
+export type Proposal = { id: string; channel_id: string; agent_id: string; task_id: string; trigger_id?: string; title: string; why: string; plan: string;
+  key?: string; urgent: boolean; state: "open"; num: number; created: number };
+/** One card of proposals in 待你决定: a batch at the person's time, or one urgent proposal. */
+export type ProposalBatch = { id: string; at: number; urgent: boolean; proposals: Proposal[] };
+/** 「提案什么时候给我」: each workday at `at` (daily), at `at` and `at2` (twice), or Mondays at `at` (weekly); urgent ones wait out `quiet`. */
+export type Digest = { every: "daily" | "twice" | "weekly"; at: string; at2: string; quiet: string };
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
 /** "#支付后端", or "私房菜（私有）" for a private channel: how a channel is named in a line of text. */

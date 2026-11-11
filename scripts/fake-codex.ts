@@ -12,6 +12,8 @@
 //   [slow]      takes ten times as long (to look at a running task)
 //   [nothing]   a read-only patrol (a trigger's run) that finds nothing: status nothing, so nothing is posted
 //   [say]       says a word in the thread first (remi say), then goes on as it would
+//   [propose]   proposes something first (remi propose --key fake-…), then goes on as it would ([nothing] ends quietly)
+//   [urgent]    the same, marked urgent
 //   [quota]     first hits Codex's usage limit, "try again at" FAKE_CODEX_QUOTA_MIN minutes from now (default 10; at 5
 //               or less the daemon waits inside the run); woken after the reset (or 现在就试), it does the work
 //   [quota?]    the same, but the limit names no time (the server tries again after 5 minutes, 15, an hour, …)
@@ -97,6 +99,14 @@ const delegates = named(request.match(/\[delegate:([a-z0-9_,-]+)\]/)?.[1]?.split
 const receipt = prompt.includes("all of them are back. What came back:");
 
 if (has("say") && !resume) { await step("remi say"); remi("say", "（假 Codex）看了一眼，先说一声：在查"); }
+if ((has("propose") || has("urgent")) && !resume) {
+  await step("remi propose");
+  const urgent = has("urgent");
+  const said = remi("propose", "--key", urgent ? "fake-urgent" : "fake-deps", ...(urgent ? ["--urgent"] : []),
+    urgent ? "（假 Codex）主干 CI 红了，今天发不了版" : "（假 Codex）升级 3 个过期的依赖",
+    "--why", "（假 Codex）巡查时看到的", "--plan", "（假 Codex）升级后测试全过，锁文件已更新");
+  out({ type: "item.completed", item: { type: "agent_message", text: said.split("\n")[0] } });
+}
 
 if (receipt) {
   const back = (prompt.match(/^## T-\d+ @\S+: \w+/gm) ?? []).join("；");

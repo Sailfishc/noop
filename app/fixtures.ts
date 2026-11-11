@@ -37,11 +37,30 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     return { body: t };
   };
   const triggers: any[] = [...((over as any).__triggers ?? [])];
+  let cards: any[] = [...((over as any).__proposals ?? [])];
+  const answered = (ids: string[]) => { cards = cards.map((b) => ({ ...b, proposals: b.proposals.filter((p: any) => !ids.includes(p.id)) })).filter((b) => b.proposals.length); };
   const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state) ||
     (!["done", "closed"].includes(t.state) && (t.handoffs ?? []).some((x: any) => x.state === "proposed")));
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
-    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
+    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting(), proposals: cards } }),
+    [`POST ${URL}/api/v1/proposals/*/answer`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/proposals\/([^/]+)\//)![1];
+      const b = JSON.parse(r.body!);
+      log.acts.push(`${id} ${b.do ? "do" : "no"}`);
+      answered([id]);
+      return { body: { task: b.do ? "T-0042" : "", batches: cards } };
+    },
+    [`POST ${URL}/api/v1/proposal-batches/*/answer`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/proposal-batches\/([^/]+)\//)![1];
+      const b = JSON.parse(r.body!);
+      log.acts.push(`${id} ${b.text}`);
+      const card = cards.find((x) => x.id === id);
+      const nums = (String(b.text).match(/\d+/g) ?? []).map(Number);
+      const rest = /其余不做/.test(b.text);
+      answered((card?.proposals ?? []).filter((p: any) => rest || nums.includes(p.num)).map((p: any) => p.id));
+      return { body: { done: nums.map((n) => ({ num: n, task: "T-0042" })), declined: 0, batches: cards } };
+    },
     [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
     [`GET ${URL}/api/v1/metrics?*`]: { body: { days: 7, since: T0, reply: { count: 9, median: 1_380_000, p90: 9_000_000, open: 2, oldest: 5_400_000 },
       reply_by: { confirm: { count: 3, median: 600_000, p90: 900_000, open: 0, oldest: 0 }, accept: { count: 6, median: 2_400_000, p90: 9_000_000, open: 2, oldest: 5_400_000 } },
@@ -104,7 +123,8 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
-    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], preferences: "回复用中文；PR 描述先写改了什么再写为什么。" } },
+    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], preferences: "回复用中文；PR 描述先写改了什么再写为什么。",
+      digest: { every: "daily", at: "09:30", at2: "14:00", quiet: "22:00-08:00" } } },
     [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
     [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
     [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac] } },
@@ -151,7 +171,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers")),
+    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers" && k !== "__proposals")),
   };
 }
 export const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });

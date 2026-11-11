@@ -76,6 +76,7 @@ type callStats struct {
 	Outside int            `json:"outside"` // of the calls, outside the three moments
 	ByClass map[string]int `json:"by_class"`
 	ByKind  map[string]int `json:"by_kind"`
+	Cards   int            `json:"cards"` // of the calls, cards of proposals (from no task)
 }
 
 func (c *callStats) add(task string, x callView, seen map[string]bool) {
@@ -136,7 +137,20 @@ func (h *Hub) callMetrics(since int64, userID string) (mine, team callStats) {
 			}
 		}
 	}
+	// a card of proposals is one call, a decision, whatever it holds (teamproposals.go); it comes from no task
+	m, tm := h.proposalCalls(since, userID)
+	mine.addCards(m)
+	team.addCards(tm)
 	return mine, team
+}
+
+func (c *callStats) addCards(n int) {
+	c.Calls += n
+	c.Cards += n
+	if n > 0 {
+		c.ByClass["decide"] += n
+		c.ByKind["proposals"] += n
+	}
 }
 
 func percentile(sorted []int64, p float64) int64 {

@@ -30,8 +30,11 @@ export function taskCalls(calls: Call[] | null | undefined, me: string | undefin
 /** "12 次，来自 5 个任务，平均每个任务 2.4 次". */
 export function statsLine(s: CallStats): string {
   if (!s.calls) return L("none yet", "还没有");
-  const mean = (s.calls / Math.max(1, s.tasks)).toFixed(1);
-  return L(`${s.calls} from ${s.tasks} tasks, ${mean} per task`, `${s.calls} 次，来自 ${s.tasks} 个任务，平均每个任务 ${mean} 次`);
+  const cards = s.cards ?? 0;
+  const mean = ((s.calls - cards) / Math.max(1, s.tasks)).toFixed(1);
+  return cards
+    ? L(`${s.calls} from ${s.tasks} tasks and ${cards} cards of proposals, ${mean} per task`, `${s.calls} 次，来自 ${s.tasks} 个任务和 ${cards} 张提案卡片，平均每个任务 ${mean} 次`)
+    : L(`${s.calls} from ${s.tasks} tasks, ${mean} per task`, `${s.calls} 次，来自 ${s.tasks} 个任务，平均每个任务 ${mean} 次`);
 }
 
 /** "3 次（25%）". */

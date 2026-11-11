@@ -682,7 +682,7 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 	for i := range ts {
 		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
 	}
-	out := obj{"tasks": ts}
+	out := obj{"tasks": ts, "proposals": h.myBatches(me)}
 	if h.isAdmin(me) { // people asking to join wait for an admin
 		out["signups"] = h.pendingSignups()
 	}

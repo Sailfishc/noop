@@ -42,7 +42,8 @@ const box = { ...mac, team: true, git: [{ provider: "gitlab", host: "code.corp.c
   repos: [{ remote: "github.com/acme/pay", name: "pay" }], skills: ["release-notes", "sql-review"], mcp: ["jira"],
   runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }],
   team_config: { repo: "git@code.corp.com:team/remi-config.git", commit: "abc1234", synced: T0, instructions: true } };
-const net = () => server(newLog(), {
+const net = (extra: Record<string, unknown> = {}) => server(newLog(), {
+  ...extra,
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
   [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, machines: [] }] } },
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
@@ -292,6 +293,20 @@ describe("screens", () => {
     await app.press("id:tasks-filter-all");
     await app.waitFor("id:taskrow-T-0001");
     await shot(app, "tasks-page");
+  });
+
+  test("inbox-proposals", async () => {
+    const prop = (id: string, num: number, title: string, extra: object = {}) => ({ id, channel_id: "c_1", agent_id: "a_1", task_id: "T-0009", title,
+      why: "巡查时看到：lodash 4.17.20 有一个已知的原型污染问题，3 个服务在用", plan: "升级到 4.17.21，跑全部测试，锁文件一起提交", key: id, urgent: false, state: "open", num, created: T0, ...extra });
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: net({ __proposals: [
+      { id: "pb_1", at: T0, urgent: false, proposals: [prop("p1", 1, "升级 lodash 到 4.17.21"), prop("p2", 2, "删掉 3 个两个月没动的分支"), prop("p3", 3, "给 /orders 补上分页的测试")] },
+      { id: "pb_2", at: T0, urgent: true, proposals: [prop("p4", 1, "主干 CI 红了，今天的发版会被挡住", { urgent: true })] },
+    ] }) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:proposals-pb_1");
+    await app.press("id:proposal-p1-more");
+    await shot(app, "inbox-proposals");
   });
 
   test("settings", async () => {
