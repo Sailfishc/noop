@@ -2,17 +2,16 @@
 // sign in, then the workspace (sidebar, the page in the middle, a thread or the members beside it). Wide windows show
 // them side by side; narrow ones one pane at a time. The screens live next to it: signin, channel (with taskfacts),
 // composer, messages, taskcard, inbox, tasks, search, reminders, settings.
-import { cleanup, computed, effect, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX, type ViewStyle } from "nsh";
+import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
-import { Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
+import { alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
-import { agentState, Avatar, chrome, Dot, FOOTER, StateDot, WIDE } from "./ui";
+import { agentState, chrome, FOOTER, WIDE } from "./ui";
 import { ChannelView, DMDraft, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
@@ -251,11 +250,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
     >
       <Icon name={p.icon} size={15} tint={p.dim ? colors.faint : colors.muted} />
       <Text style={{ flex: 1, fontSize: 14.5, fontWeight: p.badge ? "600" : "400", color: p.dim ? colors.muted : colors.text, numberOfLines: 1 }}>{p.label}</Text>
-      <If when={p.badge}>
-        <View style={{ minWidth: 20, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
-          <Text testID={`${p.testID}-unread`} style={{ fontSize: 11.5, fontWeight: "600", color: colors.onAccent }}>{String(p.badge)}</Text>
-        </View>
-      </If>
+      <Count n={p.badge ?? 0} testID={`${p.testID}-unread`} />
     </View>
   );
   const Section = (p: { label: string; right?: JSX.Element }) => (
@@ -327,10 +322,10 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
                 <Avatar name={a()?.name ?? x().handle} agent size={22} />
                 <View style={{ flex: 1, gap: 1 }}>
                   <Text style={{ fontSize: 14, fontWeight: unread() ? "600" : "400", color: a() ? colors.text : colors.muted, numberOfLines: 1 }}>{a()?.name ?? `@${x().handle}`}</Text>
-                  <If when={st()} else={<Text style={{ fontSize: 11.5, color: colors.faint }}>{L("history only", "只能看历史")}</Text>}>
+                  <If when={st()} else={<Txt variant="caption" tone="faint">{L("history only", "只能看历史")}</Txt>}>
                     {(s) => (
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                        <StateDot tone={s().tone} />
+                        <Dot tone={s().tone} />
                         <Text testID={`side-agent-${x().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: s().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
                           {mine() ? `${runtimeLabel(a()!.runtime)} · ${s().label}` : L(`${owner()}’s · ${s().label}`, `${owner()}的 · ${s().label}`)}
                         </Text>
@@ -338,11 +333,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
                     )}
                   </If>
                 </View>
-                <If when={unread()}>
-                  <View style={{ minWidth: 20, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
-                    <Text testID={`side-agent-${x().handle}-unread`} style={{ fontSize: 11.5, fontWeight: "600", color: colors.onAccent }}>{String(unread())}</Text>
-                  </View>
-                </If>
+                <Count n={unread()} testID={`side-agent-${x().handle}-unread`} />
               </View>
             );
           }}
@@ -368,23 +359,14 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
 /** Bottom left: me and a gear; opens Settings (⌘,), my agents & machines, sign in on another device, sign out. */
 function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
   const t = props.team;
-  const row = (): ViewStyle => ({ flexDirection: "row", alignItems: "center", gap: 10, height: 32, paddingHorizontal: 8, borderRadius: 7 });
   const item = (testID: string, icon: IconName, label: string, onSelect: () => void, right?: string, danger?: boolean) => (
-    <MenuItem testID={testID} onSelect={onSelect} hoverStyle={hovered()} activeStyle={hovered()} style={row()}>
-      <Icon name={icon} size={15} tint={danger ? colors.danger : colors.muted} />
-      <Text style={{ flex: 1, fontSize: 13.5, color: danger ? colors.danger : colors.text, numberOfLines: 1 }}>{label}</Text>
-      <If when={right}><Text style={{ fontSize: 12, color: colors.faint }}>{right}</Text></If>
-    </MenuItem>
+    <MenuRow testID={testID} icon={icon} label={label} onSelect={onSelect} right={right} danger={danger} />
   );
-  const sep = () => <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 8, backgroundColor: alpha(colors.text, 0.07) }} />;
   return (
-    <Menu
+    <PopMenu
       align="start"
       placement="top"
-      offset={6}
-      margin={8}
-      popupStyle={{ minWidth: 240, padding: 5, borderRadius: 12, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
-      backdropClass="bg-scrim"
+      minWidth={240}
       trigger={
         <View role="button" testID="user-menu" accessibilityLabel={L("Account menu", "用户菜单")} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44, paddingHorizontal: 8, borderRadius: radius.control }}>
           <Avatar name={t.me()?.name ?? "?"} size={28} />
@@ -406,17 +388,17 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
           <Text style={{ fontSize: 12, color: colors.muted, numberOfLines: 1 }}>{t.me()?.email ?? ""}</Text>
         </View>
       </View>
-      {sep()}
+      <MenuLine />
       {item("menu-settings", "settings", L("Settings", "设置"), () => props.onSettings(), keymap.label("mod+,"))}
       {item("menu-agents", "spark", L("My agents & machines", "我的 Agent 与机器"), () => props.onSettings("agents"))}
       {item("menu-login-code", "mobile", L("Sign in on another device", "在其他设备登录"), () => props.onSettings("account"))}
       <If when={canCheckUpdates}>
         {item("menu-check-updates", "download", L("Check for updates", "检查更新"), () => void checkNow())}
       </If>
-      {sep()}
+      <MenuLine />
       {item("menu-sign-out", "external", L("Sign out", "退出登录"), props.onSignOut, undefined, true)}
       <Text testID="menu-version" style={{ paddingHorizontal: 8, paddingTop: 6, paddingBottom: 3, fontSize: 11.5, color: colors.faint }}>Remi {CLIENT_VERSION}</Text>
-    </Menu>
+    </PopMenu>
   );
 }
 

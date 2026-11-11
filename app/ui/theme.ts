@@ -1,4 +1,5 @@
-// Internal design tokens and finishes shared by gallery and website demos.
+// Remi's design tokens: the colors, the type, radius, spacing and control scales of app/theme.json, and the
+// finishes (shadows and gradients) the popups and the switch use. Components in app/ui read these; pages don't.
 import type { Tokens, ViewStyle } from "nsh";
 import { token } from "nsh";
 import { Easing } from "nsh";
@@ -118,17 +119,6 @@ export function alpha(color: string, a: number) {
   return `color-mix(in srgb, ${color} ${a * 100}%, transparent)`;
 }
 
-/** The charts' series colors, in order (`theme.json`'s `chart-1` to
- * `chart-5`): the brand's citrus first, then graphite from dark to light,
- * so one series leads and the rest stay as quiet as the interface. */
-export const chart = tokens({
-  s1: "chart-1",
-  s2: "chart-2",
-  s3: "chart-3",
-  s4: "chart-4",
-  s5: "chart-5",
-});
-
 /** Translucent tints of the tones, for fills behind text. */
 export const tints = tokens({
   accent: "brand-tint",
@@ -159,17 +149,10 @@ export const finish = themed<
   Record<"card" | "inset" | "field" | "raised" | "hover" | "pressed" | "light" | "accent" | "track" | "fill" | "knob" | "pill" | "chip" | "glass" | "menu", Finish>
 >(finishes.dark, finishes.light);
 
-export type Tone = "neutral" | "accent" | "info" | "warn" | "danger" | "up" | "down";
-
-/** The color of a tone. */
-export const toneColor = (tone: Tone) => (tone === "neutral" ? colors.muted : colors[tone]);
-/** The tint of a tone. */
-export const toneTint = (tone: Tone) => (tone === "neutral" ? colors.raised : tints[tone]);
-
-/** The monospaced family, for code (API names, identifiers). Figures use
- * the system font with tabular numbers instead. */
-export const mono = "monospace";
-/** Corner radii (`theme.json`'s `radius-card`, `radius`, `radius-control`). */
+/**
+ * Corner radii in use today (`theme.json`'s `radius-card`, `radius`, `radius-control`). New code takes a step of
+ * `scale.radius` instead; these go once the components that read them move onto it.
+ */
 export const radius = {
   get card() {
     return token("radius-card");
@@ -179,13 +162,6 @@ export const radius = {
   },
   get control() {
     return token("radius-control");
-  },
-};
-
-/** The system header's colors on every page (iOS, Android). */
-export const header = {
-  get headerStyle() {
-    return { backgroundColor: colors.background, color: colors.text, tintColor: colors.accent };
   },
 };
 
@@ -225,3 +201,30 @@ export const focusRing = (offset = 0): ViewStyle => ({
   outlineOffset: offset,
 });
 
+
+/**
+ * The scales every component draws with (`theme.json`, under `cssVars.theme`). Text sizes: `caption` 12 (secondary
+ * notes, meta), `body` 13 (most text), `message` 14 (messages and inputs), `title` 16 (headings), `display` 22 (a
+ * page's big title). Radii: `sm` 6 (tags, small marks), `md` 8 (buttons, inputs), `lg` 12 (cards, panels, popups).
+ * Spacing is Tailwind's steps 0.5, 1, 1.5, 2, 3, 4, 6 (2, 4, 6, 8, 12, 16, 24 points) and nothing else. Controls are
+ * `sm` 30 or `md` 40 tall. Read them in JSX so a theme change is followed.
+ */
+export const scale = {
+  text: {
+    get caption() { return token("text-caption"); },
+    get body() { return token("text-body"); },
+    get message() { return token("text-message"); },
+    get title() { return token("text-title"); },
+    get display() { return token("text-display"); },
+  },
+  radius: {
+    get sm() { return token("radius-sm"); },
+    get md() { return token("radius-md"); },
+    get lg() { return token("radius-lg"); },
+  },
+  space: [2, 4, 6, 8, 12, 16, 24] as const,
+  control: {
+    get sm() { return token("control-sm"); },
+    get md() { return token("control-md"); },
+  },
+};

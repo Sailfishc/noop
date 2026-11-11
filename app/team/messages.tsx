@@ -2,10 +2,10 @@
 import { Clipboard, Image, openUrl, signal, Text, View } from "nsh";
 import { TextView, type MarkdownExtension } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon } from "../ui";
+import { alpha, Avatar, colors, hovered, Icon } from "../ui";
 import { type Attachment, type Mention, type Message, type Team } from "./api";
 import { RemindMenu } from "./reminders";
-import { authorOf, Avatar, RuntimeBadge, time } from "./ui";
+import { authorOf, RuntimeBadge, time } from "./ui";
 import { fileSize } from "./composer";
 import { TaskCard, TrackLink, shownAsTask } from "./taskcard";
 

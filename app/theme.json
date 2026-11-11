@@ -1,5 +1,5 @@
 {
-  "name": "NSH Gallery UI",
+  "name": "Remi",
   "cssVars": {
     "theme": {
       "radius": "10px",
@@ -17,7 +17,17 @@
       "avatar-8": "#7c3db5",
       "avatar-9": "#b02c80",
       "avatar-10": "#62625c",
-      "avatar-foreground": "#ffffff"
+      "avatar-foreground": "#ffffff",
+      "text-caption": "12px",
+      "text-body": "13px",
+      "text-message": "14px",
+      "text-title": "16px",
+      "text-display": "22px",
+      "radius-sm": "6px",
+      "radius-md": "8px",
+      "radius-lg": "12px",
+      "control-sm": "30px",
+      "control-md": "40px"
     },
     "light": {
       "background": "#fafafa",

@@ -1,11 +1,11 @@
 // A channel: its conversation, the members panel, the default repository, a thread with its task's facts, and a new channel.
-import { effect, List, Scroll, signal, Text, untracked, View, type JSX } from "nsh";
+import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius, Spinner, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
 import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, growing, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
+import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
@@ -41,15 +41,6 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   const layout = rememberedLayout("channel");
   effect(() => { if (tab() === "tasks") void t.loadTasks(props.id); });
   const channelTasks = () => trackedTasks(t).filter((x) => x.channel_id === props.id);
-  const tabItem = (v: "chat" | "tasks", label: string, count?: number) => (
-    <View role="tab" testID={`channel-tab-${v}`} accessibilityState={{ selected: tab() === v }} onPress={() => tab.set(v)} hoverStyle={hovered()}
-      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderBottomWidth: 2, borderBottomColor: tab() === v ? colors.accent : "transparent" }}>
-      <Text style={{ fontSize: 13.5, fontWeight: tab() === v ? "600" : "400", color: tab() === v ? colors.text : colors.muted }}>{label}</Text>
-      <If when={count}>
-        <Text style={{ fontSize: 12, color: colors.faint }}>{String(count)}</Text>
-      </If>
-    </View>
-  );
   return (
     <View style={{ flex: 1 }}>
       <Header
@@ -82,8 +73,15 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
         }
       />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-        {tabItem("chat", L("Conversation", "对话"))}
-        {tabItem("tasks", L("Tasks", "任务"), channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length)}
+        <Tabs
+          testID="channel-tab"
+          value={tab()}
+          onChange={tab.set}
+          tabs={[
+            { value: "chat", label: L("Conversation", "对话") },
+            { value: "tasks", label: L("Tasks", "任务"), count: channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length },
+          ]}
+        />
         <View style={{ flex: 1 }} />
         <If when={tab() === "tasks"}>
           <LayoutSwitch value={layout.get()} onChange={layout.set} />
@@ -117,7 +115,7 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
             </If>
           }
         >
-          <If when={!dmClosed()} else={<Text testID="dm-closed" style={{ padding: 14, fontSize: 13.5, color: colors.muted, textAlign: "center", borderTopWidth: 1, borderTopColor: colors.border }}>{dmClosed()}</Text>}>
+          <If when={!dmClosed()} else={<View style={{ padding: 12, borderTopWidth: 1, borderTopColor: colors.border }}><Txt testID="dm-closed" tone="muted" center>{dmClosed()}</Txt></View>}>
             <Composer
               team={t}
               channelId={props.id}
@@ -146,9 +144,9 @@ export function DMDraft(props: { team: Team; agent: Agent; back: boolean; onBack
   return (
     <View testID={`dm-draft-${props.agent.handle}`} style={{ flex: 1 }}>
       <Header title={props.agent.name} icon="bubble" iconLabel={L("Private chat", "私聊")} subtitle={dmSubtitle(t, props.agent)} back={props.back} onBack={props.onBack} />
-      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 10 }}>
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 12 }}>
         <Avatar name={props.agent.name} agent size={44} />
-        <Text style={{ fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L(`Only you and @${props.agent.handle} see this chat. Say what you need; no @ needed.`, `这个私聊只有你和 @${props.agent.handle} 看得到。直接说要它做什么，不用 @。`)}</Text>
+        <Txt variant="message" tone="muted" center>{L(`Only you and @${props.agent.handle} see this chat. Say what you need; no @ needed.`, `这个私聊只有你和 @${props.agent.handle} 看得到。直接说要它做什么，不用 @。`)}</Txt>
       </View>
       <Composer
         team={t}
@@ -225,7 +223,6 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   const draft = signal("");
   const busy = signal(false);
   const error = signal("");
-  const grow = growing({ min: 64, max: 200, pad: 18, line: 19 });
   const box = { padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field } as const;
   function edit() {
     draft.set(untracked(now));
@@ -263,16 +260,14 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
       </If>
       <If when={editing()}>
         <View style={{ gap: 6 }}>
-          <Input
+          <TextArea
             testID="channel-conventions-input"
             value={draft()}
-            multiline
+            min={64}
+            max={200}
             autoFocus
             placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
-            class="placeholder:text-faint"
-            onChange={({ value: v }) => draft.set(v)}
-            onContentSizeChange={grow.onContentSizeChange}
-            style={{ ...box, height: grow.height(), fontSize: 13, lineHeight: 19, color: colors.text }}
+            onChange={draft.set}
           />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
@@ -550,7 +545,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                             <RuntimeBadge runtime={a().runtime} />
                           </View>
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                            <StateDot tone={st().tone} />
+                            <Dot tone={st().tone} />
                             <Text testID={`member-${a().handle}-state`} style={{ flex: 1, fontSize: 12, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
                               {st().blocked ? st().label : [t.machines().find((m) => m.id === a().machine_id)?.name, st().label].filter(Boolean).join(" · ")}
                             </Text>

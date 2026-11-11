@@ -8,7 +8,7 @@
 #
 # Parts: secrets, daemon (src/, test/), server (server/), e2e (server + daemon
 # together, and the app's fixtures against a real server), app (app/: nsh check,
-# nsh test, layout), screens (app/ screenshots).
+# nsh test, layout, ui rules), screens (app/ screenshots).
 # Each step's output goes to a log; a failing step prints its last lines.
 # Exit status: 1 if a step failed. Steps that could not run (no nsh, no browser)
 # are listed as NOT RUN: say so in the PR.
@@ -32,7 +32,7 @@ else
     want=(secrets)
     has '^(src/|test/|package\.json|bun\.lock|tsconfig\.json)' && want+=(daemon e2e)
     has '^server/' && want+=(server e2e)
-    has '^(app/|scripts/(check-layout|screens|install-nsh)|\.claude/skills/nsh/)' && want+=(app screens)
+    has '^(app/|scripts/(check-layout|check-ui|ui-baseline|screens|install-nsh)|\.claude/skills/nsh/)' && want+=(app screens)
     has '^(app/|scripts/check-contract)' && want+=(e2e) # the app's fixtures against a real server
     has '^(\.github/|scripts/(check|e2e)\.sh)' && want=(secrets daemon server e2e app screens)
     echo "check: changed since origin/main: $(wc -l <<<"$changed" | tr -d ' ') files"
@@ -94,6 +94,8 @@ for p in "${parts[@]}"; do
       step "server: go test" bash -c 'cd server && go test -race ./...' ;;
     e2e) step "e2e" scripts/e2e.sh ;;
     app)
+      # Pages keep their look in app/ui (AGENTS.md, "Client components"); needs only bun.
+      step "app: ui rules" bun scripts/check-ui.ts
       if command -v nsh > /dev/null; then
         step "app: nsh check" nsh check app
         step "app: nsh test" bash -c 'cd app && nsh test'

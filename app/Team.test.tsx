@@ -496,6 +496,7 @@ describe("settings", () => {
     expect(app.shows("text:Not installed on 张伟的 Mac")).toBe(true);
     await app.press("id:new-agent-runtime-claude");
     await app.press("id:new-agent-model-sonnet");
+    await app.scroll("id:new-agent-dispatch-team", 300); // the dialog's last step sits under its footer until scrolled to
     await app.press("id:new-agent-dispatch-team");
     await app.press("id:new-agent-dispatch-confirm");
     await app.type("id:agent-name", "阿测");

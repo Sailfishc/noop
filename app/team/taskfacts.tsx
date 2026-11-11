@@ -1,11 +1,10 @@
 // A task's facts beside its thread: who does it, who asked, time spent; folded: acceptance criteria, repository, mandate, run log.
-import { openUrl, signal, Text, View, type JSX } from "nsh";
-import { Input } from "nsh/base";
+import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius } from "../ui";
+import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, TextArea } from "../ui";
 import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
-import { Btn, ErrorNote, failed, growing, RuntimeBadge, time } from "./ui";
+import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
 
 const minutes = (ms: number) => {
@@ -150,15 +149,14 @@ export function RepoPicker(props: { team: Team; value: string; testID: string; o
   }
   return (
     <View testID={props.testID} style={{ gap: 6, padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
-      <Input
+      <Field
+        small
         testID={`${props.testID}-input`}
         value={draft()}
         autoFocus
         placeholder={L("https://github.com/owner/name, or pick one below", "https://github.com/owner/name，或从下面选")}
-        class="placeholder:text-faint"
-        onChange={({ value }) => draft.set(value)}
+        onChange={draft.set}
         onSubmit={() => void pick(draft().trim())}
-        style={{ height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, color: colors.text }}
       />
       <Each of={shown()} key={(r) => r.remote}>
         {(r) => (
@@ -230,7 +228,6 @@ function Acceptance(props: { team: Team; task: Task }) {
   const t = props.team;
   const editing = signal(false);
   const draft = signal("");
-  const grow = growing({ min: 64, max: 160, pad: 22, line: 20 });
   const busy = signal(false);
   const error = signal("");
   const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
@@ -258,16 +255,14 @@ function Acceptance(props: { team: Team; task: Task }) {
       </If>
       <If when={editing()}>
         <View style={{ gap: 6 }}>
-          <Input
+          <TextArea
             testID={`task-${props.task.id}-acceptance-input`}
             value={draft()}
-            multiline
+            min={64}
+            max={160}
             autoFocus
             placeholder={L("One per line, e.g. P99 under 200 ms; no table locks", "一行一条，比如：P99 低于 200ms；上线不锁表")}
-            class="placeholder:text-faint"
-            onChange={({ value }) => draft.set(value)}
-            onContentSizeChange={grow.onContentSizeChange}
-            style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, lineHeight: 20, color: colors.text }}
+            onChange={draft.set}
           />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>

@@ -1,12 +1,11 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
+import { alpha, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Spinner } from "../ui";
 import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
-import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 
 
@@ -246,13 +245,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         }>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Input
+            <Field
+              small
+              grow
               testID={`task-${task().id}-title-input`}
               value={draft()}
               autoFocus
-              onChange={({ value }) => draft.set(value)}
+              onChange={draft.set}
               onSubmit={() => void rename()}
-              style={{ flex: 1, height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14.5, color: colors.text }}
             />
             <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => renaming.set(false)} />
             <Btn small kind="primary" testID={`task-${task().id}-title-save`} label={L("Save", "保存")} busy={busy() === "rename"} disabled={!draft().trim()} onPress={() => void rename()} />
@@ -271,7 +271,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={needs()}>
         {(n) => (
           <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
-            <StateDot tone={n().tone} />
+            <Dot tone={n().tone} />
             <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label}</Text>
           </View>
         )}

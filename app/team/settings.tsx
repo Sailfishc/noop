@@ -6,18 +6,17 @@
 // Admins also look after the team machines and the agents on them (teamowned.go), beside their own.
 // An agent = one machine + one runtime on it + who can hand it work + its memory. A machine hosts many agents; the
 // repository follows the task (a channel's default, or one named in the message), not the agent.
-import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
-import { Dialog, Input } from "nsh/base";
+import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { SignupSection } from "./signups";
-import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, growing, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
+import { agentState, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
 
@@ -280,7 +279,6 @@ function MyPreferences(props: { team: Team }) {
   const saved = signal(false);
   const error = signal("");
   const changed = () => value().trim() !== t.preferences();
-  const grow = growing({ min: 76, max: 260, pad: 22, line: 20 });
   // loaded after the page opened, and nothing typed yet: show it
   effect(() => {
     const p = t.preferences();
@@ -296,15 +294,13 @@ function MyPreferences(props: { team: Team }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Input
+      <TextArea
         testID="preferences-input"
         value={value()}
-        multiline
+        min={76}
+        max={260}
         placeholder={L("e.g. Reply in Chinese. In a PR description, say what changed before why. Ask me when unsure.", "比如：回复用中文；PR 描述先写改了什么再写为什么；不确定的地方先问我。")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onChange={(v) => { value.set(v); saved.set(false); }}
       />
       <ErrorNote text={error()} testID="preferences-error" />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
@@ -494,7 +490,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
                   <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                  <StateDot tone={st().tone} />
+                  <Dot tone={st().tone} />
                   <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
                 </View>
               </View>
@@ -569,7 +565,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
             <RuntimeBadge runtime={a().runtime} />
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <StateDot tone={st().tone} />
+            <Dot tone={st().tone} />
             <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.muted }}>{st().label}</Text>
           </View>
         </View>
@@ -672,7 +668,6 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   const busy = signal(false);
   const saved = signal(false);
   const changed = () => value().trim() !== (props.agent.memory ?? "");
-  const grow = growing({ min: 96, max: 260, pad: 22, line: 20 });
   // the agent rewrote it while it was open here and nothing was typed: show the new text
   effect(() => {
     const m = props.agent.memory ?? "";
@@ -686,15 +681,13 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Input
+      <TextArea
         testID={`agent-memory-${props.agent.handle}`}
         value={value()}
-        multiline
+        min={96}
+        max={260}
         placeholder={L("- The pay service is Go 1.24; run make test\n- Ask Wang Lei before touching the orders table", "- 支付服务是 Go 1.24，测试用 make test\n- 动 orders 表前先问王磊")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onChange={(v) => { value.set(v); saved.set(false); }}
       />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
@@ -792,79 +785,69 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     </View>
   );
   return (
-    <Dialog
+    <Modal
       testID="new-agent"
       open={props.open}
-      animation="fade"
-      onOpenChange={({ open }) => !open && props.onClose()}
-      backdropClass="bg-scrim"
-      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 16, pointerEvents: "box-none" }}
-    >
-      <View style={{ width: "100%", maxWidth: 640, maxHeight: windowSize().height - 32, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, overflow: "hidden" }}>
-        <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: 20, paddingRight: 10, height: 54, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          <Text style={{ flex: 1, fontSize: 17, fontWeight: "600", color: colors.text }}>{L("New agent", "新建 Agent")}</Text>
-          <View role="button" testID="new-agent-close" accessibilityLabel={L("Close", "关闭")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-            <Icon name="close" size={16} tint={colors.muted} />
-          </View>
-        </View>
-        <Scroll style={{ flexShrink: 1 }} contentStyle={{ padding: 20, gap: 14 }}>
-          {step("1", L("Who it is", "它是谁"))}
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <View style={{ flex: 1 }}><Field label={L("Name", "名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Tester", "阿测")} testID="agent-name" autoFocus /></View>
-            <View style={{ flex: 1 }}><Field label={L("@handle", "@名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="ace" testID="agent-handle" /></View>
-          </View>
-          <Field label={L("What it does (optional)", "职责（可选）")} value={desc()} onChange={(v) => desc.set(v)} placeholder={L("e.g. writes tests for the payments backend", "比如：给支付后端补测试")} testID="agent-desc" hint={L("Shown when people @ it, so they pick the right one.", "大家 @ 的时候能看到，好选对 Agent。")} />
-
-          {step("2", L("Where it runs", "运行在哪里"))}
-          <If when={mine().length} else={
-            <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.warn }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
-          }>
-            <Label text={L("Machine", "机器")} />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              <Each of={mine()} key={(m) => m.id}>
-                {(m) => (
-                  <PickCard
-                    testID={`new-agent-machine-${m().id}`}
-                    title={m().name}
-                    note={[m().online ? L("online", "在线") : L("offline", "离线"), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`), agentsOn(m()).length ? L(`${agentsOn(m()).length} agents`, `已有 ${agentsOn(m()).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}
-                    picked={machine() === m().id}
-                    right={<Dot on={m().online} />}
-                    onPress={() => machine.set(m().id)}
-                  />
-                )}
-              </Each>
-            </View>
-            <Label text={L(`Runtime on ${picked()?.name ?? "it"}`, `${picked()?.name ?? "这台机器"} 上的 Runtime`)} />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              <Each of={[...RUNTIMES]}>
-                {(r) => (
-                  <PickCard
-                    testID={`new-agent-runtime-${r().name}`}
-                    title={r().label}
-                    note={rt(r().name).note}
-                    picked={runtime() === r().name}
-                    disabled={!rt(r().name).ok}
-                    onPress={() => { if (runtime() !== r().name) { runtime.set(r().name); model.set(""); } }}
-                  />
-                )}
-              </Each>
-            </View>
-            <Label text={L("Model", "模型")} />
-            <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
-          </If>
-          <Field label={L("Fallback checkout on that machine (optional)", "本机默认仓库（可选，一般不用填）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
-
-          {step("3", L("Who can use it", "谁能用它"))}
-          <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
-          <ErrorNote text={error()} testID="agent-create-error" />
-        </Scroll>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.border }}>
+      onClose={props.onClose}
+      title={L("New agent", "新建 Agent")}
+      footer={
+        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="new-agent-summary" style={{ flex: 1, fontSize: 13.5, color: colors.muted, numberOfLines: 1 }}>{summary()}</Text>
           <Btn kind="ghost" label={L("Cancel", "取消")} onPress={props.onClose} />
           <Btn testID="agent-create" kind="primary" label={L("Create agent", "创建 Agent")} busy={busy()} disabled={!cleanHandle() || !rt(runtime()).ok} onPress={create} />
         </View>
+      }
+    >
+      {step("1", L("Who it is", "它是谁"))}
+      <View style={{ flexDirection: "row", gap: 10 }}>
+        <View style={{ flex: 1 }}><Field label={L("Name", "名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Tester", "阿测")} testID="agent-name" autoFocus /></View>
+        <View style={{ flex: 1 }}><Field label={L("@handle", "@名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="ace" testID="agent-handle" /></View>
       </View>
-    </Dialog>
+      <Field label={L("What it does (optional)", "职责（可选）")} value={desc()} onChange={(v) => desc.set(v)} placeholder={L("e.g. writes tests for the payments backend", "比如：给支付后端补测试")} testID="agent-desc" hint={L("Shown when people @ it, so they pick the right one.", "大家 @ 的时候能看到，好选对 Agent。")} />
+
+      {step("2", L("Where it runs", "运行在哪里"))}
+      <If when={mine().length} else={
+        <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.warn }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
+      }>
+        <Label text={L("Machine", "机器")} />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Each of={mine()} key={(m) => m.id}>
+            {(m) => (
+              <PickCard
+                testID={`new-agent-machine-${m().id}`}
+                title={m().name}
+                note={[m().online ? L("online", "在线") : L("offline", "离线"), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`), agentsOn(m()).length ? L(`${agentsOn(m()).length} agents`, `已有 ${agentsOn(m()).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}
+                picked={machine() === m().id}
+                right={<Dot on={m().online} />}
+                onPress={() => machine.set(m().id)}
+              />
+            )}
+          </Each>
+        </View>
+        <Label text={L(`Runtime on ${picked()?.name ?? "it"}`, `${picked()?.name ?? "这台机器"} 上的 Runtime`)} />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Each of={[...RUNTIMES]}>
+            {(r) => (
+              <PickCard
+                testID={`new-agent-runtime-${r().name}`}
+                title={r().label}
+                note={rt(r().name).note}
+                picked={runtime() === r().name}
+                disabled={!rt(r().name).ok}
+                onPress={() => { if (runtime() !== r().name) { runtime.set(r().name); model.set(""); } }}
+              />
+            )}
+          </Each>
+        </View>
+        <Label text={L("Model", "模型")} />
+        <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
+      </If>
+      <Field label={L("Fallback checkout on that machine (optional)", "本机默认仓库（可选，一般不用填）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
+
+      {step("3", L("Who can use it", "谁能用它"))}
+      <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
+      <ErrorNote text={error()} testID="agent-create-error" />
+    </Modal>
   );
 }
 
@@ -1151,7 +1134,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
               <Text style={{ fontSize: 14, color: colors.text }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
               <RuntimeBadge runtime={a().runtime} />
               <View style={{ flex: 1 }} />
-              <StateDot tone={st().tone} />
+              <Dot tone={st().tone} />
               <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
             </View>
           );

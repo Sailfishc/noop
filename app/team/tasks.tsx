@@ -3,14 +3,13 @@
 // it from the person: by default the tasks that concern me (I asked, my agent does it, it waits for me), narrowed
 // further by channel, by who asked and by which agent does it. Only tasks people track show; a question the agent
 // only answered stays in the conversation.
-import { computed, effect, Scroll, signal, Storage, Text, View, windowSize, type JSX } from "nsh";
-import { Menu, MenuItem } from "nsh/base";
+import { computed, effect, type JSX, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon } from "../ui";
+import { alpha, Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu } from "../ui";
 import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
-import { Avatar, Header, StateDot, time, WIDE } from "./ui";
+import { Header, time, WIDE } from "./ui";
 
 export type TaskLayout = "board" | "list";
 /** The page's quick views: what concerns me (the default), what waits for me, what I asked for, my agents' work, all. */
@@ -35,7 +34,7 @@ export function rememberedLayout(place: string) {
 export function WaitsChip(props: { label: string; tone: Tone; testID?: string }) {
   return (
     <View testID={props.testID} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneColor(props.tone), 0.13) }}>
-      <StateDot tone={props.tone} />
+      <Dot tone={props.tone} />
       <Text style={{ fontSize: 12, fontWeight: "600", color: toneColor(props.tone) }}>{props.label}</Text>
     </View>
   );
@@ -115,7 +114,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
                 <View role={s() === "done" || s() === "closed" ? "button" : undefined} testID={`tasks-col-${s()}-head`}
                   onPress={s() === "done" || s() === "closed" ? () => unfolded.update((u) => ({ ...u, [s()]: !u[s()] })) : undefined}
                   style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
-                  <StateDot tone={STATUS[s()].tone} />
+                  <Dot tone={STATUS[s()].tone} />
                   <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{STATUS[s()].label()}</Text>
                   <Text testID={`tasks-col-${s()}-count`} style={{ flex: 1, fontSize: 12, color: colors.faint }}>{String(byStatus()[s()].length)}</Text>
                   <If when={s() === "done" || s() === "closed"}>
@@ -168,11 +167,9 @@ function PickFilter(props: { testID: string; label: string; options: { id: strin
   const on = (id: string) => props.picked.includes(id);
   const toggle = (id: string) => props.onChange(on(id) ? props.picked.filter((x) => x !== id) : [...props.picked, id]);
   return (
-    <Menu
+    <PopMenu
       align="start"
-      offset={4}
-      margin={8}
-      popupStyle={{ minWidth: 200, maxHeight: 360, padding: 5, borderRadius: 12, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
+      maxHeight={360}
       trigger={
         <View role="button" testID={props.testID} hoverStyle={hovered()}
           style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, borderRadius: 7, borderWidth: 1, borderColor: props.picked.length ? colors.accentFill : colors.border, backgroundColor: props.picked.length ? alpha(colors.accent, 0.08) : "transparent" }}>
@@ -182,21 +179,12 @@ function PickFilter(props: { testID: string; label: string; options: { id: strin
       }
     >
       <If when={props.picked.length}>
-        <MenuItem testID={`${props.testID}-clear`} onSelect={() => props.onChange([])} hoverStyle={hovered()} activeStyle={hovered()} style={{ height: 30, justifyContent: "center", paddingHorizontal: 10, borderRadius: 7 }}>
-          <Text style={{ fontSize: 13, color: colors.muted }}>{L("Clear", "清除")}</Text>
-        </MenuItem>
+        <MenuRow testID={`${props.testID}-clear`} label={L("Clear", "清除")} onSelect={() => props.onChange([])} />
       </If>
       {props.options.map((o) => (
-        <MenuItem testID={`${props.testID}-${o.id}`} onSelect={() => toggle(o.id)} hoverStyle={hovered()} activeStyle={hovered()}
-          style={{ height: 32, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 7 }}>
-          <View style={{ width: 14, alignItems: "center" }}>
-            <If when={on(o.id)}><Icon name="check" size={13} tint={colors.accent} /></If>
-          </View>
-          <Text style={{ flex: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{o.label}</Text>
-          <If when={o.note}><Text style={{ fontSize: 12, color: colors.faint }}>{o.note}</Text></If>
-        </MenuItem>
+        <MenuRow testID={`${props.testID}-${o.id}`} label={o.label} right={o.note} checked={on(o.id)} onSelect={() => toggle(o.id)} />
       ))}
-    </Menu>
+    </PopMenu>
   );
 }
 
