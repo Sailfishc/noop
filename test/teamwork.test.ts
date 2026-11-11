@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, claudeMcpServers, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
+import { wakePrompt } from "../src/teamwork";
 import { cliEnv, createWorker, fetchInputs, reactionOf, taskClaimOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
@@ -685,4 +686,12 @@ test("evidence: the review result carries how each criterion was checked; the pr
   const body = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report").at(-1)!.body;
   expect(body.evidence).toEqual([{ criterion: 1, how: "ran", proof: "p99 180ms", file: "out/a.png" }]);
   rmSync(W, { recursive: true, force: true });
+});
+
+test("woken with the receipt of what it delegated: what came back, and how to check, send back or deliver", () => {
+  const p = wakePrompt({ ...claim(), wake: { reason: "delegates", payload: "## T-0002 @bei: delivered\nSummary: 文档写好了\n", at: 1 } } as any);
+  expect(p).toContain("## T-0002 @bei: delivered");
+  expect(p).toContain("remi delegate @AGENT WHAT TO CHANGE");
+  expect(p).toContain("A person accepts only your result.");
+  expect(parseTaskResult('```json\n{"status": "waiting", "summary": "等", "wait": {"how": "delegates"}}\n```').status).toBe("waiting");
 });

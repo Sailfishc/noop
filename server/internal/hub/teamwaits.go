@@ -26,14 +26,15 @@ const (
 )
 
 // answer: a person's answer to a question the agent asked (remi ask): only a reply in the thread (or the deadline) wakes it.
-var waitHows = map[string]bool{"callback": true, "poll": true, "timer": true, "answer": true}
+// delegates: the tasks its agent delegated (teamdelegate.go): the last one back wakes it with the receipt; no deadline.
+var waitHows = map[string]bool{"callback": true, "poll": true, "timer": true, "answer": true, "delegates": true}
 
 // answerWindow: how long a task waits for a person's answer by default before its agent is woken to decide.
 const answerWindow = 24 * time.Hour
 
 // waitView: what the task waits for (tasks_v1.wait).
 type waitView struct {
-	How      string `json:"how"`               // callback | poll | timer | answer | quota
+	How      string `json:"how"`               // callback | poll | timer | answer | quota | delegates
 	Every    int64  `json:"every,omitempty"`   // poll: seconds between checks (grows ×1.5 up to 30 minutes)
 	Expect   int64  `json:"expect,omitempty"`  // when the result should be there (unix ms)
 	Deadline int64  `json:"deadline"`          // when to stop waiting and wake the agent anyway (unix ms)
@@ -53,7 +54,7 @@ type waitView struct {
 }
 
 type wake struct {
-	Reason  string `json:"reason"` // callback | done | failed | errors | timer | deadline | message | quota
+	Reason  string `json:"reason"` // callback | done | failed | errors | timer | deadline | message | quota | delegates
 	Note    string `json:"note,omitempty"`
 	Payload string `json:"payload,omitempty"` // the callback's body
 	At      int64  `json:"at"`
@@ -104,7 +105,7 @@ type waitRequest struct {
 
 func (h *Hub) newWait(b *waitRequest) (*waitView, string) {
 	if b == nil || !waitHows[b.How] {
-		return nil, "waiting 要带 wait.how：callback、poll、timer 或 answer"
+		return nil, "waiting 要带 wait.how：callback、poll、timer、answer 或 delegates"
 	}
 	now := h.nowMs()
 	w := &waitView{How: b.How, Since: now, What: trimmed(b.What, 200)}
@@ -117,6 +118,9 @@ func (h *Hub) newWait(b *waitRequest) (*waitView, string) {
 	}
 	dl = min(dl, waitMaxDeadline)
 	w.Deadline = now + dl.Milliseconds()
+	if b.How == "delegates" {
+		w.Deadline = 0 // it waits as long as they work
+	}
 	if b.Expect > 0 {
 		w.Expect = now + min(time.Duration(b.Expect)*time.Second, dl).Milliseconds()
 	}
@@ -138,7 +142,8 @@ func (h *Hub) newWait(b *waitRequest) (*waitView, string) {
 func (h *Hub) wakeTask(id string, w *waitView, reason, note, payload string) {
 	w.Wake = &wake{Reason: reason, Note: trimmed(note, 500), Payload: payload, At: h.nowMs()}
 	step := map[string]string{"callback": "外部回调到了", "done": "外部结果好了", "failed": "外部任务失败了", "errors": "查不到外部状态",
-		"timer": "到时间了，去看结果", "deadline": "等到截止时间了，最后确认一次", "quota": "额度恢复了，接着干"}[reason]
+		"timer": "到时间了，去看结果", "deadline": "等到截止时间了，最后确认一次", "quota": "额度恢复了，接着干",
+		"delegates": "委派的都交回了，检查汇总"}[reason]
 	h.setTask(id, map[string]any{"state": taskQueued, "step": step, "wait": jsonOrNil(w)})
 	h.taskChanged(id)
 }
@@ -162,8 +167,8 @@ func (h *Hub) Tick() {
 	rows.Close()
 	for _, id := range ids {
 		w := h.taskWait(id)
-		if w != nil && w.How == "quota" {
-			continue // the runtime's limit wakes it (tickQuota)
+		if w != nil && (w.How == "quota" || w.How == "delegates") {
+			continue // the runtime's limit wakes it (tickQuota); the last delegated task back wakes it (checkReceipt)
 		}
 		switch {
 		case w == nil:

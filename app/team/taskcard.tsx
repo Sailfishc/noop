@@ -9,6 +9,7 @@ import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 import { AlignCard } from "./aligncard";
 import { EvidenceLine, EvidenceList } from "./evidence";
+import { Delegates, waitingFor } from "./delegates";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -54,6 +55,7 @@ export function waitShort(task: Task): string {
   const w = task.wait;
   if (!w) return "";
   if (w.how === "quota") return quotaShort(w);
+  if (w.how === "delegates") return L("what it delegated", "委派出去的部分");
   const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
   return [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), until].join(" · ");
 }
@@ -63,6 +65,7 @@ export function waitLines(task: Task): string[] {
   const w = task.wait;
   if (!w) return [];
   if (w.how === "quota") return [quotaShort(w), ...(w.note ? [w.note] : [])];
+  if (w.how === "delegates") return [L("What it delegated: woken once, when all of it is back", "委派出去的部分：全部交回时叫醒一次")];
   const lines = [
     [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), HOW[w.how]?.() ?? w.how].join(" · "),
     [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
@@ -173,9 +176,14 @@ const WHY: Record<Holder["why"], () => string> = {
   handoff: () => L("to do their part", "做交给他的事"), align: () => L("to align on what done means", "对齐做完意味着什么"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
   unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
   work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
+  receipt: () => L("to check what came back", "检查交回的结果"),
 };
 /** "Ball: 张伟 · to accept it" / "Ball: you · …" / "Ball: @acha · working on it". */
-function holderText(t: Team, hd: Holder, me: string | undefined): string {
+function holderText(t: Team, hd: Holder, me: string | undefined, task?: Task): string {
+  if (hd.why === "wait" && task?.wait?.how === "delegates") {
+    const a = "@" + (t.agents().find((x) => x.id === hd.id)?.handle ?? "?");
+    return L(`Ball: ${a} · waiting for what it delegated`, `球在 ${a} 手里 · 等委派的交回`);
+  }
   const who = hd.kind === "agent" ? "@" + (t.agents().find((a) => a.id === hd.id)?.handle ?? "?") : hd.id === me ? L("you", "你") : t.users().find((u) => u.id === hd.id)?.name ?? "?";
   return L(`Ball: ${who} · ${WHY[hd.why]?.() ?? hd.why}`, `球在 ${who} 手里 · ${WHY[hd.why]?.() ?? hd.why}`);
 }
@@ -232,6 +240,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (trouble) return `${machine()!.name}${L(": ", "：")}${runtimeTrouble(trouble, lang() !== "zh")}`;
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
     if (s === "running") return task().step || L("Working…", "干活中…");
+    if (s === "waiting" && task().wait?.how === "delegates") {
+      const who = waitingFor(t, task());
+      return who ? L(`Waiting for ${who}`, `等 ${who}`) : L("Everything delegated is back", "委派的都交回了");
+    }
     if (s === "waiting") return waitShort(task());
     return "";
   };
@@ -323,7 +335,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
               <Noted
                 testID={`task-${task().id}-handoff-${x().id}-who`}
                 note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
-                label={<Txt variant="caption" weight="semibold" tone="accent">{L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
+                label={<Txt variant="caption" weight="semibold" tone="accent">{x().kind === "delegate"
+                  ? L(`@${agent()?.handle ?? "?"} suggests delegating a part to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议委派给 @${to()?.handle ?? "?"}`)
+                  : L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
               />
               <If when={x().what}>
                 <Txt lines={3}>{x().what}</Txt>
@@ -340,13 +354,15 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           );
         }}
       </Each>
+      <Delegates team={t} task={task()} />
       <If when={props.detail ? task().holder : null}>
-        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id)}</Text>}
+        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id, task())}</Text>}
       </If>
       <If when={props.detail && (task().mandate?.via?.length || task().mandate?.trigger || task().submits?.length)}>
         <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.faint }}>
           {[
-            task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
+            task().mandate?.delegated && task().mandate?.via?.length ? L(`Delegated by @${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"}; its result goes back to it`, `@${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"} 委派的，结果交回给它`)
+            : task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
             task().mandate?.trigger ? L("Started by a trigger", "由触发器发起") : "",
             task().submits?.length ? L(`Outside submissions ${task().submits!.length}/3`, `外部提交 ${task().submits!.length}/3`) : "",
           ].filter(Boolean).join(" · ")}

@@ -69,7 +69,9 @@ export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: b
   /** People in the channel who took it over from the one who asked; by is the last. */
   takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
   /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
-  via?: string[] | null; parent?: string; trigger?: string };
+  via?: string[] | null; parent?: string; trigger?: string;
+  /** The parent's agent delegated it (remi delegate): its result goes back to that agent; redos: times it sent it back. */
+  delegated?: boolean; redos?: number };
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -112,7 +114,11 @@ export type Task = {
   holder?: Holder | null;
   /** Each time it needed a person, and why, oldest first (older servers send none). */
   calls?: Call[] | null;
+  /** The tasks its agent delegated (remi delegate), oldest first. */
+  delegates?: Delegate[] | null;
 };
+/** A task its agent delegated, as the parent lists it. */
+export type Delegate = { task: string; agent: string; state: string; status: string; redos?: number };
 /** The task needed this person for this: kind confirm | decide | ask | handoff | handoff_card | align | accept | unblock
  * | retry; class: the moment it counts as (calls.go). */
 export type Call = { at: number; who: string; kind: string; class: CallClass };
@@ -122,9 +128,11 @@ export type CallClass = "align" | "decide" | "accept" | "outside";
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
 export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string;
   /** No card: the asker may use that agent without its owner's yes, so it went at once. */
-  auto?: boolean };
+  auto?: boolean;
+  /** delegate: a part of the work that comes back to this task (remi delegate); else the work moves on. */
+  kind?: "delegate" };
 /** Whose move it is, and why. */
-export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
@@ -140,7 +148,7 @@ export const openHandoffs = (t: Task) => (t.handoffs ?? []).filter((x) => x.stat
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
-  how: "callback" | "poll" | "timer" | "answer" | "quota"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  how: "callback" | "poll" | "timer" | "answer" | "quota" | "delegates"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
   checked?: number; checks?: number; errors?: number; note?: string; what?: string;
   wake?: { reason: string; note?: string; at: number } | null;
   /** quota: the runtime's limit on that machine; stale: it waited a day and its people were told. */

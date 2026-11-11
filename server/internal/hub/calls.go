@@ -67,7 +67,12 @@ func (h *Hub) calledFor(id, needs string) string {
 			return handler
 		}
 		return by
-	case "unblock", "retry":
+	case "unblock":
+		return by
+	case "retry":
+		if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE id = ? AND COALESCE(json_extract(mandate, '$.delegated'), 0) = 1", id) > 0 {
+			return "" // a delegated task that failed goes back to the agent that delegated it, not to a person
+		}
 		return by
 	}
 	return ""

@@ -109,6 +109,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/agent/ask", public, h.v1AgentAsk)
 	r("POST /api/v1/agent/repo", public, h.v1AgentRepo)
 	r("POST /api/v1/agent/handoff", public, h.v1AgentHandoff)
+	r("POST /api/v1/agent/delegate", public, h.v1AgentDelegate)
 	r("POST /api/v1/agent/submit", public, h.v1AgentSubmit)
 	r("POST /api/v1/tasks/{id}/handoff", person, h.v1TaskHandoff)
 	r("GET /api/v1/triggers", person, h.v1Triggers)

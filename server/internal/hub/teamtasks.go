@@ -132,6 +132,10 @@ type mandateView struct {
 	Via     []string `json:"via,omitempty"`
 	Parent  string   `json:"parent,omitempty"`
 	Trigger string   `json:"trigger,omitempty"`
+	// Delegated: the parent's agent delegated it (remi delegate, teamdelegate.go): its result goes back to that agent,
+	// not to a person's acceptance; Redos: how many times that agent sent it back
+	Delegated bool `json:"delegated,omitempty"`
+	Redos     int  `json:"redos,omitempty"`
 }
 
 type taskView struct {
@@ -175,6 +179,7 @@ type taskView struct {
 	Evidence    []evidenceView `json:"evidence"`     // per acceptance criterion, how the agent verified it at its last delivery (teamevidence.go)
 	Aligned     bool           `json:"aligned"`      // its agent aligned with people once (teamalign.go): it may not again
 	Holder      *holderView    `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
+	Delegates   []delegateView `json:"delegates"`    // the tasks its agent delegated (teamdelegate.go), oldest first
 	Calls       []callView     `json:"calls"`        // each time it needed a person, and why (calls.go)
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
@@ -260,7 +265,7 @@ func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
 		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{},
-		Holder: t.Holder}
+		Holder: t.Holder, Delegates: []delegateView{}}
 	// a handoff card still to click: its owner may be outside the channel (the card waits for them), so the row keeps
 	// which card and which agent, not its words
 	for _, x := range t.Handoffs {
@@ -381,6 +386,9 @@ func (h *Hub) setTask(id string, cols map[string]any) {
 	}
 	args = append(args, id)
 	h.must(h.db.Exec("UPDATE tasks_v1 SET "+strings.Join(sets, ", ")+" WHERE id = ?", args...))
+	if state, ok := cols["state"].(string); ok && returnedStates[state] {
+		h.childReturned(id) // a delegated task came back: its parent may have all it waits for (teamdelegate.go)
+	}
 }
 
 func jsonOrNil(v any) any {
@@ -500,6 +508,9 @@ type taskOrigin struct {
 	Parent    string
 	Trigger   string
 	Confirmed bool
+	// Delegated: a part the parent's agent delegated (teamdelegate.go); Acceptance: what it asked for, its criteria
+	Delegated  bool
+	Acceptance string
 }
 
 func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracked bool, o taskOrigin) string {
@@ -524,6 +535,9 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	id := fmt.Sprintf("T-%04d", n)
 	now := h.nowMs()
 	text, acceptance := splitAcceptance(m.Text)
+	if acceptance == "" {
+		acceptance = o.Acceptance
+	}
 	if root != m.ID { // a reply: the task is about the thread
 		if r, ok := h.message(root); ok {
 			text = r.Text + "\n\n" + text
@@ -532,7 +546,7 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	repo := h.taskRepo(m.Text, root)
 	branch := "agent/" + id
 	mandate := mandateView{By: by, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
-		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger}
+		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Delegated: o.Delegated}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
 		branch, repo, tracked, handler, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
 		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now))
@@ -563,9 +577,14 @@ func (h *Hub) followUp(t taskView) {
 }
 
 // unseen: people's messages in the thread the agent has not been given yet.
+// A delegated task also hears the agent that delegated it (what to redo).
 func (h *Hub) unseen(t taskView) []messageView {
+	parent := ""
+	if t.Mandate != nil && t.Mandate.Delegated && len(t.Mandate.Via) > 0 {
+		parent = t.Mandate.Via[len(t.Mandate.Via)-1]
+	}
 	return scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE (m.thread_id = ? OR m.id = ?) AND m.seq > ?
-		AND m.author_kind = 'user' ORDER BY m.seq`, t.ThreadID, t.ThreadID, t.seenSeq))
+		AND (m.author_kind = 'user' OR (m.author_kind = 'agent' AND m.author_id = ?)) ORDER BY m.seq`, t.ThreadID, t.ThreadID, t.seenSeq, parent))
 }
 
 // ---------------------------------------------------------------- people
@@ -623,7 +642,8 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		(t.state = 'pending' AND t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?))
 		OR (t.state = 'needs_decision' AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
-		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?))
+			AND NOT (t.state = 'failed' AND COALESCE(json_extract(t.mandate, '$.delegated'), 0) = 1))
 		OR (t.state = 'waiting' AND json_extract(t.wait, '$.how') = 'quota' AND json_extract(t.wait, '$.stale') = 1
 			AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
@@ -711,6 +731,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
 	h.taskChanged(t.ID)
+	h.cancelDelegates(t.ID) // what it delegated and is not back yet goes too
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, h.taskOut(q, t))
 }
@@ -1172,7 +1193,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			}
 			cols["evidence"] = jsonOrNil(fillEvidence(criteria, b.Evidence))
 		}
-		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) {
+		if state == taskReview && t.Mandate != nil && t.Mandate.Delegated {
+			state = taskDone // delivered back to the agent that delegated it: it checks it, not a person (teamdelegate.go)
+		} else if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) {
 			state = taskDone
 		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
@@ -1187,6 +1210,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if len(cols) > 0 || len(b.Outputs) > 0 {
 		h.taskChanged(t.ID)
+	}
+	if cols["state"] == taskWaiting && b.Wait != nil && b.Wait.How == "delegates" {
+		h.checkReceipt(t.ID) // everything it delegated may be back already
 	}
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, h.taskOut(q, t))

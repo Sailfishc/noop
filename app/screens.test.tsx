@@ -71,6 +71,21 @@ const evidenceNet = () => server(newLog(), {
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, [delivered, ...tasks.slice(1)]);
+// the first task's agent delegated two parts to two agents and waits for them: one is back, one still at it
+const leadT = task({ id: "T-0001", state: "waiting", tracked: true, title: "整理退款流程并补测试", created_by: "u_1", step: "委派的都交回了，检查汇总",
+  wait: { how: "delegates", deadline: 0, since: T0 }, holder: { kind: "agent", id: "a_1", why: "wait" },
+  handoffs: [{ id: "ho_1", to: "a_2", what: "写退款流程文档", message: "msg_7", at: T0, state: "accepted", auto: true, kind: "delegate", task: "T-0006" },
+    { id: "ho_2", to: "a_3", what: "补退款单测", message: "msg_8", at: T0, state: "accepted", auto: true, kind: "delegate", task: "T-0007" }],
+  delegates: [{ task: "T-0006", agent: "a_2", state: "done", status: "done", redos: 1 }, { task: "T-0007", agent: "a_3", state: "running", status: "in_progress" }] });
+const child = (id: string, agent: string, state: string, title: string) => task({ id, agent_id: agent, state, tracked: true, title, created_by: "u_1", created: T0 + 1,
+  mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: `agent/${id}`, runtime: "codex", via: ["a_1"], parent: "T-0001", delegated: true } });
+const leadAgents = [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", machine_id: null, machines: [] }, { ...acha, id: "a_3", handle: "san", name: "三", machine_id: null, machines: [] }];
+const delegateNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: leadAgents } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [leadT, child("T-0006", "a_2", "done", "写退款流程文档"), child("T-0007", "a_3", "running", "补退款单测"), ...tasks.slice(1)]);
 const alignNet = () => server(newLog(), {
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
   [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
@@ -144,6 +159,23 @@ describe("screens", () => {
     await app.waitFor("id:thread >> id:task-T-0001-evidence-list");
     await app.press("id:thread >> id:task-T-0001-evidence-1");
     await shot(app, "thread-evidence");
+  });
+
+  test("thread-delegates: a task whose agent delegated two parts, opened; the tasks page with them under it", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: delegateNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-delegates-toggle");
+    await app.press("id:thread >> id:task-T-0001-delegates-toggle");
+    await app.waitFor("id:thread >> id:task-T-0001-delegate-T-0007");
+    await shot(app, "thread-delegates");
+    await app.press("id:open-tasks");
+    await app.waitFor("id:tasks-filter-all");
+    await app.press("id:tasks-filter-all");
+    await app.waitFor("id:taskrow-T-0001-children");
+    await shot(app, "tasks-delegates");
   });
 
   test("members", async () => {
