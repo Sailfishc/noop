@@ -1465,4 +1465,18 @@ describe("private channels", () => {
     await app.waitUntil(() => log.acts.length === 1);
     expect(log.acts[0]).toBe("T-0007 confirm");
   });
+
+  test("an agent's owner not in the private channel clicks a handoff card to it from a row without its words", async () => {
+    const log = newLog();
+    const hidden = task({ id: "T-0008", agent_id: "a_9", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "running", tracked: true, redacted: true,
+      holder: { kind: "user", id: "u_1", why: "handoff_card" }, handoffs: [{ id: "ho_7", to: "a_1", what: "", message: "", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {}, [hidden]) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0008-handoff-ho_7");
+    expect(app.shows("text:私有频道里的任务")).toBe(true);
+    await app.press("id:task-T-0008-handoff-ho_7-accept");
+    await app.waitUntil(() => log.acts.length === 1);
+    expect(log.acts[0]).toBe("T-0008 handoff");
+  });
 });

@@ -254,11 +254,20 @@ func taskNum(id string) int64 {
 	return n
 }
 
-// redact: the task as someone who cannot read its channel may see it (Redacted).
+// redact: the task as someone who cannot read its channel may see it (Redacted): who, which agent, where it stands
+// and who has the ball, and a handoff card still to click (its id and agent only).
 func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
-		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{}}
+		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{},
+		Holder: t.Holder}
+	// a handoff card still to click: its owner may be outside the channel (the card waits for them), so the row keeps
+	// which card and which agent, not its words
+	for _, x := range t.Handoffs {
+		if x.State == "proposed" {
+			r.Handoffs = append(r.Handoffs, handoffView{ID: x.ID, To: x.To, At: x.At, State: x.State})
+		}
+	}
 	return r
 }
 
@@ -281,6 +290,11 @@ func (h *Hub) taskChanged(id string) {
 	people := []string{t.CreatedBy, t.Handler}
 	if a, ok := h.agent(t.AgentID); ok {
 		people = append(people, a.OwnerID)
+	}
+	for _, x := range t.Handoffs { // the owner of an agent a card waits for clicks it
+		if b, ok := h.agent(x.To); ok && x.State == "proposed" {
+			people = append(people, b.OwnerID)
+		}
 	}
 	told := map[string]bool{}
 	for _, u := range people {

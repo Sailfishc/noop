@@ -325,7 +325,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
                 note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
                 label={<Txt variant="caption" weight="semibold" tone="accent">{L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
               />
-              <Txt lines={3}>{x().what}</Txt>
+              <If when={x().what}>
+                <Txt lines={3}>{x().what}</Txt>
+              </If>
               <If when={mayDecline()}>
                 <View style={{ flexDirection: "row", gap: 6 }}>
                   <If when={mayAccept()}>

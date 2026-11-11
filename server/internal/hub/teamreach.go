@@ -22,21 +22,25 @@ type reachView struct {
 }
 
 // reach: whether the requester of t may use b: free (b is theirs, or b takes work from them without its owner's
-// yes), behind a card b's owner clicks, or not at all (b is not in the channel and the requester may not bring it in:
-// mayBringAgent, the same rule as a person adding it to a private channel).
+// yes), behind a card b's owner clicks, or not at all. b not in the channel comes in when the requester could bring it
+// (mayBringAgent) in a public channel; in a private one only when it is the requester's own agent.
 func (h *Hub) reach(t taskView, b agentView) reachView {
 	by := t.CreatedBy
 	var r reachView
 	if !h.isMember(t.ChannelID, "agent", b.ID) {
-		if !h.mayBringAgent(by, b) {
-			if h.isPrivate(t.ChannelID) {
-				r.Refuse = "@" + b.Handle + " 不在这个私有频道里，发起人也不能把它拉进来（只有它的主人能，或者它接整个团队的活）"
-			} else {
-				r.Refuse = "@" + b.Handle + " 不在这个频道，也不接整个团队的活：请它的主人先把它加进来"
-			}
+		switch {
+		case h.isPrivate(t.ChannelID) && b.OwnerID != by:
+			// a person bringing someone else's agent into a private channel is told what then reaches whose computer
+			// and decides; an agent doing it for them would skip that, so only their own agent comes in this way
+			r.Refuse = "@" + b.Handle + " 不在这个私有频道里：请频道成员先把它加进来"
+		case !h.mayBringAgent(by, b):
+			r.Refuse = "@" + b.Handle + " 不在这个频道，也不接整个团队的活：请它的主人先把它加进来"
+		default:
+			r.Join = true
+		}
+		if r.Refuse != "" {
 			return r
 		}
-		r.Join = true
 	}
 	switch {
 	case b.OwnerID == by:
