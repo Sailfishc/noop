@@ -26,7 +26,7 @@ Fix what it reports. Put what it lists as NOT RUN in the PR.
 
 Tests use a pretend server (`app/fixtures.ts`, kept honest by `scripts/check-contract.ts`). To see the real thing,
 `scripts/dev.sh` starts remi-server with the web client, seeds a small team (张伟 admin, 王磊, agents @acha with
-an orders repo and @notes, #支付后端) and runs this repository's daemon as their machine, with
+an orders repo on both of 张伟's two machines and @notes, #支付后端) and runs this repository's daemon as those machines, with
 `scripts/fake-codex.ts` as Codex: no model, no keys. Everything lives in `.dev/`; `--fresh` starts over.
 
 - It prints login links and a curl line. Run it in the background, then drive it through the API

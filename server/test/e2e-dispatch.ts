@@ -39,6 +39,8 @@ const bin = join(W, "bin");
 mkdirSync(bin);
 writeFileSync(join(bin, "codex"), `#!/usr/bin/env bun
 const a = process.argv.slice(2);
+if (a[0] === "--version") { console.log("codex-cli 0.0.0 (fake)"); process.exit(0); }
+if (a[0] === "login") { console.log("Logged in (fake)"); process.exit(0); }
 const cwd = a[a.indexOf("--cd") + 1];
 const resume = a.includes("resume") ? a[a.indexOf("resume") + 1] : "";
 const prompt = await new Response(Bun.stdin.stream()).text();
@@ -175,6 +177,27 @@ check("told the limit reset, in the session it had", q.summary.startsWith("额�
 if (!await until("the runtime takes work again and the other task runs", async () => !(await machines())[0].runtime_status?.codex && (await get("T-0005")).runs === 1)) {
   console.log(JSON.stringify((await machines())[0].runtime_status), JSON.stringify(await get("T-0005")).slice(0, 400));
 }
+
+await until("the other task delivered", async () => ["review", "done"].includes((await get("T-0005")).state)); // a run getting through lifts a limit
+// two computers: the laptop's codex waits for its limit again, so new work goes to the desktop, and stays there
+await alignAsk("@acha QUOTA-TEST 再导一次", "T-0006");
+await until("the laptop hits the limit again", async () => (await get("T-0006")).state === "waiting");
+const desk = await api("POST", "/api/v1/machines", wl.session, { name: "王磊的台式机" });
+const deskId = desk.json.machine.id;
+const listed = await api("PATCH", `/api/v1/agents/${agent.json.id}`, wl.session, { machines: [mach.json.machine.id, deskId] });
+check("the agent runs on both, the laptop first", listed.status === 200 && listed.json.machines?.[1] === deskId, JSON.stringify(listed.json));
+const ta2 = startTeamAgent({ cloud: { url: BASE }, server: { token: desk.json.token }, host: { max_parallel: 2 } }, {
+  stateFile: join(W, "state2.json"), log: () => {}, worker: { workRoot: join(W, "work2"), logDir: join(W, "logs2"), stepEveryMs: 0 },
+})!;
+await until("the desktop knows its agent", () => ta2.agents().some((a) => a.handle === "acha"));
+const onDesk = await alignAsk("@acha 换台电脑做 直接做", "T-0007");
+await until("the desktop takes the new task and delivers", async () => ["review", "done"].includes((await get("T-0007")).state));
+check("claimed by the desktop", (await get("T-0007")).claimed_by === deskId, (await get("T-0007")).claimed_by);
+check("the laptop's waiting task stays on the laptop", (await get("T-0006")).claimed_by === mach.json.machine.id && (await get("T-0006")).state === "waiting");
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "再看一眼", thread_id: onDesk });
+await until("a follow-up runs again", async () => (await get("T-0007")).runs === 2 && ["review", "done"].includes((await get("T-0007")).state));
+check("on the desktop, where its session is", (await get("T-0007")).claimed_by === deskId);
+ta2.stop();
 
 ta.stop();
 rmSync(W, { recursive: true, force: true });

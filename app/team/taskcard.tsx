@@ -2,7 +2,7 @@
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
 import { alpha, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Spinner } from "../ui";
-import { errorOf, isParty, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
+import { blockedReason, errorOf, isParty, machinesOf, taskMachine, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
@@ -185,7 +185,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
-  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const machine = () => taskMachine(t, task(), agent());
   const me = () => t.me();
   const isOwner = () => !!me() && (me()!.id === agent()?.owner_id || me()!.role === "admin");
   const party = () => isParty(task(), me(), agent());
@@ -224,6 +224,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const waiting = () => {
     const s = task().state;
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
+    // several computers and none can take it now (as the server picks): it goes to whichever comes back first
+    if (s === "queued" && !task().claimed_by && agent() && machinesOf(t, agent()!).length > 1 && blockedReason(agent()!, machine(), false)) {
+      return L("Waiting for one of its computers to free up", "等一台能接活的电脑");
+    }
     const trouble = s === "queued" ? machine()?.runtime_status?.[agent()?.runtime ?? "codex"] : undefined;
     if (trouble) return `${machine()!.name}${L(": ", "：")}${runtimeTrouble(trouble, lang() !== "zh")}`;
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);

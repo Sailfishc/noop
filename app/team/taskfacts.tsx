@@ -3,7 +3,7 @@ import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
 import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, TextArea, Txt } from "../ui";
 import { taskCalls } from "./calls";
-import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
+import { isParty, EXTERNAL_TRIES, taskMachine, repoLabel, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
 import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
@@ -23,7 +23,7 @@ export function TaskFacts(props: { team: Team; task: Task }) {
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
   const creator = () => t.users().find((u) => u.id === task().created_by);
   const handler = () => t.users().find((u) => u.id === task().handler);
-  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const machine = () => taskMachine(t, task(), agent());
   const fold = signal<"" | "acceptance" | "repo" | "mandate" | "log">("");
   const allOutputs = signal(false);
   const live = () => ["running", "queued", "pending", "needs_decision"].includes(task().state);

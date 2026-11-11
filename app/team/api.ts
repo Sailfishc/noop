@@ -49,7 +49,11 @@ export type Device = { id: string; ua: string; created: number; last_seen: numbe
 /** Who may hand an agent work: only its owner, members of a channel it is in, or anyone in the team. */
 export type Dispatch = "owner" | "channel" | "team";
 export type Autonomy = "cautious" | "assist" | "auto";
-export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
+export type Agent = { id: string; owner_id: string;
+  /** The first of `machines`. */
+  machine_id: string | null;
+  /** The computers it runs on, in its owner's order: a new task goes to the first that can take it. */
+  machines?: string[]; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
   /** Work from people other than the owner waits for the owner's yes. */
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
@@ -289,6 +293,22 @@ export function runtimeTrouble(s: RuntimeStatus, en = false): string {
     return en ? `waiting for its quota, tries again ${clock(s.next_at ?? 0)}` : `等额度恢复，时间未知，${clock(s.next_at ?? 0)} 再试`;
   }
   return en ? TROUBLE_EN[s.reason] ?? s.text : s.text;
+}
+
+/** An agent's computers, in its owner's order. */
+export function machinesOf(t: { machines: () => Machine[] }, a: Agent): Machine[] {
+  const ids = a.machines?.length ? a.machines : a.machine_id ? [a.machine_id] : [];
+  return ids.map((id) => t.machines().find((m) => m.id === id)).filter((m): m is Machine => !!m);
+}
+/** The computer an agent's new work goes to now (as the server picks): the first that can take it; else the first
+ * online one, else the first. */
+export function machineNow(t: { machines: () => Machine[] }, a: Agent): Machine | undefined {
+  const ms = machinesOf(t, a);
+  return ms.find((m) => !blockedReason(a, m, false)) ?? ms.find((m) => m.online) ?? ms[0];
+}
+/** The computer a task runs on: the one that took it, else the one its agent's new work goes to. */
+export function taskMachine(t: { machines: () => Machine[] }, task: Task, a: Agent | undefined): Machine | undefined {
+  return t.machines().find((m) => m.id === task.claimed_by) ?? (a ? machineNow(t, a) : undefined);
 }
 
 /** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing, logged
@@ -749,7 +769,11 @@ export function createTeam(s: Session) {
     const r = await api("DELETE", `/api/v1/machines/${id}`);
     if (r.ok) {
       machines.update((ms) => ms.filter((m) => m.id !== id));
-      agents.update((as) => as.map((a) => (a.machine_id === id ? { ...a, machine_id: null } : a)));
+      agents.update((as) => as.map((a) => {
+        if (a.machine_id !== id && !a.machines?.includes(id)) return a;
+        const left = (a.machines ?? []).filter((m) => m !== id);
+        return { ...a, machines: left, machine_id: left[0] ?? null };
+      }));
     }
     return r;
   }
@@ -877,10 +901,15 @@ export const channelLabel = (c: Channel) => (c.dm_agent ? L(`chat with @${c.name
 export const mayBringAgent = (a: Agent, me: User | null) => !!me && (a.owner_id === me.id || a.dispatch === "team");
 /** "王磊的电脑" / "团队电脑「build-01」": where an agent runs, for the line that says a channel's words go there. */
 export function agentHost(t: { machines: () => Machine[]; users: () => User[] }, a: Agent): string {
-  const m = t.machines().find((x) => x.id === a.machine_id);
+  const ms = machinesOf(t, a);
+  const m = ms[0];
   if (!m) return L("no computer yet", "还没有电脑");
   if (m.team) return L(`the team computer ${m.name}`, `团队电脑「${m.name}」`);
   const owner = t.users().find((u) => u.id === m.owner_id);
+  if (ms.length > 1) { // every one of them reads the channel
+    const names = ms.map((x) => x.name).join(L(", ", "、"));
+    return L(`${owner?.name ?? "?"}’s computers (${names})`, `${owner?.name ?? "?"}的 ${ms.length} 台电脑（${names}）`);
+  }
   return L(`${owner?.name ?? "?"}’s computer`, `${owner?.name ?? "?"}的电脑`);
 }
 
