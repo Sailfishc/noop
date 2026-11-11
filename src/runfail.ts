@@ -29,7 +29,7 @@ export type RunOutcome = { error?: string; stderr?: string; exitCode: number; st
 
 const RULES: [Failure, RegExp][] = [
   ["not_installed", /\bENOENT\b|command not found|executable not found|no such file or directory.*(codex|claude|pi)\b/i],
-  ["billing", /\b402\b|credit balance|insufficient (credit|balance|quota|funds)|billing|usage balance|quota (exceeded|exhausted)|exceeded your current quota|usage limit|plan (does not|doesn't) include|upgrade your plan|not available on your plan/i],
+  ["billing", /\b402\b|credit balance|no credits remaining|add credits to continue|insufficient (credit|balance|quota|funds)|billing|usage balance|quota (exceeded|exhausted)|exceeded your current quota|usage limit|plan (does not|doesn't) include|upgrade your plan|not available on your plan/i],
   ["auth", /\b401\b|\b403\b|unauthori[sz]ed|not logged in|please (log ?in|run .*login)|invalid (api[ _-]?key|x-api-key|token|credentials)|authentication (failed|error)|login required|oauth token (has )?expired|credentials? (expired|missing|not found)/i],
   ["input_too_large", /context (length|window)|prompt is too long|too many tokens|input (is )?too (long|large)|maximum context|context_length_exceeded|request too large|\b413\b/i],
   ["rate_limited", /\b429\b|rate[ _-]?limit|too many requests|overloaded|\b529\b|server is busy|try again later/i],

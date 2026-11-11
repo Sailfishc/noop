@@ -18,9 +18,12 @@ import (
 // "确认开工" every morning), in the name of the person who set it up, said in the channel as them with a ⚡.
 // Branches of agents' own tasks (agent/…) never fire a trigger: agents don't set each other off.
 //
-// It does not pile up: while the task it opened last is still open, a firing is skipped (counted, nothing said), and
-// it fires at most max_per_day times a day (default 10, changeable). Each firing is its own thread in the channel (a
-// thread holds one task per agent); skipping is what keeps a busy repository from flooding the channel.
+// It does not pile up: a schedule is skipped while the task it opened last is still queued or running (counted; if
+// that task sits queued for half an hour, no machine is taking it, and the person who set it up is told once). A task
+// that waits (on CI, on a person) or ended badly does not hold the next one back: otherwise a routine stalls for hours
+// unseen (upstream noop #137, #158). A pull request or a push is never skipped for that: each is a different thing to
+// look at. Every trigger fires at most max_per_day times a day (default 10, changeable), which keeps a busy repository
+// from flooding the channel. Each firing is its own thread in the channel (a thread holds one task per agent).
 
 const triggersSchema = `
 CREATE TABLE IF NOT EXISTS triggers (id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, agent_id TEXT NOT NULL, created_by TEXT NOT NULL,
@@ -31,9 +34,10 @@ CREATE INDEX IF NOT EXISTS triggers_channel ON triggers (channel_id);
 `
 
 const (
-	maxTriggers      = 20  // per channel
-	defaultMaxPerDay = 10  // firings a day
-	ceilingMaxPerDay = 100 // the most anyone can set
+	stuckAfter       = 30 * time.Minute // a schedule's last task queued this long: no machine is taking it
+	maxTriggers      = 20               // per channel
+	defaultMaxPerDay = 10               // firings a day
+	ceilingMaxPerDay = 100              // the most anyone can set
 )
 
 var triggerKinds = map[string]bool{"schedule": true, "pr": true, "push": true}
@@ -61,10 +65,11 @@ type triggerView struct {
 	SkipReason  string  `json:"skip_reason,omitempty"` // busy (last_task is not over) | limit (the day's)
 	day         string
 	dayFires    int64
+	stuckNoted  string
 }
 
 const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created, " +
-	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason"
+	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason, stuck_noted"
 
 func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	if err != nil {
@@ -75,7 +80,7 @@ func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	for rows.Next() {
 		var t triggerView
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
-			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason); err != nil {
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason, &t.stuckNoted); err != nil {
 			panic(err)
 		}
 		out = append(out, t)
@@ -309,12 +314,14 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	if t.day == today {
 		fires = t.dayFires
 	}
-	// its last task still open: skip. One waiting for someone to accept it (review) has done its part (a daily
-	// report nobody clicked 验收 on), so the next one goes ahead; the day's limit still holds.
+	// a schedule whose last task is still queued or running: skip. One that waits (on CI, on a person), was handed to
+	// a person, or waits to be accepted (a daily report nobody clicked 验收 on) has done its part, so the next one goes
+	// ahead. A pull request or a push is never skipped for that. The day's limit holds for all.
 	reason := ""
-	if t.LastTask != nil {
-		if last, ok := h.task(*t.LastTask); ok && last.State != taskDone && last.State != taskClosed && last.State != taskReview {
+	if t.Kind == "schedule" && t.LastTask != nil {
+		if last, ok := h.task(*t.LastTask); ok && (last.State == taskPending || last.State == taskQueued || last.State == taskRunning) {
 			reason = "busy"
+			h.noteStuckTrigger(t, last, a)
 		}
 	}
 	if reason == "" && fires >= t.MaxPerDay {
@@ -333,6 +340,19 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
 		h.nowMs(), id, today, fires+1, t.ID))
 	return "fired"
+}
+
+// noteStuckTrigger: a schedule skipped because its last task has sat queued for stuckAfter (no machine takes it: the
+// machine is offline, the agent paused) tells the person who set it up, once for that task, in the task's thread.
+func (h *Hub) noteStuckTrigger(t triggerView, last taskView, a agentView) {
+	if last.State != taskQueued || h.nowMs()-last.Updated < stuckAfter.Milliseconds() || t.stuckNoted == last.ID {
+		return
+	}
+	mins := (h.nowMs() - last.Updated) / 60_000
+	text := fmt.Sprintf("%s 触发器（%s）这次没有跑：上一次的 %s 已经排队 %d 分钟，还没有机器接手（机器离线，或 @%s 暂停了）。它跑起来以后，触发器会照常继续。",
+		h.handle(t.CreatedBy), describeTrigger(t), last.ID, mins, a.Handle)
+	h.insertMessage(last.ChannelID, &last.ThreadID, member{"agent", a.ID}, text)
+	h.must(h.db.Exec("UPDATE triggers SET stuck_noted = ? WHERE id = ?", last.ID, t.ID))
 }
 
 // fireTriggers: the scheduled ones that are due. Tick calls it.

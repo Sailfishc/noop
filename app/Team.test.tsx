@@ -1234,7 +1234,8 @@ describe("passing the ball", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_1");
     expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
-    expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还没结束")).toBe(true);
+    expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还在排队或运行")).toBe(true);
+    expect(app.shows("text:/每天最多 10 次；上一个任务还在排队或运行时跳过/")).toBe(true);
     await app.press("id:trigger-confirm-trg_1");
     await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
     await app.waitFor("text:还没触发过");
@@ -1248,6 +1249,6 @@ describe("passing the ball", () => {
     await app.waitUntil(() => log.created.length === 1);
     expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
-    expect(app.shows("text:每天最多 3 次；上一个任务没结束时跳过")).toBe(true);
+    expect(app.shows("text:每天最多 3 次")).toBe(true); // a PR is never skipped for an open task
   });
 });
