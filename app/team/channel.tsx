@@ -2,11 +2,12 @@
 import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
-import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
+import { alpha, Avatar, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
+import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
+import { ChannelTriggers } from "./duties";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
 import { TaskCard, shownAsTask } from "./taskcard";
@@ -276,123 +277,6 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
           </View>
         </View>
       </If>
-    </View>
-  );
-}
-
-const REPEAT: Record<string, () => string> = { daily: () => L("every day", "每天"), weekdays: () => L("weekdays", "每个工作日"), weekly: () => L("every week", "每周") };
-/** "每个工作日 09:00" / "acme/pay 有新 PR" / "推送到 ledger main". */
-export function triggerLabel(x: Trigger): string {
-  if (x.kind === "schedule") {
-    const d = x.due ? new Date(x.due) : null;
-    return `${REPEAT[x.repeat ?? ""]?.() ?? ""} ${d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : ""}`.trim();
-  }
-  if (x.kind === "pr") return L(`new PR in ${repoLabel(x.repo ?? "")}${x.branch ? ` into ${x.branch}` : ""}`, `${repoLabel(x.repo ?? "")} 有新 PR${x.branch ? `（合入 ${x.branch}）` : ""}`);
-  return L(`push to ${repoLabel(x.repo ?? "")}${x.branch ? ` ${x.branch}` : ""}`, `推送到 ${repoLabel(x.repo ?? "")}${x.branch ? ` ${x.branch}` : ""}`);
-}
-
-/** Work that starts by itself in this channel: on a schedule, a new PR, a push. Each fires a task for its agent at
- * once, in the name of who set it up; the agent's owner confirms it once. */
-function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[] }) {
-  const t = props.team;
-  const list = signal<Trigger[]>([]);
-  const adding = signal(false);
-  const error = signal("");
-  const busy = signal(false);
-  const agent = signal("");
-  const kind = signal<Trigger["kind"]>("schedule");
-  const text = signal("");
-  const when = signal("9:00");
-  const repeat = signal("weekdays");
-  const repo = signal("");
-  const branch = signal("");
-  const perDay = signal("10");
-  const load = async () => { const r = await t.triggers(props.channelId); if (r.ok) list.set(r.data.triggers as Trigger[]); };
-  void load();
-  async function run(p: Promise<{ ok: boolean; status: number; data: any }>) {
-    error.set("");
-    const r = await p;
-    if (!r.ok) error.set(failed(r as any));
-    await load();
-    return r.ok;
-  }
-  async function add() {
-    busy.set(true);
-    const ok = await run(t.createTrigger({ channel_id: props.channelId, agent: agent() || props.agents[0]?.id || "", kind: kind(), text: text().trim(),
-      ...(kind() === "schedule" ? { when: when().trim(), repeat: repeat() } : { repo: repo().trim(), branch: branch().trim() }),
-      ...(perDay().trim() && perDay().trim() !== "10" ? { max_per_day: Number(perDay().trim()) } : {}) }));
-    busy.set(false);
-    if (ok) { adding.set(false); text.set(""); }
-  }
-  return (
-    <View testID="channel-triggers" style={{ gap: 6, paddingTop: 10 }}>
-      <Noted
-        testID="channel-triggers-about"
-        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("TRIGGERS", "触发器")}</Text>}
-        note={L("A trigger asks an agent here by itself: on a schedule, when a PR is opened, or on a push.", "触发器会自己去找这里的 Agent 干活：定时、有人开 PR、或者有推送时。")}
-        right={<If when={props.agents.length && !adding()}>
-          <Btn small kind="ghost" testID="trigger-add" icon="plus" label={L("Add", "添加")} onPress={() => { agent.set(props.agents[0]?.id ?? ""); adding.set(true); }} />
-        </If>}
-      />
-      <If when={!list().length && !adding()}>
-        <Text style={{ fontSize: 12, color: colors.faint }}>{L("None", "没有")}</Text>
-      </If>
-      <Each of={list()} key={(x) => x.id}>
-        {(x) => {
-          const a = () => t.agents().find((g) => g.id === x().agent_id);
-          const canConfirm = () => !x().confirmed_by && (t.me()?.id === a()?.owner_id || t.me()?.role === "admin");
-          return (
-            <View testID={`trigger-${x().id}`} style={{ gap: 4, padding: 8, borderRadius: 8, borderWidth: 1, borderColor: colors.border }}>
-              <Text style={{ fontSize: 13, color: colors.text }}>⚡ {triggerLabel(x())} · @{a()?.handle ?? "?"}</Text>
-              <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.muted, numberOfLines: 2 }}>{x().text}</Text>
-              <Text style={{ fontSize: 12, color: !x().confirmed_by ? colors.warn : colors.faint }}>
-                {!x().confirmed_by ? L(`Waits for @${t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?"} to confirm once`, `等 @${t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?"} 确认一次`)
-                  : !x().enabled ? L("Paused", "已暂停") : x().fires ? L(`Fired ${x().fires} times, last ${time(x().fired!)}`, `触发过 ${x().fires} 次，上次 ${time(x().fired!)}`) : L("Not fired yet", "还没触发过")}
-              </Text>
-              <If when={x().max_per_day}>
-                <Text testID={`trigger-limits-${x().id}`} style={{ fontSize: 12, color: colors.faint }}>
-                  {L(`At most ${x().max_per_day} a day${x().kind === "schedule" ? "; skipped while its last task is queued or running" : ""}`, `每天最多 ${x().max_per_day} 次${x().kind === "schedule" ? "；上一个任务还在排队或运行时跳过" : ""}`) +
-                    (x().skipped ? L(` · skipped ${x().skipped} times`, ` · 跳过过 ${x().skipped} 次`) : "")}
-                </Text>
-              </If>
-              <If when={x().skipped_run}>
-                <Text testID={`trigger-stuck-${x().id}`} style={{ fontSize: 12, color: colors.warn }}>
-                  {x().skip_reason === "limit"
-                    ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
-                    : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} is still queued or running`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还在排队或运行`)}
-                </Text>
-              </If>
-              <View style={{ flexDirection: "row", gap: 6 }}>
-                <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void run(t.confirmTrigger(x().id))} /></If>
-                <If when={x().confirmed_by}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void run(t.patchTrigger(x().id, { enabled: !x().enabled }))} /></If>
-                <Btn small kind="ghost" testID={`trigger-remove-${x().id}`} label={L("Remove", "删除")} onPress={() => void run(t.deleteTrigger(x().id))} />
-              </View>
-            </View>
-          );
-        }}
-      </Each>
-      <If when={adding()}>
-        <View style={{ gap: 8, padding: 8, borderRadius: 8, borderWidth: 1, borderColor: colors.border }}>
-          <Choice testID="trigger-agent" options={props.agents.map((a) => ({ value: a.id, label: "@" + a.handle }))} value={agent()} onChange={(v) => agent.set(v)} />
-          <Choice testID="trigger-kind" options={[{ value: "schedule", label: L("On a schedule", "定时") }, { value: "pr", label: L("New PR", "有新 PR") }, { value: "push", label: L("Push", "有推送") }]} value={kind()} onChange={(v) => kind.set(v as Trigger["kind"])} />
-          <If when={kind() === "schedule"} else={
-            <>
-              <Field label={L("Repository", "仓库")} value={repo()} onChange={(v) => repo.set(v)} placeholder="https://github.com/acme/pay" testID="trigger-repo" />
-              <Field label={kind() === "push" ? L("Branch (empty: any)", "分支（空：任意）") : L("Into branch (empty: any)", "合入的分支（空：任意）")} value={branch()} onChange={(v) => branch.set(v)} placeholder="main" testID="trigger-branch" />
-            </>
-          }>
-            <Choice testID="trigger-repeat" options={Object.keys(REPEAT).map((k) => ({ value: k, label: REPEAT[k]!() }))} value={repeat()} onChange={(v) => repeat.set(v)} />
-            <Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID="trigger-when" />
-          </If>
-          <Field label={L("At most a day", "每天最多触发（次）")} value={perDay()} onChange={(v) => perDay.set(v)} placeholder="10" testID="trigger-max" />
-          <Field label={L("What to ask", "让它做什么")} value={text()} onChange={(v) => text.set(v)} placeholder={L("Summarize last night’s alerts", "汇总一下昨晚的告警")} testID="trigger-text" />
-          <View style={{ flexDirection: "row", gap: 6 }}>
-            <Btn small kind="primary" testID="trigger-save" label={L("Add", "添加")} busy={busy()} disabled={!text().trim()} onPress={() => void add()} />
-            <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => adding.set(false)} />
-          </View>
-        </View>
-      </If>
-      <ErrorNote text={error()} />
     </View>
   );
 }

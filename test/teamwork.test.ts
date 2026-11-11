@@ -696,3 +696,62 @@ test("woken with the receipt of what it delegated: what came back, and how to ch
   expect(p).toContain("A person accepts only your result.");
   expect(parseTaskResult('```json\n{"status": "waiting", "summary": "等", "wait": {"how": "delegates"}}\n```').status).toBe("waiting");
 });
+
+test("a patrol (read-only run): its prompt says how to end silently; nothing reaches the server as nothing; repository changes are thrown away, no PR", async () => {
+  const p = taskPrompt(claim({ readonly: true, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" } }),
+    { cwd: "/w/T-0001", repo: "/r", branch: "agent/T-0001", writable: [] });
+  expect(p).toContain("# This run is a read-only patrol");
+  expect(p).toContain('"status": "nothing"');
+  expect(p).toContain("read it, do not change it");
+  expect(p).not.toContain("Commit your changes");
+  expect(p).not.toContain("# Align first");
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("read-only patrol");
+  expect(parseTaskResult('看过了\n```json\n{"status":"nothing","summary":"主干是绿的"}\n```').status).toBe("nothing");
+
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-")));
+  try {
+    const origin = join(W, "origin.git"), repo = join(W, "repo");
+    sh(W, "git", "init", "-q", "--bare", "-b", "main", origin);
+    sh(W, "git", "clone", "-q", origin, repo);
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-qm", "init");
+    sh(repo, "git", "push", "-q", "origin", "HEAD:main");
+    sh(repo, "git", "remote", "set-head", "origin", "main");
+    const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [], after: string[] = [];
+    const rt = fakeRuntime([
+      { text: '```json\n{"status":"nothing","summary":"主干是绿的"}\n```' },
+      { text: '```json\n{"status":"nothing","summary":"顺手改了个错字"}\n```' },
+      { text: '```json\n{"status":"nothing","summary":"普通任务不能不出声"}\n```' },
+    ], seen);
+    const ro = { readonly: true, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "", runtime: "codex", trigger: "trg_1" } };
+    const w = createWorker({
+      api: fakeApi({ "T-0001": claim({ id: "T-0001", branch: "agent/T-0001", ...ro }, { repo }), "T-0002": claim({ id: "T-0002", branch: "agent/T-0002", ...ro }, { repo }),
+        "T-0003": claim({ id: "T-0003", branch: "agent/T-0003" }, { repo }) }, calls), maxParallel: 1, workRoot: join(W, "work"),
+      runtimes: { codex: { ...rt, start(o) {
+        if (o.cwd.endsWith("T-0002")) { writeFileSync(join(o.cwd, "a.txt"), "typo fixed\n"); sh(o.cwd, "git", "commit", "-qam", "fix"); writeFileSync(join(o.cwd, "new.txt"), "x"); }
+        return rt.start(o);
+      } } },
+      afterRun: async (c) => { after.push(c.task.id); return null; }, log: () => {},
+    });
+    for (const id of ["T-0001", "T-0002", "T-0003"]) {
+      w.onTask({ ...claim().task, id, state: "queued" } as any, () => true);
+      await Bun.sleep(1);
+      await w.idle();
+    }
+    const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report` && c.body.state).at(-1)!.body;
+    expect(last("T-0001").state).toBe("nothing");
+    expect(last("T-0001").summary).toBe("主干是绿的");
+    // it changed the repository: thrown away (back to where it started, the new file gone), said so, and it is no longer silent
+    expect(last("T-0002").state).toBe("review");
+    expect(last("T-0002").summary).toContain("对仓库的改动已丢弃");
+    const wd2 = join(W, "work", "T-0002");
+    expect(readFileSync(join(wd2, "a.txt"), "utf8")).toBe("a\n");
+    expect(existsSync(join(wd2, "new.txt"))).toBe(false);
+    expect(sh(wd2, "git", "rev-list", "--count", "origin/main..HEAD").out).toBe("0");
+    expect(last("T-0003").state).toBe("review"); // only a patrol may stay silent
+    expect(after).toEqual(["T-0003"]); // no push, no PR for a patrol
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
+});

@@ -164,7 +164,16 @@ export type Trigger = { id: string; channel_id: string; agent_id: string; create
   /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
   max_per_day?: number; skipped?: number; last_task?: string;
   /** skipped in a row since it last fired, and why the last one was: busy (last_task is not over) | limit (the day's) */
-  skipped_run?: number; skip_reason?: "busy" | "limit" };
+  skipped_run?: number; skip_reason?: "busy" | "limit";
+  /** the duty it belongs to ("" none): triggers of one name, agent and channel are seen and paused together */
+  duty?: string;
+  /** its runs are patrols: read-only, silent when they find nothing */
+  readonly?: boolean;
+  /** how its last seven days went, by outcome */
+  recent?: Partial<Record<TriggerOutcome, number>> };
+/** What came of one firing (a duty's history). running: its task has not said yet. */
+export type TriggerOutcome = "running" | "nochange" | "nothing" | "spoke" | "proposed" | "failed" | "skipped";
+export type TriggerRun = { trigger_id: string; at: number; outcome: TriggerOutcome; note?: string; task_id?: string };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** Handoff cards still waiting for a person. */
@@ -869,10 +878,15 @@ export function createTeam(s: Session) {
   const teamConfig = () => api("GET", "/api/v1/team/config");
   /** A channel's triggers (teamtriggers.go). */
   const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
-  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number }) =>
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number; duty?: string; readonly?: boolean }) =>
     api("POST", "/api/v1/triggers", body);
+  /** A duty's history, newest first: by its name (with the channel and agent), or one trigger's. */
+  const triggerRuns = (q: { trigger: string } | { channel: string; agent: string; duty: string }) =>
+    api("GET", `/api/v1/triggers/runs?${Object.entries(q).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`);
+  /** Pause or resume every trigger of a duty. */
+  const pauseDuty = (body: { channel_id: string; agent_id: string; duty: string; enabled: boolean }) => api("POST", "/api/v1/triggers/duty", body);
   const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
-  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number }) => api("PATCH", `/api/v1/triggers/${id}`, body);
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
@@ -935,7 +949,7 @@ export function createTeam(s: Session) {
     preferences, savePreferences, openDM, dmWith,
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, triggerRuns, pauseDuty, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }

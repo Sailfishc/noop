@@ -74,9 +74,18 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       const b = JSON.parse(r.body!);
       log.created.push({ trigger: b });
       const x = { id: `trg_${triggers.length + 1}`, channel_id: b.channel_id, agent_id: b.agent, created_by: "u_1", kind: b.kind, text: b.text, repeat: b.repeat ?? "",
-        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0 };
+        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0,
+        duty: b.duty ?? "", readonly: b.readonly ?? true };
       triggers.push(x);
       return { body: x };
+    },
+    [`GET ${URL}/api/v1/triggers/runs?*`]: { body: { runs: [] } },
+    [`POST ${URL}/api/v1/triggers/duty`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.patches.push({ duty: b });
+      const xs = triggers.filter((x) => x.agent_id === b.agent_id && x.duty === b.duty);
+      for (const x of xs) x.enabled = b.enabled;
+      return { body: { triggers: xs } };
     },
     [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string }) => {
       const id = r.url.match(/triggers\/([^/]+)\//)![1];

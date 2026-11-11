@@ -10,6 +10,8 @@
 //   [block]     reports blocked
 //   [fail]      reports failed
 //   [slow]      takes ten times as long (to look at a running task)
+//   [nothing]   a read-only patrol (a trigger's run) that finds nothing: status nothing, so nothing is posted
+//   [say]       says a word in the thread first (remi say), then goes on as it would
 //   [quota]     first hits Codex's usage limit, "try again at" FAKE_CODEX_QUOTA_MIN minutes from now (default 10; at 5
 //               or less the daemon waits inside the run); woken after the reset (or 现在就试), it does the work
 //   [quota?]    the same, but the limit names no time (the server tries again after 5 minutes, 15, an hour, …)
@@ -94,6 +96,8 @@ const asked = named([request.match(/\[ask!?:([a-z][a-z0-9_-]*)\]/)?.[1] ?? ""].f
 const delegates = named(request.match(/\[delegate:([a-z0-9_,-]+)\]/)?.[1]?.split(",").filter(Boolean) ?? []);
 const receipt = prompt.includes("all of them are back. What came back:");
 
+if (has("say") && !resume) { await step("remi say"); remi("say", "（假 Codex）看了一眼，先说一声：在查"); }
+
 if (receipt) {
   const back = (prompt.match(/^## T-\d+ @\S+: \w+/gm) ?? []).join("；");
   finish({ status: "review", summary: `（假 Codex）委派的都交回了，汇总好了：${back}` });
@@ -114,6 +118,8 @@ if (receipt) {
   await step(`remi handoff @${handoff}`);
   const said = remi("handoff", `@${handoff}`, "（假 Codex）后面这部分交给你");
   finish({ status: "review", summary: `（假 Codex）交给 @${handoff}：${said.split("\n")[0]}\n可以找的 Agent：\n${who}` });
+} else if (has("nothing") && prompt.includes("# This run is a read-only patrol")) {
+  finish({ status: "nothing", summary: "（假 Codex）看过了，没有需要人知道的事。" });
 } else if (has("fail")) finish({ status: "failed", summary: "（假 Codex）按要求失败了：[fail]。" });
 else if (has("block")) finish({ status: "blocked", summary: "（假 Codex）缺数据库只读账号，拿到之前做不下去。" });
 else if (has("align") && !resume) {

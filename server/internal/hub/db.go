@@ -94,6 +94,9 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(triggersSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(triggerRunsSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -148,6 +151,10 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN runtime TEXT NOT NULL DEFAULT ''",       // the runtime this task runs with when not its agent's (teamengine.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN engine TEXT",                            // the 换引擎继续 card (teamengine.go)
 		"ALTER TABLE machines ADD COLUMN checkpoint_files INTEGER",               // keep general tasks' directories here (NULL: on for a person's own, off for a team machine)
+		"ALTER TABLE triggers ADD COLUMN duty TEXT NOT NULL DEFAULT ''",          // the duty it belongs to: triggers with one name, agent and channel are seen and paused together
+		"ALTER TABLE triggers ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",    // its runs only look and speak (new ones default to 1 in the API; existing ones stay as they were)
+		"ALTER TABLE tasks_v1 ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",    // a read-only run (a patrol): no PR, handoff or delegation; may end with "nothing"
+		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",                              // its thread's first message, not posted until the agent first speaks (teamduties.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
