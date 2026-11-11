@@ -902,7 +902,7 @@ describe("channel v2", () => {
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-repo");
-    expect(app.shows("text:/^None: agents pick a repository/")).toBe(true);
+    expect(app.shows("id:channel-repo-label") && app.shows("text:None")).toBe(true);
     await app.press("id:channel-repo-edit");
     await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
     await app.press("id:channel-repo-picker-save");
@@ -1286,12 +1286,14 @@ describe("private channels", () => {
     }) });
     await app.waitFor("id:new-channel");
     await app.press("id:new-channel");
-    await app.waitFor("id:channel-private");
+    await app.waitFor("id:channel-private-toggle");
     expect(app.shows("id:pick-a_2")).toBe(true);
-    expect(app.shows("id:channel-private-note")).toBe(false);
-    await app.press("id:channel-private");
+    await app.press("id:channel-private-toggle");
+    await app.waitUntil(() => !app.shows("id:pick-a_2"));
+    expect(app.shows("id:channel-private-note")).toBe(false); // the explanation waits behind its ⓘ
+    await app.press("id:channel-private-info");
     await app.waitFor("id:channel-private-note");
-    expect(app.shows("text:/服务器管理员能接触数据库文件/")).toBe(true);
+    expect(app.shows("text:/服务器管理员仍能接触数据库文件/")).toBe(true);
     expect(app.shows("id:pick-a_2")).toBe(false); // 王磊's, for his channels only
     expect(app.shows("id:pick-a_3")).toBe(true);
     expect(app.shows("text:/运行在王磊的电脑上/")).toBe(true);
@@ -1316,11 +1318,14 @@ describe("private channels", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:channel-publish");
     await app.press("id:members-add");
-    await app.waitFor("id:members-add-bei-why");
+    await app.waitFor("id:members-add-bei-why-info");
     expect(app.enabled("id:members-add-bei")).toBe(false);
+    expect(app.shows("id:members-add-bei-why-note")).toBe(false);
+    await app.press("id:members-add-bei-why-info");
+    await app.waitFor("text:/只有它的主人能拉进私有频道/");
     await app.press("id:members-add-helper");
     await app.waitFor("id:members-host-warning");
-    expect(app.shows("text:/@helper 运行在王磊的电脑上，这个频道的内容会发到那台电脑/")).toBe(true);
+    expect(app.shows("text:/@helper 运行在王磊的电脑上，频道内容会发到那里/")).toBe(true);
     expect(added.length).toBe(0);
     await app.press("id:members-host-ok");
     await app.waitUntil(() => added.length === 1);

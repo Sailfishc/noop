@@ -247,9 +247,9 @@ describe("private", () => {
     const app = await privStart();
     await app.waitFor("id:new-channel");
     await app.press("id:new-channel");
-    await app.waitFor("id:channel-private");
-    await app.press("id:channel-private");
-    await app.waitFor("id:channel-private-note");
+    await app.waitFor("id:channel-private-toggle");
+    await app.press("id:channel-private-toggle");
+    await app.waitFor("id:pick-a_3-host");
     await shot(app, "private-new-channel");
   });
 
