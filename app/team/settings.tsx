@@ -10,9 +10,9 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
 import {
-  installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
+  installCommand, isLoopback, loginQr, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { momentsLine, outsideLine, statsLine } from "./calls";
@@ -311,10 +311,14 @@ function MyPreferences(props: { team: Team }) {
   );
 }
 
-/** Sign in on another device: a one-time code to type (or the link to open) there, valid 15 minutes. */
+/**
+ * Sign in on another device: a one-time code, valid 15 minutes. A phone scans its QR with the camera (it opens the
+ * app, which signs in); a computer types the server address and the code, shown apart so nobody types the link
+ * into the server box. The web link (…/login/CODE) only sits behind 复制链接.
+ */
 function LoginCodePanel(props: { team: Team }) {
   const t = props.team;
-  const code = signal<{ code: string; link: string } | null>(null);
+  const code = signal<{ code: string; server: string; link: string } | null>(null);
   const error = signal("");
   const busy = signal(false);
   async function make() {
@@ -324,25 +328,36 @@ function LoginCodePanel(props: { team: Team }) {
     const r = await t.loginCode();
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
-    code.set({ code: r.data.code, link: `${t.shareUrl()}${r.data.path}` });
+    code.set({ code: r.data.code, server: t.shareUrl(), link: `${t.shareUrl()}${r.data.path}` });
   }
   return (
-    <Panel title={L("Sign in on another device", "在其他设备登录")}>
-      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-        {L("On the other device choose Sign in, then enter this code with the server address, or paste the link.", "在另一台设备上选「登录」，填服务器地址和这个登录码，或者直接粘贴链接。")}
-      </Text>
+    <Panel title={L("Sign in on another device", "在其他设备登录")} testID="login-code-panel"
+      note={L("Phone: scan the code with the camera and open it in Remi. Computer: on Remi's sign-in screen, enter the server address and the login code. A code works once, for 15 minutes.",
+        "手机：用相机扫二维码，在 Remi 里打开就登录了。电脑：在 Remi 登录页分别填服务器地址和登录码。登录码 15 分钟内有效，只能用一次。")}>
       <If when={code()}>
         {(c) => (
-          <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-            <Text testID="login-code" style={{ fontSize: 24, letterSpacing: 3, color: colors.text, ...mono }}>{c().code}</Text>
-            <Text testID="login-code-url" style={{ fontSize: 12.5, color: colors.muted, ...mono }}>{c().link}</Text>
-            <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次。")}</Text>
-            <LoopbackNote team={t} testID="login-code-loopback" />
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Btn small icon="copy" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 16 }}>
+            <QrCode testID="login-code-qr" value={loginQr(c().server, c().code)} size={148} label={L("Login QR code", "登录二维码")} />
+            <View style={{ flex: 1, minWidth: 200, gap: 12 }}>
+              <View style={{ gap: 4 }}>
+                <Label text={L("Login code", "登录码")} />
+                <Txt testID="login-code" variant="display" mono>{c().code}</Txt>
+              </View>
+              <View style={{ gap: 4 }}>
+                <Label text={L("Server address", "服务器地址")} />
+                <Txt testID="login-code-server" mono>{c().server}</Txt>
+              </View>
+              <Txt variant="caption" tone="faint">{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次")}</Txt>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <Btn small icon="copy" testID="login-code-copy" label={L("Copy code", "复制登录码")} onPress={() => void Clipboard.writeText(c().code)} />
+                <Btn small icon="copy" testID="login-code-copy-link" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
+              </View>
             </View>
           </View>
         )}
+      </If>
+      <If when={code()}>
+        <LoopbackNote team={t} testID="login-code-loopback" />
       </If>
       <ErrorNote text={error()} testID="login-code-error" />
       <View style={{ flexDirection: "row" }}>

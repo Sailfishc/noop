@@ -205,11 +205,34 @@ export function parseInvite(text: string, server: string): { server: string; cod
   return null;
 }
 
-/** A login link as pasted ("http://hub:8080/login/ABCD-EFGH"): its server; the code is sent as typed. */
-export function loginServer(text: string): string {
-  const m = text.trim().match(/^(.*?)\/login\/[A-Za-z0-9-]+\/?$/);
-  return m ? normalizeServer(m[1]) : "";
+/** A login code's QR link, for the phone's camera to open the app with: remi://login?server=…&code=…. */
+export const loginQr = (server: string, code: string) =>
+  `remi://login?server=${encodeURIComponent(server)}&code=${encodeURIComponent(code)}`;
+
+/**
+ * A login link, as scanned, opened or pasted: the QR's "remi://login?server=…&code=…" or the web
+ * "http://hub:8080/login/ABCD-EFGH". Its server and code; null when it is neither. A link can come from anyone,
+ * so only an http(s) server and a code's characters are taken.
+ */
+export function parseLoginLink(text: string): { server: string; code: string } | null {
+  const t = text.trim();
+  const qr = t.match(/^remi:\/\/login\/?\?(.*)$/i);
+  if (qr) {
+    const q: Record<string, string> = {};
+    for (const part of qr[1].split("&")) {
+      const [k, v = ""] = part.split("=");
+      try { q[k] = decodeURIComponent(v.replace(/\+/g, " ")); } catch { /* not ours */ }
+    }
+    const server = normalizeServer(q.server ?? "");
+    const code = (q.code ?? "").trim();
+    return /^https?:\/\/[^\s/?#]+/i.test(server) && /^[A-Za-z0-9-]{4,32}$/.test(code) ? { server, code } : null;
+  }
+  const m = t.match(/^(https?:\/\/[^\s?#]*?)\/login\/([A-Za-z0-9-]{4,32})\/?$/i);
+  return m ? { server: normalizeServer(m[1]), code: m[2] } : null;
 }
+
+/** A login link as pasted ("http://hub:8080/login/ABCD-EFGH", or the QR's): its server, else "". */
+export const loginServer = (text: string) => parseLoginLink(text)?.server ?? "";
 
 /** Whether a failed call was refused because the app may not use plain http here (App Transport Security on
  * Apple platforms, cleartext rules on Android) rather than because the server is unreachable. */

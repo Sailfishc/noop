@@ -17,6 +17,7 @@ import { Icon, type IconName } from "./icons";
 import { Label, Noted } from "./noted";
 import { Card, Panel } from "./panel";
 import { PickCard } from "./pick-card";
+import { QrCode } from "./qr-code";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
 import { Tag } from "./tag";
@@ -227,6 +228,13 @@ export function Showcase() {
           <PickCard title="Two" note="Not picked" picked={card() === "two"} onPress={() => card.set("two")} />
           <PickCard title="Three" note="Disabled" picked={false} disabled onPress={() => {}} />
         </View>
+      </Section>
+
+      <Section title="QrCode: black on white in both themes, 96 and 148">
+        <Row>
+          <QrCode value="remi://login?server=http%3A%2F%2Fremi.corp%3A8080&code=ABCD-EFGH" size={96} />
+          <QrCode value="remi://login?server=http%3A%2F%2Fremi.corp%3A8080&code=ABCD-EFGH" size={148} />
+        </Row>
       </Section>
 
       <Section title="Icon (a sample)">
