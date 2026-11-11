@@ -755,3 +755,40 @@ test("a patrol (read-only run): its prompt says how to end silently; nothing rea
     rmSync(W, { recursive: true, force: true });
   }
 });
+
+test("a trigger's check command: same output, same hash; a failure or a timeout says why", async () => {
+  const { runCheckCommand } = await import("../src/teamwork");
+  const dir = mkdtempSync(join(tmpdir(), "check-"));
+  const a = await runCheckCommand("echo one", dir, {});
+  const b = await runCheckCommand("echo one", dir, {});
+  const c = await runCheckCommand("echo two", dir, {});
+  expect(a.hash).toBeTruthy();
+  expect(a.hash).toBe(b.hash);
+  expect(c.hash).not.toBe(a.hash);
+  expect(a.output).toBe("one\n");
+  const bad = await runCheckCommand("echo nope >&2; exit 3", dir, {});
+  expect(bad).toEqual({ error: "退出码 3", output: "nope\n" });
+  const slow = await runCheckCommand("echo started; sleep 5", dir, {}, 300);
+  expect(slow.error).toBe("超时（0 秒）");
+  expect(slow.hash).toBeUndefined();
+  const pushed = await runCheckCommand("git push origin main", dir, gateEnv({ cwd: dir, writable: [] }));
+  expect(pushed.error).toBeTruthy();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the worker runs a check it is handed and tells the server the hash", async () => {
+  const posts: { path: string; body: any }[] = [];
+  const root = mkdtempSync(join(tmpdir(), "checkw-"));
+  const w = createWorker({
+    api: async (path: string, init?: RequestInit) => {
+      posts.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}");
+    },
+    workRoot: root, log: () => {},
+  } as any);
+  await w.onCheck({ id: "trg_1", agent_id: "agt_1", cmd: "echo hi" });
+  expect(posts[0].path).toBe("/api/v1/triggers/trg_1/check");
+  expect(posts[0].body.output).toBe("hi\n");
+  expect(posts[0].body.hash).toHaveLength(64);
+  rmSync(root, { recursive: true, force: true });
+});

@@ -971,7 +971,7 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 			out = append(out, t)
 		}
 	}
-	writeJSON(w, 200, obj{"tasks": out, "asks": h.machineAsks(q.who.machineID)})
+	writeJSON(w, 200, obj{"tasks": out, "asks": h.machineAsks(q.who.machineID), "checks": h.machineChecks(q.who.machineID)})
 }
 
 // contextMessages: the channel's latest messages the claim brings; the agent reads further itself (teamcontext.go).

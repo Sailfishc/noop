@@ -256,6 +256,7 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
       if (d?.type === "message") void deliver(d.message);
       else if (d?.type === "task") worker.onTask(d.task as TeamTask, mine);
       else if (d?.type === "ask") worker.onAsk(d.ask, mine);
+      else if (d?.type === "check") void worker.onCheck(d.check);
       else if (d?.type === "agent" || d?.type === "agent_removed" || d?.type === "channel") void report(); // our agents or their channels changed
     };
     ws.onclose = () => {

@@ -170,7 +170,11 @@ export type Trigger = { id: string; channel_id: string; agent_id: string; create
   /** its runs are patrols: read-only, silent when they find nothing */
   readonly?: boolean;
   /** how its last seven days went, by outcome */
-  recent?: Partial<Record<TriggerOutcome, number>> };
+  recent?: Partial<Record<TriggerOutcome, number>>;
+  /** schedule: a command run first on the agent's computer; same output as last time, no firing */
+  check_cmd?: string;
+  /** its check command waits for the agent's owner to confirm it (new, or changed since) */
+  check_waits?: boolean };
 /** What came of one firing (a duty's history). running: its task has not said yet. */
 export type TriggerOutcome = "running" | "nochange" | "nothing" | "spoke" | "proposed" | "failed" | "skipped";
 export type TriggerRun = { trigger_id: string; at: number; outcome: TriggerOutcome; note?: string; task_id?: string };
@@ -878,15 +882,16 @@ export function createTeam(s: Session) {
   const teamConfig = () => api("GET", "/api/v1/team/config");
   /** A channel's triggers (teamtriggers.go). */
   const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
-  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number; duty?: string; readonly?: boolean }) =>
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) =>
     api("POST", "/api/v1/triggers", body);
   /** A duty's history, newest first: by its name (with the channel and agent), or one trigger's. */
   const triggerRuns = (q: { trigger: string } | { channel: string; agent: string; duty: string }) =>
     api("GET", `/api/v1/triggers/runs?${Object.entries(q).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`);
   /** Pause or resume every trigger of a duty. */
   const pauseDuty = (body: { channel_id: string; agent_id: string; duty: string; enabled: boolean }) => api("POST", "/api/v1/triggers/duty", body);
-  const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
-  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean }) => api("PATCH", `/api/v1/triggers/${id}`, body);
+  /** A trigger with a check command is confirmed with the command as shown (409 when it changed meanwhile). */
+  const confirmTrigger = (id: string, checkCmd?: string) => api("POST", `/api/v1/triggers/${id}/confirm`, checkCmd ? { check_cmd: checkCmd } : {});
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 

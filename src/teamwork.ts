@@ -947,6 +947,33 @@ async function removeAskDir(wd: Workdir) {
   rmSync(wd.cwd, { recursive: true, force: true });
 }
 
+/** A trigger's check command to run here first (server teamchecks.go). */
+export type TriggerCheck = { id: string; agent_id: string; cmd: string; repo?: string; agent_repo?: string };
+/** How long a check command may run. */
+export const CHECK_TIMEOUT = 60_000;
+const CHECK_OUTPUT = 4000;
+
+/** Runs a check command with the agents' git limits: what it printed, its hash, or why it failed. */
+export async function runCheckCommand(cmd: string, cwd: string, env: Record<string, string>, timeoutMs = CHECK_TIMEOUT): Promise<{ hash?: string; output: string; error?: string }> {
+  const p = Bun.spawn(["sh", "-c", cmd], { cwd, stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+  let out = "", err = "";
+  const read = async (s: ReadableStream<Uint8Array>, add: (t: string) => void) => {
+    const dec = new TextDecoder();
+    for await (const chunk of s) add(dec.decode(chunk, { stream: true }));
+  };
+  const done = Promise.all([read(p.stdout, (t) => { out += t; }), read(p.stderr, (t) => { err += t; }), p.exited]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = await Promise.race([done.then(() => false), new Promise<boolean>((r) => { timer = setTimeout(() => r(true), timeoutMs); })]);
+  clearTimeout(timer);
+  if (late) {
+    p.kill(9);
+    return { error: `超时（${Math.round(timeoutMs / 1000)} 秒）`, output: (out + err).slice(-CHECK_OUTPUT) };
+  }
+  const code = p.exitCode ?? 0;
+  if (code !== 0) return { error: `退出码 ${code}`, output: (err || out).slice(-CHECK_OUTPUT) };
+  return { hash: new Bun.CryptoHasher("sha256").update(out).digest("hex"), output: out.slice(0, CHECK_OUTPUT) };
+}
+
 export function createWorker(o: WorkerOptions) {
   const log = o.log ?? ((s: string) => console.log(`remi: ${s}`));
   const root = o.workRoot ?? join(homedir(), ".noop", "teamagent", "work");
@@ -1336,6 +1363,27 @@ export function createWorker(o: WorkerOptions) {
     }
   }
 
+  /** A trigger's check command (socket frame, or the poll's list): run here, out of the tasks' slots; the server
+   * decides from the output whether the trigger fires. */
+  const checksRunning = new Set<string>();
+  async function onCheck(x: TriggerCheck) {
+    if (stopped || !x?.id || !x.cmd || checksRunning.has(x.id)) return;
+    checksRunning.add(x.id);
+    try {
+      let cwd = "";
+      if (x.repo && o.resolveRepo) cwd = await o.resolveRepo(x.repo).catch(() => "");
+      if (!cwd && x.agent_repo && existsSync(expand(x.agent_repo))) cwd = expand(x.agent_repo);
+      if (!cwd) { cwd = join(root, ".checks", x.id); mkdirSync(cwd, { recursive: true }); }
+      const r = await runCheckCommand(x.cmd, cwd, (o.env ?? gateEnv)({ cwd, writable: [] }));
+      log(`触发器 ${x.id} 的检查命令${r.error ? `出错：${r.error}` : "跑完了"}`);
+      await o.api(`/api/v1/triggers/${x.id}/check`, { method: "POST", body: JSON.stringify(r) }).catch(() => null);
+    } catch (e) {
+      log(`触发器 ${x.id} 的检查出错：${e instanceof Error ? e.message : e}`);
+    } finally {
+      checksRunning.delete(x.id);
+    }
+  }
+
   /** A question changed (socket frame, or the poll's list). */
   function onAsk(x: { id: string; agent_id: string; state: string }, mine: (agentId: string) => boolean) {
     if (x.state === "queued" && mine(x.agent_id)) void claimAsk(x.id);
@@ -1422,6 +1470,7 @@ export function createWorker(o: WorkerOptions) {
     const listed = new Set(((r?.tasks ?? []) as TeamTask[]).map((t) => t.id));
     for (const id of runMoves.keys()) if (r && !listed.has(id)) void moved(id).then((m) => { if (m) stopMoved(id); });
     for (const x of (r?.asks ?? []) as { id: string }[]) void claimAsk(x.id);
+    for (const x of (r?.checks ?? []) as TriggerCheck[]) void onCheck(x);
   }
 
   /** The folders of tasks that ended a week ago or more (the server says which; it keeps them that long in case
@@ -1455,7 +1504,7 @@ export function createWorker(o: WorkerOptions) {
   }
 
   return {
-    onTask, onAsk, poll, checkWaits, flush, sweep,
+    onTask, onAsk, onCheck, poll, checkWaits, flush, sweep,
     running: () => [...running.keys()],
     idle: async () => { while (running.size || claiming.size) await Promise.all([...running.values(), Bun.sleep(10)]); },
     stop: () => { stopped = true; for (const k of kills.values()) k(); },
