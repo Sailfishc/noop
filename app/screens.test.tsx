@@ -54,6 +54,23 @@ const aligning = task({ id: "T-0001", state: "needs_decision", tracked: true, ti
   decision: { kind: "align", question: "做完意味着", options: null, acceptance: ["/orders 的 P99 降到 200ms 以内", "加索引不锁表", "有一份压测前后的对比"],
     not_doing: ["不改查询接口的参数"], approach: "先加 created_at 索引，再压测对比。", dirty: true },
   calls: [{ at: T0, who: "u_1", kind: "align", class: "align" }] });
+// the first task delivered: three criteria, two checked, one the agent could not verify, one it never mentioned
+const delivered = task({ id: "T-0001", state: "review", tracked: true, title: "看下慢查询", created_by: "u_1", aligned: true,
+  acceptance: "/orders 的 P99 降到 200ms 以内\n加索引不锁表\n有一份压测前后的对比\n线上一周没有新的慢查询告警",
+  holder: { kind: "user", id: "u_1", why: "accept" }, summary: "加了 created_at 索引，压测 P99 从 3.1s 到 160ms。",
+  evidence: [
+    { criterion: 1, how: "ran", proof: "bun run bench --route /orders\np50 42ms  p90 120ms  p99 160ms" },
+    { criterion: 2, how: "saw", proof: "看了迁移脚本：CREATE INDEX CONCURRENTLY" },
+    { criterion: 3, how: "not_verified", proof: "预发没有压测数据，请在预发跑 scripts/bench.sh 对比" },
+    { criterion: 4, how: "unstated" },
+  ],
+  calls: [{ at: T0, who: "u_1", kind: "align", class: "align" }, { at: T0, who: "u_1", kind: "accept", class: "accept" }] });
+const evidenceNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [delivered, ...tasks.slice(1)]);
 const alignNet = () => server(newLog(), {
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
   [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
@@ -116,6 +133,17 @@ describe("screens", () => {
     await app.press("id:thread >> id:task-T-0001-align-edit");
     await app.waitFor("id:thread >> id:task-T-0001-align-input");
     await shot(app, "thread-align-edit");
+  });
+
+  test("thread-evidence: a delivered task, each criterion with how it was checked", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: evidenceNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-evidence-list");
+    await app.press("id:thread >> id:task-T-0001-evidence-1");
+    await shot(app, "thread-evidence");
   });
 
   test("members", async () => {

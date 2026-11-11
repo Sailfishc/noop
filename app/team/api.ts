@@ -88,6 +88,8 @@ export type Task = {
   titled?: boolean;
   /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
   events?: TaskEvent[] | null;
+  /** Per acceptance criterion, how the agent checked it at its last delivery ("unstated": it said nothing). */
+  evidence?: Evidence[] | null;
   /** Its agent aligned with people once (an align card): it may not again. */
   aligned?: boolean;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
@@ -106,6 +108,7 @@ export type Task = {
 /** The task needed this person for this: kind confirm | decide | ask | handoff | handoff_card | align | accept | unblock
  * | retry; class: the moment it counts as (calls.go). */
 export type Call = { at: number; who: string; kind: string; class: CallClass };
+export type Evidence = { criterion: number; how: "ran" | "saw" | "not_verified" | "unstated"; proof?: string; file?: string };
 export type CallClass = "align" | "decide" | "accept" | "outside";
 /** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };

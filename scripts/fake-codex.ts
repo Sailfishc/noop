@@ -3,7 +3,8 @@
 // PR branch) runs without Codex or a model. scripts/dev.sh puts it on the dev machine's PATH as `codex`.
 //
 // What it does, by a tag in the request (tags, so the run prompt's own words don't trigger them):
-//   (none)      in a repository: commits a small file, reports review; elsewhere: writes out/notes.md, reports review
+//   (none)      in a repository: commits a small file, reports review; elsewhere: writes out/notes.md, reports review;
+//               either way with evidence for the first criteria (fewer than there are, so the rest show as unstated)
 //   [decide]    asks a question with two options (needs_decision)
 //   [align]     first stops to align (what "done" means, status align); resumed, it does the work
 //   [block]     reports blocked
@@ -59,11 +60,13 @@ else if (has("align") && !resume) {
     writeFileSync(join(cwd, `fake-codex-${Date.now().toString(36)}.md`), `${turn}：假 Codex 的改动\n`);
     Bun.spawnSync(["git", "add", "."], { cwd, env });
     Bun.spawnSync(["git", "commit", "-qm", `fake-codex: ${turn}`], { cwd, env });
-    finish({ status: "review", summary: `（假 Codex）${turn}：加了一个文件并提交在任务分支上。`, pr_title: "fake-codex: a small change", pr_body: "Made by scripts/fake-codex.ts." });
+    finish({ status: "review", summary: `（假 Codex）${turn}：加了一个文件并提交在任务分支上。`, pr_title: "fake-codex: a small change", pr_body: "Made by scripts/fake-codex.ts.",
+      evidence: [{ criterion: 1, how: "ran", proof: "bun test\n12 pass, 0 fail" }, { criterion: 2, how: "not_verified", proof: "要在预发环境压测才知道，请在预发跑一次压测脚本" }] });
   } else {
     const dir = join(cwd, "out");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "notes.md"), `# ${turn}\n\n假 Codex 写的笔记。\n`);
-    finish({ status: "review", summary: `（假 Codex）${turn}：整理好了，见 notes.md。` });
+    finish({ status: "review", summary: `（假 Codex）${turn}：整理好了，见 notes.md。`,
+      evidence: [{ criterion: 1, how: "saw", proof: "通读了一遍 out/notes.md", file: "notes.md" }] });
   }
 }

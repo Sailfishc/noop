@@ -74,7 +74,11 @@ export type TaskResult = {
   wait?: WaitSpec;
   /** Whether it saw the outcome it worked for. */
   result?: "confirmed" | "unconfirmed";
+  /** review: how each acceptance criterion was verified. */
+  evidence?: Evidence[];
 };
+/** How one acceptance criterion (from 1) was verified: ran a command, looked at something, or could not. */
+export type Evidence = { criterion: number; how: "ran" | "saw" | "not_verified"; proof?: string; file?: string };
 
 /** Where a task runs. `repo` is the checkout this worktree belongs to. `files`: in/ (what people attached) and out/
  * (what goes back to the thread), inside cwd for a general task, beside the worktree for a repository task.
@@ -142,6 +146,7 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
   "pr_title": "review with commits only: the pull request title",
   "pr_body": "review with commits only: what changed and how it was verified",
   "acceptance": "only when the task came without acceptance criteria: the criteria you worked to, one per line",
+  "evidence": [{"criterion": 1, "how": "ran" | "saw" | "not_verified", "proof": "ran: the command and the last lines of its output; saw: what you looked at; not_verified: why, and how a person can check it", "file": "optional: a file you saved in out/ that shows it (a screenshot)"}],
   "memory": "only when you learned something that will matter in later tasks (how the team works, a repo's quirks, people's preferences): your whole memory.md as it should be now, short bullet points, under 4000 characters",
   "outputs": [{"kind": "external", "title": "what it is", "service": "which service keeps it", "external_id": "its id there", "url": "https link to it", "status": "pending" | "ready" | "failed", "preview": "optional: path of a small picture of it you saved"}]
 }
@@ -156,8 +161,10 @@ before each one (the server counts them; failures and timeouts count too). When 
 needs_decision (try again / another way / cancel). Before submitting again after no result, cancel the earlier
 job if you can. review = the work is ready for a person to look at; needs_decision = you need a person to choose before going on (do all the
 preparation that does not depend on the answer first); blocked = you cannot go on without something you do not have;
-failed = it cannot be done. When the task has acceptance criteria, say in the summary how each one is met (or which is
-not, and why); do not report review while one is unmet. Write summary, question and options in the language the people in the thread use (Simplified
+failed = it cannot be done. With review, give one "evidence" entry per acceptance
+criterion (numbered from 1, in order; your own criteria when none were given): ran = you ran something and saw it pass,
+saw = you looked at the result, not_verified = you could not check it (say how a person can). Say honestly which you
+did not verify; a missing entry shows as "not stated". Keep the summary to what you did; the evidence says how it was checked. Write summary, question and options in the language the people in the thread use (Simplified
 Chinese unless they write otherwise), plain text, no emoji.`;
 
 const FILES = (wd: Workdir) => wd.files
@@ -948,6 +955,10 @@ export function createWorker(o: WorkerOptions) {
     // summary is the whole result (a question answered, a lookup), so it needs nobody's acceptance.
     if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length && !morePRs.length
       && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
+    if (result.status === "review" && Array.isArray(result.evidence)) {
+      body.evidence = result.evidence.filter((e) => e && Number.isInteger(Number(e.criterion))).slice(0, 20)
+        .map((e) => ({ criterion: Number(e.criterion), how: String(e.how ?? ""), proof: String(e.proof ?? "").slice(0, 2000), ...(e.file ? { file: String(e.file) } : {}) }));
+    }
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = Array.isArray(result.acceptance) ? result.acceptance.join("\n") : String(result.acceptance);
     if (c.memory_writable !== false && typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
