@@ -273,7 +273,7 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
               </Text>
               <If when={x().max_per_day}>
                 <Text testID={`trigger-limits-${x().id}`} style={{ fontSize: 12, color: colors.faint }}>
-                  {L(`At most ${x().max_per_day} a day; skipped while its last task is open`, `每天最多 ${x().max_per_day} 次；上一个任务没结束时跳过`) +
+                  {L(`At most ${x().max_per_day} a day${x().kind === "schedule" ? "; skipped while its last task is queued or running" : ""}`, `每天最多 ${x().max_per_day} 次${x().kind === "schedule" ? "；上一个任务还在排队或运行时跳过" : ""}`) +
                     (x().skipped ? L(` · skipped ${x().skipped} times`, ` · 跳过过 ${x().skipped} 次`) : "")}
                 </Text>
               </If>
@@ -281,7 +281,7 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
                 <Text testID={`trigger-stuck-${x().id}`} style={{ fontSize: 12, color: colors.warn }}>
                   {x().skip_reason === "limit"
                     ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
-                    : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} isn’t over`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还没结束`)}
+                    : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} is still queued or running`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还在排队或运行`)}
                 </Text>
               </If>
               <View style={{ flexDirection: "row", gap: 6 }}>

@@ -166,14 +166,18 @@ export const SETUP = (x: Workdir) => !x.setup ? "" : x.setup === "ok"
 /** How to get a repository when the work turns out to need one. */
 const DECLARE = (c?: Claim) => `\n- If the request needs changes in a repository, first declare it with \`remi repo owner/name\` (or its address)${c?.channel.repo ? `; this channel usually works in ${c.channel.repo}` : ""}: your machine checks it out on your task branch and resumes you with its path. Do not clone repositories yourself to change them.`;
 
+// The machine is shared with its owner and other agents: an agent that cleaned up with `pkill -f "headless=new"`
+// stopped everyone's headless Chrome (upstream noop #145).
+const PROCESSES = `\n- Stop only processes you started, by the PID you noted when you started them. Never stop processes by name or command line (pkill -f, killall, taskkill /IM): this machine is shared with its owner and other agents.`;
+
 const RULES = (wd: Workdir, c?: Claim) => wd.repo
   ? `# Rules (enforced: breaking them fails)
 - Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${SETUP(wd)}${EXTRA(wd)}
 - Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
-- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${FILES(wd)}`
+- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran.${PROCESSES}${FILES(wd)}`
   : `# Rules
 - Work in ${wd.cwd} (this task's own directory).${EXTRA(wd) || DECLARE(c)}${FILES(wd)}
-- Never push to remote repositories, merge, or publish anything: the machine pushes your task branches and opens pull requests after you stop.${EXTRA(wd) ? "\n- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran." : ""}`;
+- Never push to remote repositories, merge, or publish anything: the machine pushes your task branches and opens pull requests after you stop.${PROCESSES}${EXTRA(wd) ? "\n- Run the project's tests or checks for what you changed before you stop, and say in the summary what you ran." : ""}`;
 
 const AUTONOMY: Record<string, string> = {
   cautious: "cautious: before any change beyond reading and investigating, stop with needs_decision and propose what you would do",
