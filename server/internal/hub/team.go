@@ -451,6 +451,7 @@ func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
 	if q.who.machineID == "" {
 		out["preferences"] = h.preferences(u.ID)
+		out["digest"] = h.digestOf(u.ID)
 	}
 	if q.who.machineID != "" {
 		ms := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))
@@ -492,15 +493,28 @@ func (h *Hub) v1UserPatch(w http.ResponseWriter, q *request) {
 		Disabled *bool   `json:"disabled"`
 		// Preferences: 「我的偏好」, the person's own only
 		Preferences *string `json:"preferences"`
+		// Digest: 「提案什么时候给我」, the person's own only (teamproposals.go)
+		Digest *digestView `json:"digest"`
 	}
 	_ = q.json(&b)
 	self, admin := id == q.who.userID, h.isAdmin(q.who.userID)
-	if (b.Name != nil && !self && !admin) || ((b.Role != nil || b.Disabled != nil) && (!admin || self)) || (b.Preferences != nil && !self) {
+	if (b.Name != nil && !self && !admin) || ((b.Role != nil || b.Disabled != nil) && (!admin || self)) || ((b.Preferences != nil || b.Digest != nil) && !self) {
 		errJSON(w, 403, "forbidden")
 		return
 	}
-	if b.Preferences != nil {
-		h.setPreferences(id, *b.Preferences)
+	if b.Digest != nil {
+		d, bad := checkDigest(*b.Digest)
+		if bad != "" {
+			errJSON(w, 400, bad)
+			return
+		}
+		raw, _ := json.Marshal(d)
+		h.must(h.db.Exec("UPDATE users SET digest = ? WHERE id = ?", string(raw), id))
+	}
+	if b.Preferences != nil || b.Digest != nil {
+		if b.Preferences != nil {
+			h.setPreferences(id, *b.Preferences)
+		}
 		if b.Name == nil && b.Role == nil && b.Disabled == nil { // nothing anyone else sees changed
 			u, _ := h.user(id)
 			writeJSON(w, 200, u)

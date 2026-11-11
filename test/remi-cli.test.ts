@@ -40,6 +40,7 @@ test("remi turns each command into the right request", async () => {
   await remi("submit", "render", "job-1");
   await remi("who");
   await remi("delegate", "@bei", "写文档");
+  await remi("propose", "--key", "ci-main-red", "--urgent", "主干", "红了", "--why", "@ci 第 3 次失败 & 没人看", "--plan", "修好测试，主干变绿");
   const usage = await remi("bogus");
   server.stop(true);
   rmSync(W, { recursive: true, force: true });
@@ -49,8 +50,9 @@ test("remi turns each command into the right request", async () => {
     "GET /api/v1/agent/read", "GET /api/v1/agent/search", "GET /api/v1/agent/tasks/T-0001", "GET /api/v1/agent/channel",
     "GET /api/v1/agent/who", "GET /api/v1/agent/file", "GET /api/v1/agent/memory", "POST /api/v1/agent/say", "POST /api/v1/agent/upload",
     "POST /api/v1/agent/remind", "POST /api/v1/agent/handoff", "POST /api/v1/agent/ask", "POST /api/v1/agent/submit",
-    "GET /api/v1/agent/who", "POST /api/v1/agent/delegate",
+    "GET /api/v1/agent/who", "POST /api/v1/agent/delegate", "POST /api/v1/agent/propose",
   ]);
+  expect(Object.fromEntries(new URLSearchParams(seen[15].body))).toEqual({ title: "主干 红了", why: "@ci 第 3 次失败 & 没人看", plan: "修好测试，主干变绿", key: "ci-main-red", urgent: "1" });
   expect(seen[10]).toMatchObject({ type: "text/plain; charset=utf-8", body: "@bei 写发布说明" });
   expect(seen[11]).toMatchObject({ body: "@liuli 版本号？" }); // a leading @ is text, not curl's @file
   expect(seen[12]).toMatchObject({ body: "render job-1" });

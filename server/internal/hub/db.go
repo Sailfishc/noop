@@ -97,6 +97,9 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(triggerRunsSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(proposalsSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -160,6 +163,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN check_pending INTEGER NOT NULL DEFAULT 0", // a check sent to a computer and not answered yet (when)
 		"ALTER TABLE triggers ADD COLUMN check_machine TEXT NOT NULL DEFAULT ''",   // the computer it was sent to
 		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",                                // its thread's first message, not posted until the agent first speaks (teamduties.go)
+		"ALTER TABLE users ADD COLUMN digest TEXT NOT NULL DEFAULT ''",             // 「提案什么时候给我」, the person's own (teamproposals.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

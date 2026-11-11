@@ -394,6 +394,27 @@ describe("settings", () => {
     await app.press(`id:settings-nav-${tab}`);
   };
 
+  test("「提案什么时候给我」: once a workday by default; twice shows the second time; saved as one's own", async () => {
+    const saved: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: { ...server(newLog()),
+      [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } },
+      [`PATCH ${URL}/api/v1/users/u_1`]: (r: { body?: string | null }) => { saved.push(JSON.parse(r.body!)); return { body: zw }; } } });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:digest-at");
+    expect(app.value("id:digest-at")).toBe("09:30");
+    expect(app.shows("id:digest-at2")).toBe(false);
+    expect(app.enabled("id:digest-save")).toBe(false);
+    await app.press("id:digest-every-twice");
+    await app.waitFor("id:digest-at2");
+    await app.clear("id:digest-at2");
+    await app.type("id:digest-at2", "16:00");
+    await app.press("id:digest-save");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ digest: { every: "twice", at: "09:30", at2: "16:00", quiet: "22:00-08:00" } });
+    await app.waitFor("text:已保存");
+  });
+
   test("「我的偏好」: one's own words for the agents, its explanation behind the ⓘ, saved with a PATCH of oneself", async () => {
     const saved: any[] = [];
     const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: { ...server(newLog()),
@@ -1429,6 +1450,42 @@ describe("passing the ball", () => {
     await app.waitUntil(() => log.created.length === 1);
     expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "schedule", text: "有新告警就看看", when: "9:00", repeat: "weekdays", check_cmd: "cat alerts.txt", readonly: true } });
     await app.waitFor("text:$ cat alerts.txt");
+  });
+});
+
+describe("proposals", () => {
+  const prop = (id: string, num: number, title: string, extra: object = {}) => ({ id, channel_id: "c_1", agent_id: "a_1", task_id: "T-0009", title, why: `看到：${title}`, plan: `做到：${title}`, key: id, urgent: false, state: "open", num, created: T0, ...extra });
+  const batch = { id: "pb_1", at: T0, urgent: false, proposals: [prop("p1", 1, "升级 lodash"), prop("p2", 2, "删掉没人管的分支"), prop("p3", 3, "补上 /orders 的测试")] };
+  const urgent = { id: "pb_2", at: T0, urgent: true, proposals: [prop("p4", 1, "主干红了，今天发不了版", { urgent: true })] };
+
+  test("one card, numbered; details on demand; 做 or 不做 each; numbers in the box; an urgent one on its own", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __proposals: [batch, urgent] }) });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:proposals-pb_1");
+    expect(app.shows("text:/提案（3）/")).toBe(true);
+    expect(app.shows("text:1. 升级 lodash")).toBe(true);
+    expect(app.shows("text:/#支付后端 · @acha/")).toBe(true);
+    expect(app.shows("text:做到：升级 lodash")).toBe(false); // the plan waits behind 详情
+    await app.press("id:proposal-p1-more");
+    await app.waitFor("text:打算：做到：升级 lodash");
+    expect(app.shows("text:为什么：看到：升级 lodash")).toBe(true);
+    expect(app.shows("text:/其余留在卡片上/")).toBe(false); // how the box works waits behind its ⓘ
+    await app.press("id:proposals-pb_1-numbers-info");
+    await app.waitFor("text:/其余留在卡片上/");
+    await app.press("id:proposal-p2-no");
+    await app.waitUntil(() => log.acts.includes("p2 no"));
+    await app.waitUntil(() => !app.shows("id:proposal-p2"));
+    await app.type("id:proposals-pb_1-text", "1 3");
+    await app.press("id:proposals-pb_1-send");
+    await app.waitUntil(() => log.acts.includes("pb_1 1 3"));
+    await app.waitUntil(() => !app.shows("id:proposals-pb_1"));
+    expect(app.shows("id:proposals-pb_2")).toBe(true);
+    expect(app.shows("text:紧急提案")).toBe(true);
+    expect(app.shows("id:proposals-pb_2-text")).toBe(false); // one proposal: no box
+    await app.press("id:proposal-p4-do");
+    await app.waitUntil(() => log.acts.includes("p4 do"));
   });
 });
 

@@ -31,6 +31,17 @@
   carries `?moves=`, so a run on the old computer that comes back is refused and pushes nothing. The new computer
   restores the checkpoint and starts a fresh session from the thread. A runtime switch sets `tasks_v1.runtime` for
   that task only: same computer, same directory, fresh session, that runtime's default model.
+- Standing duties are triggers, not a new object (`teamtriggers.go`, `teamduties.go`, `teamchecks.go`,
+  `teamproposals.go`). Triggers of one channel, agent and duty name are one group with a history (`trigger_runs`, 100
+  lines each). A read-only trigger's task (`tasks_v1.readonly`) may not open a PR, hand off or delegate; its first
+  message waits in `tasks_v1.held` and is posted only when something is first said in its thread, so a run that ends
+  with `nothing` leaves no message, no unread and no inbox item. A schedule with a check command first hands the
+  agent's computer a check (socket frame or the machine poll's `checks`, never a task); the daemon runs it for 60 s
+  with the agents' git limits and posts the output's hash: the same hash records "no change", a new one (or an error)
+  fires the trigger with the output. Only the agent's owner confirms a check command, by the exact text they saw. An
+  agent's `remi propose` stores a proposal for the person the run is for; `tickProposals` puts what came in before
+  that person's time (`users.digest`, the server's time zone) onto one card (`proposal_batches`), urgent ones alone
+  outside quiet hours. 做 makes a normal task in their name with the plan as its acceptance, already aligned.
 
 ## Daemon layout (`src/`)
 
