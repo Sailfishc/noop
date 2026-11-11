@@ -4,18 +4,21 @@
   "version": "0.1.0",
   "build": 1,
   "appearance": "system",
+  "schemes": ["remi"],
   "macos": {
     "infoPlist": {
       "NSAppTransportSecurity": {
         "NSAllowsArbitraryLoads": true
-      }
+      },
+      "NSCameraUsageDescription": "Remi uses the camera to scan login QR codes. / Remi 用摄像头扫描登录二维码。"
     }
   },
   "ios": {
     "infoPlist": {
       "NSAppTransportSecurity": {
         "NSAllowsArbitraryLoads": true
-      }
+      },
+      "NSCameraUsageDescription": "Remi uses the camera to scan login QR codes. / Remi 用摄像头扫描登录二维码。"
     }
   },
   "theme": "theme.json",
@@ -56,6 +59,14 @@
       "schemes": [
         "https",
         "mailto"
+      ]
+    },
+    "webview": {
+      "hosts": [
+        "localhost"
+      ],
+      "media": [
+        "camera"
       ]
     }
   },

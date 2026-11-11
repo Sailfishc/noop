@@ -47,6 +47,16 @@ func (h *Hub) wakes(t taskView, m messageView) bool {
 	}
 	me := m.Author.ID
 	a, _ := h.agent(t.AgentID)
+	// waiting for what it delegated: people's words (a child's decision among them) wait for its receipt run, unless
+	// they @ it; a delegated task that came back is the delegating agent's to reopen, unless they @ it
+	if (t.State == taskWaiting && t.Wait != nil && t.Wait.How == "delegates") || (t.Mandate != nil && t.Mandate.Delegated && returnedStates[t.State]) {
+		for _, mm := range m.Mentions {
+			if mm.Kind == "agent" && mm.ID == t.AgentID {
+				return true
+			}
+		}
+		return false
+	}
 	if me == t.CreatedBy || me == t.Handler || me == a.OwnerID || openQuestion(t, me) >= 0 {
 		return true
 	}
@@ -106,17 +116,22 @@ func (h *Hub) v1AgentAsk(w http.ResponseWriter, q *request) {
 	text := strings.TrimSpace(textBody(q))
 	var target mention
 	for _, m := range h.mentions(text) {
-		if m.Kind == "user" {
+		if m.Kind == "user" || m.Kind == "agent" {
 			target = m
 			break
 		}
 	}
 	question := strings.TrimSpace(strings.Replace(text, "@"+target.Handle, "", 1))
 	if target.ID == "" || question == "" {
-		errJSON(w, 400, "用法：remi ask @某人 问题")
+		errJSON(w, 400, "用法：remi ask @某人 问题，或者 remi ask @某个Agent 问题")
 		return
 	}
-	if !h.isMember(t.ChannelID, "user", target.ID) && !h.isAdmin(target.ID) {
+	if target.Kind == "agent" { // another agent answers in a read-only run (teamask.go)
+		b, _ := h.agent(target.ID)
+		h.askAgent(w, t, a, b, question)
+		return
+	}
+	if !h.memberOrAdmin(t.ChannelID, target.ID) {
 		errJSON(w, 400, "@"+target.Handle+" 不在这个频道里")
 		return
 	}
@@ -133,6 +148,7 @@ func (h *Hub) v1AgentAsk(w http.ResponseWriter, q *request) {
 	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "@"+target.Handle+" "+trimmed(question, 2000))
 	asked := append(t.Asked, askedView{User: target.ID, Question: trimmed(question, 300), Message: m.ID, At: h.nowMs()})
 	h.setTask(t.ID, map[string]any{"asked": jsonOrNil(asked)})
+	h.noteCall(t, "ask", target.ID)
 	h.taskChanged(t.ID)
 	writeText(w, "asked @"+target.Handle+": msg="+m.ID+"\nGo on with what does not depend on the answer; it reaches you in this session when they reply.\n"+
 		"If nothing else is left, end your turn with status waiting and wait {\"how\": \"answer\", \"what\": \"@"+target.Handle+"'s answer\"}.\n")
@@ -162,7 +178,11 @@ func (h *Hub) v1AgentRepo(w http.ResponseWriter, q *request) {
 		errJSON(w, 429, "一个任务最多声明 5 个仓库")
 		return
 	}
-	if a.MachineID == nil || !h.machineReaches(*a.MachineID, remote) {
+	at := h.holder(t) // the computer running it
+	if at == "" && a.MachineID != nil {
+		at = *a.MachineID
+	}
+	if at == "" || !h.machineReaches(at, remote) {
 		errJSON(w, 403, "这台机器上没有 "+remote+"，也没有它所在平台的凭证；请人把仓库放到这台机器上，或者换一台机器")
 		return
 	}

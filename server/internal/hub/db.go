@@ -94,6 +94,12 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(triggersSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(triggerRunsSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(proposalsSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -116,7 +122,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN failures INTEGER NOT NULL DEFAULT 0", // runs in a row that failed or died (teamhealth.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN last_failure TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE tasks_v1 ADD COLUMN usage TEXT",                                  // tokens its runs used, added up
-		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",               // why it takes no work now (teamhealth.go); "" = it does
+		"ALTER TABLE agents ADD COLUMN paused TEXT NOT NULL DEFAULT ''",               // no longer read: runtimes on machines are held back instead (teamquota.go)
 		"ALTER TABLE tasks_v1 ADD COLUMN titled INTEGER NOT NULL DEFAULT 0",           // its title was given (by the agent or a person), not cut from the request
 		"ALTER TABLE tasks_v1 ADD COLUMN handler TEXT NOT NULL DEFAULT ''",            // who takes it when it stops for people ("" = its creator)
 		"ALTER TABLE tasks_v1 ADD COLUMN cancelled_at INTEGER",                        // when a person cancelled it (teammetrics.go: was it asked again)
@@ -133,13 +139,39 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN last_task TEXT",                              // the task it opened last
 		"ALTER TABLE triggers ADD COLUMN day TEXT NOT NULL DEFAULT ''",                // the day day_fires counts (2006-01-02, the server's zone)
 		"ALTER TABLE triggers ADD COLUMN day_fires INTEGER NOT NULL DEFAULT 0",
-		"ALTER TABLE triggers ADD COLUMN skipped_run INTEGER NOT NULL DEFAULT 0", // skipped in a row since it last fired
-		"ALTER TABLE triggers ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''",   // why the last one was: busy (its last task is open) | limit
-		"ALTER TABLE triggers ADD COLUMN stuck_noted TEXT NOT NULL DEFAULT ''",   // the stuck task its creator was told about, once
+		"ALTER TABLE triggers ADD COLUMN skipped_run INTEGER NOT NULL DEFAULT 0",   // skipped in a row since it last fired
+		"ALTER TABLE triggers ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''",     // why the last one was: busy (its last task is open) | limit
+		"ALTER TABLE triggers ADD COLUMN stuck_noted TEXT NOT NULL DEFAULT ''",     // the stuck task its creator was told about, once
+		"ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0",       // only its members see it (chat.go canRead)
+		"ALTER TABLE users ADD COLUMN preferences TEXT NOT NULL DEFAULT ''",        // 「我的偏好」: given to agents on the tasks they ask for (teammemory.go)
+		"ALTER TABLE channels ADD COLUMN dm_agent TEXT",                            // a person's private chat with this agent (teamdm.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0",       // its agent aligned with people once (teamalign.go): never again
+		"ALTER TABLE tasks_v1 ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'",      // per acceptance criterion, how its agent verified it (teamevidence.go)
+		"ALTER TABLE task_events ADD COLUMN who TEXT NOT NULL DEFAULT ''",          // the person the task needed then ("" = nobody); teammetrics.go
+		"ALTER TABLE tasks_v1 ADD COLUMN checkpoint TEXT",                          // its latest checkpoint (teamcheckpoint.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN moves INTEGER NOT NULL DEFAULT 0",         // times it moved to another computer: runs claimed before are void (teammove.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN move TEXT",                                // the 换电脑继续 card (teammove.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN runtime TEXT NOT NULL DEFAULT ''",         // the runtime this task runs with when not its agent's (teamengine.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN engine TEXT",                              // the 换引擎继续 card (teamengine.go)
+		"ALTER TABLE machines ADD COLUMN checkpoint_files INTEGER",                 // keep general tasks' directories here (NULL: on for a person's own, off for a team machine)
+		"ALTER TABLE triggers ADD COLUMN duty TEXT NOT NULL DEFAULT ''",            // the duty it belongs to: triggers with one name, agent and channel are seen and paused together
+		"ALTER TABLE triggers ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",      // its runs only look and speak (new ones default to 1 in the API; existing ones stay as they were)
+		"ALTER TABLE tasks_v1 ADD COLUMN readonly INTEGER NOT NULL DEFAULT 0",      // a read-only run (a patrol): no PR, handoff or delegation; may end with "nothing"
+		"ALTER TABLE triggers ADD COLUMN check_cmd TEXT NOT NULL DEFAULT ''",       // run first on the agent's computer; same output as last time: no firing (teamchecks.go)
+		"ALTER TABLE triggers ADD COLUMN check_hash TEXT NOT NULL DEFAULT ''",      // the output's hash when it last fired
+		"ALTER TABLE triggers ADD COLUMN check_confirmed TEXT NOT NULL DEFAULT ''", // the command its agent's owner confirmed (another one waits again)
+		"ALTER TABLE triggers ADD COLUMN check_pending INTEGER NOT NULL DEFAULT 0", // a check sent to a computer and not answered yet (when)
+		"ALTER TABLE triggers ADD COLUMN check_machine TEXT NOT NULL DEFAULT ''",   // the computer it was sent to
+		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",                                // its thread's first message, not posted until the agent first speaks (teamduties.go)
+		"ALTER TABLE users ADD COLUMN digest TEXT NOT NULL DEFAULT ''",             // 「提案什么时候给我」, the person's own (teamproposals.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
+	}
+	// one private chat per person and agent
+	if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS channels_dm ON channels (created_by, dm_agent) WHERE dm_agent IS NOT NULL"); err != nil {
+		return err
 	}
 	// dispatch used to say both who and whether to confirm: owner | confirm (channel, confirm) | open (channel, no confirm)
 	for _, up := range []string{
@@ -154,6 +186,18 @@ func initSchema(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(remindersSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(runtimeStatusSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(agentMachinesSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(asksSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(checkpointSchema); err != nil {
 		return err
 	}
 	return initSearch(db)

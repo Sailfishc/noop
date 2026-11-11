@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { claudeCommand, claudeEvent, claudeMcpServers, codexCommand, codexEvent, piCommand, piEvent, RUNTIMES, type RunOptions, type Runtime } from "../src/runtimes";
+import { wakePrompt } from "../src/teamwork";
 import { cliEnv, createWorker, fetchInputs, reactionOf, taskClaimOf, followUpPrompt, gateEnv, outFiles, parseCheck, parseTaskResult, prepareWorkdir, seconds, taskPrompt, uploadOut, type Claim, type FileApi } from "../src/teamwork";
 
 const sh = (cwd: string, ...cmd: string[]) => {
@@ -167,6 +168,9 @@ test("the agent's remi command (also installed as teamagent) asks the server wit
   const old = Bun.spawn(["teamagent"], { env, stdout: "pipe" }); // its first name keeps working
   expect(await new Response(old.stdout).text()).toContain("remi search WORDS");
   expect(taskPrompt({ ...claim(), read_token: "rt_abc" }, { cwd: "/w", writable: [] })).toContain("remi read --thread MSG");
+  const listed = taskPrompt({ ...claim(), read_token: "rt_abc", agents: "@bei (贝): 写测试 [can take work now; 0 running; no card; in this channel]\n" }, { cwd: "/w", writable: [] });
+  expect(listed).toContain("# Other agents you may turn to\n@bei (贝)");
+  expect(taskPrompt({ ...claim(), read_token: "rt_abc", agents: "" }, { cwd: "/w", writable: [] })).not.toContain("# Other agents you may turn to");
   expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("# Looking things up");
   rmSync(W, { recursive: true, force: true });
 });
@@ -320,6 +324,7 @@ function fakeRuntime(turns: { events?: string[]; text: string; hang?: boolean }[
 function fakeApi(claims: Record<string, Claim>, log: { path: string; body: any }[]) {
   return async (path: string, init: RequestInit = {}) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined;
+    path = path.replace(/[?&]moves=\d+$/, ""); // the run's fence (checkpoint.test.ts checks it)
     log.push({ path, body });
     const m = path.match(/^\/api\/v1\/tasks\/([^/]+)\/claim$/);
     if (m) { const c = claims[m[1]]; delete claims[m[1]]; return c ?? null; }
@@ -409,7 +414,7 @@ test("news while it runs: the run stops after the tool call in flight and the sa
   const claims = [claim(), claim({ news: false }, {})];
   claims[1]!.new = [{ id: "msg_4", seq: 4, channel_id: "c_1", thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: "先别动索引", mentions: [], created: 0 }];
   const api = async (path: string, init: RequestInit = {}) => {
-    calls.push({ path, body: init.body ? JSON.parse(String(init.body)) : undefined });
+    calls.push({ path: path.replace(/[?&]moves=\d+$/, ""), body: init.body ? JSON.parse(String(init.body)) : undefined });
     if (path.endsWith("/claim")) return claims.shift() ?? null;
     return path === "/api/v1/machine/tasks" ? { tasks: [] } : {};
   };
@@ -606,4 +611,184 @@ test("waiting results: a wait with no way to wake is not a wait; durations; chec
   expect([seconds("90s"), seconds("5m"), seconds("2h"), seconds("1d"), seconds(30), seconds("soon")]).toEqual([90, 300, 7200, 86400, 30, 0]);
   expect(parseCheck('working…\n{"state":"done","note":"ok"}')).toEqual({ state: "done", note: "ok" });
   expect(parseCheck("nothing")).toBe(null);
+});
+
+test("the person's preferences come after the conventions; a private channel's task leaves the memory alone", async () => {
+  const p = taskPrompt({ ...claim(), channel: { id: "c_1", name: "支付后端", topic: "", conventions: "发布前在 #ops 说一声" }, requester_preferences: " 回复用中文 " },
+    { cwd: "/w", writable: [] }, { instructions: "PR 标题用中文", mcp: {} });
+  const prefs = p.indexOf("# 张伟's preferences (they asked for this task; where they differ from the conventions above, the conventions win)\n回复用中文\n");
+  expect(prefs).toBeGreaterThan(p.indexOf("# How #支付后端 works"));
+  expect(prefs).toBeGreaterThan(p.indexOf("# Team conventions"));
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("preferences (they asked");
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("Do not update your memory");
+  expect(taskPrompt({ ...claim(), memory_writable: false }, { cwd: "/w", writable: [] })).toContain("Do not update your memory on this task");
+
+  for (const writable of [true, false]) {
+    const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+    const calls: { path: string; body: any }[] = [];
+    const rt = fakeRuntime([{ text: '```json\n{"status":"review","summary":"好了","memory":"- 张伟爱吃辣"}\n```' }], []);
+    const w = createWorker({ api: fakeApi({ "T-0001": { ...claim(), memory_writable: writable } }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+    w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+    await Bun.sleep(1);
+    await w.idle();
+    const report = calls.find((c) => c.body?.state === "review")!.body;
+    expect(report.memory).toBe(writable ? "- 张伟爱吃辣" : undefined);
+    rmSync(W, { recursive: true, force: true });
+  }
+});
+
+test("align: the first turn says when to align, only for a person's own request with no criteria, once per task", () => {
+  const wd = { cwd: "/w", writable: [] };
+  expect(taskPrompt(claim(), wd)).toContain("# Align first, when the request is larger");
+  expect(taskPrompt(claim({ acceptance: "P99 < 200ms" }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ body: "@acha 直接做：把超时调到 5 秒" }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ aligned: true }), wd)).not.toContain("# Align first");
+  const m = { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex" };
+  expect(taskPrompt(claim({ mandate: { ...m, trigger: "trg_1" } }), wd)).not.toContain("# Align first");
+  expect(taskPrompt(claim({ mandate: { ...m, via: ["a_2"], parent: "T-0009" } }), wd)).not.toContain("# Align first");
+  const r = parseTaskResult('看完了\n```json\n{"status":"align","summary":"先对一下","acceptance":["对账一致","10 分钟内"],"approach":"按天分批"}\n```');
+  expect(r.status).toBe("align");
+  expect(r.acceptance).toEqual(["对账一致", "10 分钟内"]);
+});
+
+test("align: the run reports its criteria and whether it changed files; a second alignment is told to go on in the same session", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const align = '```json\n{"status":"align","summary":"先对一下","acceptance":["对账一致","10 分钟内"],"not_doing":["不改导出"],"approach":"按天分批"}\n```';
+  const rt = fakeRuntime([{ text: align }, { text: align }, { text: '```json\n{"status":"review","summary":"好了"}\n```' }], seen);
+  const w = createWorker({
+    api: fakeApi({ "T-0001": claim(), "T-0002": claim({ id: "T-0002", aligned: true }) }, calls),
+    maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {},
+  });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report`).at(-1)!.body;
+  expect(last("T-0001")).toMatchObject({ state: "align", summary: "先对一下", align: { acceptance: ["对账一致", "10 分钟内"], not_doing: ["不改导出"], approach: "按天分批", dirty: false } });
+  w.onTask({ ...claim().task, id: "T-0002", state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  expect(seen.length).toBe(3);
+  expect(seen[2]!.resume).toBe("thr_9");
+  expect(seen[2]!.prompt).toContain("already been aligned once");
+  expect(last("T-0002").state).toBe("review");
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("evidence: the review result carries how each criterion was checked; the prompt asks for it", async () => {
+  expect(taskPrompt(claim({ acceptance: "P99 < 200ms" }), { cwd: "/w", writable: [] })).toContain('"evidence"');
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt = fakeRuntime([{ text: '```json\n{"status":"review","summary":"好了","evidence":[{"criterion":1,"how":"ran","proof":"p99 180ms","file":"out/a.png"},{"criterion":"x","how":"saw"}]}\n```' }], seen);
+  const w = createWorker({ api: fakeApi({ "T-0001": claim({ acceptance: "P99 < 200ms" }) }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  const body = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report").at(-1)!.body;
+  expect(body.evidence).toEqual([{ criterion: 1, how: "ran", proof: "p99 180ms", file: "out/a.png" }]);
+  rmSync(W, { recursive: true, force: true });
+});
+
+test("woken with the receipt of what it delegated: what came back, and how to check, send back or deliver", () => {
+  const p = wakePrompt({ ...claim(), wake: { reason: "delegates", payload: "## T-0002 @bei: delivered\nSummary: 文档写好了\n", at: 1 } } as any);
+  expect(p).toContain("## T-0002 @bei: delivered");
+  expect(p).toContain("remi delegate @AGENT WHAT TO CHANGE");
+  expect(p).toContain("A person accepts only your result.");
+  expect(parseTaskResult('```json\n{"status": "waiting", "summary": "等", "wait": {"how": "delegates"}}\n```').status).toBe("waiting");
+});
+
+test("a patrol (read-only run): its prompt says how to end silently; nothing reaches the server as nothing; repository changes are thrown away, no PR", async () => {
+  const p = taskPrompt(claim({ readonly: true, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" } }),
+    { cwd: "/w/T-0001", repo: "/r", branch: "agent/T-0001", writable: [] });
+  expect(p).toContain("# This run is a read-only patrol");
+  expect(p).toContain('"status": "nothing"');
+  expect(p).toContain("read it, do not change it");
+  expect(p).not.toContain("Commit your changes");
+  expect(p).not.toContain("# Align first");
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("read-only patrol");
+  expect(parseTaskResult('看过了\n```json\n{"status":"nothing","summary":"主干是绿的"}\n```').status).toBe("nothing");
+
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-")));
+  try {
+    const origin = join(W, "origin.git"), repo = join(W, "repo");
+    sh(W, "git", "init", "-q", "--bare", "-b", "main", origin);
+    sh(W, "git", "clone", "-q", origin, repo);
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    sh(repo, "git", "add", ".");
+    sh(repo, "git", "commit", "-qm", "init");
+    sh(repo, "git", "push", "-q", "origin", "HEAD:main");
+    sh(repo, "git", "remote", "set-head", "origin", "main");
+    const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [], after: string[] = [];
+    const rt = fakeRuntime([
+      { text: '```json\n{"status":"nothing","summary":"主干是绿的"}\n```' },
+      { text: '```json\n{"status":"nothing","summary":"顺手改了个错字"}\n```' },
+      { text: '```json\n{"status":"nothing","summary":"普通任务不能不出声"}\n```' },
+    ], seen);
+    const ro = { readonly: true, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "", runtime: "codex", trigger: "trg_1" } };
+    const w = createWorker({
+      api: fakeApi({ "T-0001": claim({ id: "T-0001", branch: "agent/T-0001", ...ro }, { repo }), "T-0002": claim({ id: "T-0002", branch: "agent/T-0002", ...ro }, { repo }),
+        "T-0003": claim({ id: "T-0003", branch: "agent/T-0003" }, { repo }) }, calls), maxParallel: 1, workRoot: join(W, "work"),
+      runtimes: { codex: { ...rt, start(o) {
+        if (o.cwd.endsWith("T-0002")) { writeFileSync(join(o.cwd, "a.txt"), "typo fixed\n"); sh(o.cwd, "git", "commit", "-qam", "fix"); writeFileSync(join(o.cwd, "new.txt"), "x"); }
+        return rt.start(o);
+      } } },
+      afterRun: async (c) => { after.push(c.task.id); return null; }, log: () => {},
+    });
+    for (const id of ["T-0001", "T-0002", "T-0003"]) {
+      w.onTask({ ...claim().task, id, state: "queued" } as any, () => true);
+      await Bun.sleep(1);
+      await w.idle();
+    }
+    const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report` && c.body.state).at(-1)!.body;
+    expect(last("T-0001").state).toBe("nothing");
+    expect(last("T-0001").summary).toBe("主干是绿的");
+    // it changed the repository: thrown away (back to where it started, the new file gone), said so, and it is no longer silent
+    expect(last("T-0002").state).toBe("review");
+    expect(last("T-0002").summary).toContain("对仓库的改动已丢弃");
+    const wd2 = join(W, "work", "T-0002");
+    expect(readFileSync(join(wd2, "a.txt"), "utf8")).toBe("a\n");
+    expect(existsSync(join(wd2, "new.txt"))).toBe(false);
+    expect(sh(wd2, "git", "rev-list", "--count", "origin/main..HEAD").out).toBe("0");
+    expect(last("T-0003").state).toBe("review"); // only a patrol may stay silent
+    expect(after).toEqual(["T-0003"]); // no push, no PR for a patrol
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
+});
+
+test("a trigger's check command: same output, same hash; a failure or a timeout says why", async () => {
+  const { runCheckCommand } = await import("../src/teamwork");
+  const dir = mkdtempSync(join(tmpdir(), "check-"));
+  const a = await runCheckCommand("echo one", dir, {});
+  const b = await runCheckCommand("echo one", dir, {});
+  const c = await runCheckCommand("echo two", dir, {});
+  expect(a.hash).toBeTruthy();
+  expect(a.hash).toBe(b.hash);
+  expect(c.hash).not.toBe(a.hash);
+  expect(a.output).toBe("one\n");
+  const bad = await runCheckCommand("echo nope >&2; exit 3", dir, {});
+  expect(bad).toEqual({ error: "退出码 3", output: "nope\n" });
+  const slow = await runCheckCommand("echo started; sleep 5", dir, {}, 300);
+  expect(slow.error).toBe("超时（0 秒）");
+  expect(slow.hash).toBeUndefined();
+  const pushed = await runCheckCommand("git push origin main", dir, gateEnv({ cwd: dir, writable: [] }));
+  expect(pushed.error).toBeTruthy();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the worker runs a check it is handed and tells the server the hash", async () => {
+  const posts: { path: string; body: any }[] = [];
+  const root = mkdtempSync(join(tmpdir(), "checkw-"));
+  const w = createWorker({
+    api: async (path: string, init?: RequestInit) => {
+      posts.push({ path, body: init?.body ? JSON.parse(String(init.body)) : null });
+      return new Response("{}");
+    },
+    workRoot: root, log: () => {},
+  } as any);
+  await w.onCheck({ id: "trg_1", agent_id: "agt_1", cmd: "echo hi" });
+  expect(posts[0].path).toBe("/api/v1/triggers/trg_1/check");
+  expect(posts[0].body.output).toBe("hi\n");
+  expect(posts[0].body.hash).toHaveLength(64);
+  rmSync(root, { recursive: true, force: true });
 });

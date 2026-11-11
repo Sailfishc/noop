@@ -39,13 +39,29 @@ const bin = join(W, "bin");
 mkdirSync(bin);
 writeFileSync(join(bin, "codex"), `#!/usr/bin/env bun
 const a = process.argv.slice(2);
+if (a[0] === "--version") { console.log("codex-cli 0.0.0 (fake)"); process.exit(0); }
+if (a[0] === "login") { console.log("Logged in (fake)"); process.exit(0); }
 const cwd = a[a.indexOf("--cd") + 1];
 const resume = a.includes("resume") ? a[a.indexOf("resume") + 1] : "";
 const prompt = await new Response(Bun.stdin.stream()).text();
 const out = (o) => console.log(JSON.stringify(o));
 out({ type: "thread.started", thread_id: resume || "thr_fake_1" });
-const done = (summary) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
+const done = (summary, evidence) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary, evidence }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
+if (/# Request .*QUOTA-TEST/.test(prompt) && !resume) { // Codex's words at a usage limit, two hours out, on its own request (not the channel lines the prompt quotes)
+  const at = new Date(Date.now() + 2 * 3600000), h = at.getHours();
+  const msg = "You\u2019ve hit your usage limit. Try again at " + (h % 12 || 12) + ":" + String(at.getMinutes()).padStart(2, "0") + (h < 12 ? " AM." : " PM.");
+  out({ type: "error", message: msg });
+  out({ type: "turn.failed", error: { message: msg } });
+  process.exit(1);
+}
+if (resume && prompt.includes("usage limit of your runtime; it has reset now")) done("额度恢复后接着做完了");
 if (prompt.includes("paused you between two steps")) done("插话后：" + (prompt.includes("改主意") ? "按新的要求做了" : "没收到新要求"));
+if (prompt.includes("ALIGN-TEST") && !resume && prompt.includes("# Align first")) { // aligns before it works
+  out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "align", summary: "先对一下", acceptance: ["对账一致", "10 分钟内跑完"], approach: "按天分批" }) + "\\n\`\`\`" } });
+  out({ type: "turn.completed" });
+  process.exit(0);
+}
+if (resume && (prompt.includes("按这个做") || prompt.includes("回滚"))) done("对齐后开工：" + (prompt.includes("5 分钟内跑完") ? "按改过的标准" : prompt.includes("回滚") ? "按回复改了标准" : "?"), [{ criterion: 1, how: "ran", proof: "diff 对账结果：0 行不同" }]);
 if (prompt.includes("STEER-TEST")) { // a long tool call, then it would go on for a long time
   out({ type: "item.started", item: { type: "command_execution", command: "sleep 1" } });
   await Bun.sleep(1500);
@@ -117,6 +133,71 @@ check("in the same run (no new turn), back for review", t.runs === 3 && t.state 
 
 // the creator accepts it
 check("accepted", (await api("POST", "/api/v1/tasks/T-0001/accept", zw.session)).json.state === "done");
+
+// align: a larger request with no criteria stops once for "what done means"; 按这个做 (edited) writes the criteria and
+// the same session goes on; a reply instead of the button goes on too, with no second alignment
+const alignAsk = async (text: string, id: string) => {
+  const m = await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text });
+  await api("POST", `/api/v1/tasks/${id}/confirm`, wl.session);
+  return m.json.id as string;
+};
+const get = async (id: string) => (await api("GET", `/api/v1/tasks/${id}`, zw.session)).json;
+await alignAsk("@acha ALIGN-TEST 重写对账", "T-0002");
+await until("it stops to align", async () => (await get("T-0002")).state === "needs_decision");
+let a = await get("T-0002");
+check("an align card with its criteria, waiting for the creator", a.decision?.kind === "align" && a.decision.acceptance.length === 2 && a.holder?.why === "align", JSON.stringify(a.decision));
+await api("POST", "/api/v1/tasks/T-0002/decide", zw.session, { acceptance: "对账一致\n5 分钟内跑完" });
+await until("按这个做: it goes on in the same session and delivers", async () => ["review", "done"].includes((await get("T-0002")).state)); // it changed nothing: done as an answer
+a = await get("T-0002");
+check("with the criteria as edited", a.acceptance === "对账一致\n5 分钟内跑完" && a.summary.startsWith("对齐后开工：按改过的标准"), a.summary);
+check("evidence for the first criterion; the second, never mentioned, is unstated", a.evidence?.length === 2 && a.evidence[0].how === "ran" && a.evidence[1].how === "unstated", JSON.stringify(a.evidence));
+const root3 = await alignAsk("@acha ALIGN-TEST 整理发布流程", "T-0003");
+await until("the second one stops to align", async () => (await get("T-0003")).state === "needs_decision");
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "再加一条：要有回滚步骤", thread_id: root3 });
+await until("a reply instead: it goes on and delivers, no second card", async () => ["review", "done"].includes((await get("T-0003")).state));
+a = await get("T-0003");
+check("it followed the reply", a.summary.startsWith("对齐后开工：按回复改了标准") && a.aligned === true, a.summary);
+
+// a usage limit: the task waits for the reset in its session, nobody is called, the machine says why; 现在就试 goes on
+await alignAsk("@acha QUOTA-TEST 导出订单", "T-0004");
+await until("it hits the limit and waits", async () => (await get("T-0004")).state === "waiting");
+let q = await get("T-0004");
+const back = q.wait?.expect - Date.now();
+check("for the time Codex named", q.wait?.how === "quota" && back > 115 * 60_000 && back < 121 * 60_000, JSON.stringify(q.wait));
+check("not a failure, nobody's inbox", q.failures === 0 && !(await api("GET", "/api/v1/inbox", zw.session)).json.tasks.some((x: any) => x.id === "T-0004"));
+const machines = async () => (await api("GET", "/api/v1/machines", wl.session)).json.machines as any[];
+check("the machine says codex waits for its quota", (await machines())[0].runtime_status?.codex?.state === "quota");
+await alignAsk("@acha 另一件小事 直接做", "T-0005");
+await Bun.sleep(1500);
+check("the runtime's other task waits too, untried", (await get("T-0005")).state === "queued" && (await get("T-0005")).runs === 0);
+check("现在就试", (await api("POST", "/api/v1/tasks/T-0004/retry", zw.session)).status === 200);
+await until("it goes on in the same session and delivers", async () => ["review", "done"].includes((await get("T-0004")).state));
+q = await get("T-0004");
+check("told the limit reset, in the session it had", q.summary.startsWith("额度恢复后接着做完了") && q.session === "thr_fake_1", q.summary);
+if (!await until("the runtime takes work again and the other task runs", async () => !(await machines())[0].runtime_status?.codex && (await get("T-0005")).runs === 1)) {
+  console.log(JSON.stringify((await machines())[0].runtime_status), JSON.stringify(await get("T-0005")).slice(0, 400));
+}
+
+await until("the other task delivered", async () => ["review", "done"].includes((await get("T-0005")).state)); // a run getting through lifts a limit
+// two computers: the laptop's codex waits for its limit again, so new work goes to the desktop, and stays there
+await alignAsk("@acha QUOTA-TEST 再导一次", "T-0006");
+await until("the laptop hits the limit again", async () => (await get("T-0006")).state === "waiting");
+const desk = await api("POST", "/api/v1/machines", wl.session, { name: "王磊的台式机" });
+const deskId = desk.json.machine.id;
+const listed = await api("PATCH", `/api/v1/agents/${agent.json.id}`, wl.session, { machines: [mach.json.machine.id, deskId] });
+check("the agent runs on both, the laptop first", listed.status === 200 && listed.json.machines?.[1] === deskId, JSON.stringify(listed.json));
+const ta2 = startTeamAgent({ cloud: { url: BASE }, server: { token: desk.json.token }, host: { max_parallel: 2 } }, {
+  stateFile: join(W, "state2.json"), log: () => {}, worker: { workRoot: join(W, "work2"), logDir: join(W, "logs2"), stepEveryMs: 0 },
+})!;
+await until("the desktop knows its agent", () => ta2.agents().some((a) => a.handle === "acha"));
+const onDesk = await alignAsk("@acha 换台电脑做 直接做", "T-0007");
+await until("the desktop takes the new task and delivers", async () => ["review", "done"].includes((await get("T-0007")).state));
+check("claimed by the desktop", (await get("T-0007")).claimed_by === deskId, (await get("T-0007")).claimed_by);
+check("the laptop's waiting task stays on the laptop", (await get("T-0006")).claimed_by === mach.json.machine.id && (await get("T-0006")).state === "waiting");
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "再看一眼", thread_id: onDesk });
+await until("a follow-up runs again", async () => (await get("T-0007")).runs === 2 && ["review", "done"].includes((await get("T-0007")).state));
+check("on the desktop, where its session is", (await get("T-0007")).claimed_by === deskId);
+ta2.stop();
 
 ta.stop();
 rmSync(W, { recursive: true, force: true });

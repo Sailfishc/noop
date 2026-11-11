@@ -11,7 +11,8 @@ import (
 // What an agent looks up for itself while it runs (as in Raft, where agents read and search the chat with a CLI):
 // the claim pushes the least (the request, its thread, a few recent messages), and the `teamagent` command on its
 // machine pulls the rest from here: a channel's or a thread's messages, a search, the tasks, one task. It sees what
-// its agent sees: the channels the agent is in. The credential is the run's read token, good only while that task
+// its agent sees, as far as the person who asked may see it: the channels the agent is in that the task's requester
+// can read (agentSees). Asked in a public channel, it cannot bring up what it read in someone's private one. The credential is the run's read token, good only while that task
 // runs; the agent never holds the machine's token.
 
 // readToken: the task's read token (made once, given with each claim).
@@ -47,7 +48,12 @@ func (h *Hub) reader(w http.ResponseWriter, q *request) (taskView, agentView, bo
 	return t, a, true
 }
 
-// agentChannel: a channel the agent is in, by id, slug or name (a leading # is fine); "" = the task's channel.
+// agentSees: the agent is in the channel, and the person its task is for can read it.
+func (h *Hub) agentSees(t taskView, a agentView, channelID string) bool {
+	return h.isMember(channelID, "agent", a.ID) && h.userCanRead(t.CreatedBy, channelID)
+}
+
+// agentChannel: a channel the agent sees (agentSees), by id, slug or name (a leading # is fine); "" = the task's channel.
 func (h *Hub) agentChannel(w http.ResponseWriter, t taskView, a agentView, ref string) (channelView, bool) {
 	ref = strings.TrimPrefix(strings.TrimSpace(ref), "#")
 	if ref == "" {
@@ -56,20 +62,22 @@ func (h *Hub) agentChannel(w http.ResponseWriter, t taskView, a agentView, ref s
 	c, ok := h.channel(ref)
 	if !ok {
 		var id string
-		if h.db.QueryRow("SELECT id FROM channels WHERE name = ?", ref).Scan(&id) == nil {
+		if h.db.QueryRow(`SELECT id FROM channels WHERE name = ? AND id IN (SELECT channel_id FROM channel_members
+			WHERE kind = 'agent' AND member_id = ?)`, ref, a.ID).Scan(&id) == nil {
 			c, ok = h.channel(id)
 		}
 	}
-	if !ok || !h.isMember(c.ID, "agent", a.ID) {
+	if !ok || !h.agentSees(t, a, c.ID) {
 		errJSON(w, 404, "没有这个频道，或者 @"+a.Handle+" 不在里面")
 		return c, false
 	}
 	return c, true
 }
 
-// agentChannels: the ids of the channels the agent is in.
-func (h *Hub) agentChannels(agentID string) []string {
-	rows, err := h.db.Query("SELECT channel_id FROM channel_members WHERE kind = 'agent' AND member_id = ?", agentID)
+// agentChannels: the ids of the channels the agent sees on this task (agentSees).
+func (h *Hub) agentChannels(t taskView, agentID string) []string {
+	cond, args := readableBy("channel_id", t.CreatedBy)
+	rows, err := h.db.Query("SELECT channel_id FROM channel_members WHERE kind = 'agent' AND member_id = ? AND "+cond, append([]any{agentID}, args...)...)
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +147,7 @@ func (h *Hub) v1AgentRead(w http.ResponseWriter, q *request) {
 	var ms []messageView
 	if th := q.query("thread"); th != "" {
 		root, ok := h.message(th)
-		if !ok || !h.isMember(root.ChannelID, "agent", a.ID) {
+		if !ok || !h.agentSees(t, a, root.ChannelID) {
 			errJSON(w, 404, "没有这个线程，或者 @"+a.Handle+" 不在它的频道里")
 			return
 		}
@@ -180,7 +188,7 @@ func (h *Hub) v1AgentSearch(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "要搜什么？")
 		return
 	}
-	chans := h.agentChannels(a.ID)
+	chans := h.agentChannels(t, a.ID)
 	if c := q.query("channel"); c != "" {
 		ch, ok := h.agentChannel(w, t, a, c)
 		if !ok {
@@ -211,7 +219,7 @@ func (h *Hub) v1AgentTasks(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
-	chans := h.agentChannels(a.ID)
+	chans := h.agentChannels(t, a.ID)
 	if c := q.query("channel"); c != "" {
 		ch, ok := h.agentChannel(w, t, a, c)
 		if !ok {
@@ -264,12 +272,12 @@ func (h *Hub) taskLine(x taskView) string {
 
 // v1AgentTask: `teamagent task T-0001`: one task in the agent's channels, with its acceptance criteria, summary and PR.
 func (h *Hub) v1AgentTask(w http.ResponseWriter, q *request) {
-	_, a, ok := h.reader(w, q)
+	t, a, ok := h.reader(w, q)
 	if !ok {
 		return
 	}
 	x, ok := h.task(q.r.PathValue("id"))
-	if !ok || !h.isMember(x.ChannelID, "agent", a.ID) {
+	if !ok || !h.agentSees(t, a, x.ChannelID) {
 		errJSON(w, 404, "没有这个任务，或者 @"+a.Handle+" 不在它的频道里")
 		return
 	}

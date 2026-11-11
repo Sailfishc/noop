@@ -63,13 +63,24 @@ type triggerView struct {
 	LastTask    *string `json:"last_task,omitempty"`   // the task it opened last
 	SkippedRun  int64   `json:"skipped_run"`           // skipped in a row since it last fired, so people see it is stuck
 	SkipReason  string  `json:"skip_reason,omitempty"` // busy (last_task is not over) | limit (the day's)
-	day         string
-	dayFires    int64
-	stuckNoted  string
+	Duty        string  `json:"duty"`                  // the duty it belongs to ("" none): one name, agent and channel are seen and paused together (teamduties.go)
+	Readonly    bool    `json:"readonly"`              // its runs are patrols: read-only, and silent when they find nothing
+	CheckCmd    string  `json:"check_cmd,omitempty"`   // schedule: run first on the agent's computer; no change, no firing (teamchecks.go)
+	// CheckWaits: its check command waits for the agent's owner to confirm it (new, or changed since)
+	CheckWaits     bool `json:"check_waits,omitempty"`
+	checkHash      string
+	checkConfirmed string
+	checkPending   int64
+	checkMachine   string
+	// Recent: how its last seven days went, by outcome (nochange, nothing, spoke, proposed, failed, skipped, running)
+	Recent     map[string]int64 `json:"recent,omitempty"`
+	day        string
+	dayFires   int64
+	stuckNoted string
 }
 
 const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created, " +
-	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason, stuck_noted"
+	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason, stuck_noted, duty, readonly, check_cmd, check_hash, check_confirmed, check_pending, check_machine"
 
 func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	if err != nil {
@@ -80,9 +91,10 @@ func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	for rows.Next() {
 		var t triggerView
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
-			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason, &t.stuckNoted); err != nil {
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason, &t.stuckNoted, &t.Duty, &t.Readonly, &t.CheckCmd, &t.checkHash, &t.checkConfirmed, &t.checkPending, &t.checkMachine); err != nil {
 			panic(err)
 		}
+		t.CheckWaits = t.CheckCmd != "" && t.CheckCmd != t.checkConfirmed
 		out = append(out, t)
 	}
 	return out
@@ -102,24 +114,26 @@ func (h *Hub) triggerChanged(t triggerView, removed bool) {
 		return
 	}
 	t, _ = h.trigger(t.ID)
+	t.Recent = h.triggerRecent(t.ID)
 	h.broadcastChannel(t.ChannelID, obj{"type": "trigger", "trigger": t})
 }
 
 // v1Triggers: a channel's triggers (?channel=…), for its members.
 func (h *Hub) v1Triggers(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.query("channel"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "没有这个频道")
 		return
 	}
-	if !h.isMember(c.ID, "user", q.who.userID) && !h.isAdmin(q.who.userID) {
+	if !h.memberOrAdmin(c.ID, q.who.userID) {
 		errJSON(w, 403, "先加入这个频道")
 		return
 	}
-	writeJSON(w, 200, obj{"triggers": scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE channel_id = ? ORDER BY created", c.ID))})
+	writeJSON(w, 200, obj{"triggers": h.withRecent(scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE channel_id = ? ORDER BY created", c.ID)))})
 }
 
-// v1TriggerCreate: {channel_id, agent (handle or id), kind, text, when + repeat (schedule), repo + branch (pr, push)}.
+// v1TriggerCreate: {channel_id, agent (handle or id), kind, text, when + repeat (schedule), repo + branch (pr, push),
+// duty (a name, optional), readonly (default true: a new trigger's runs only look and speak)}.
 func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	var b struct {
 		ChannelID string `json:"channel_id"`
@@ -131,9 +145,18 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		Repo      string `json:"repo"`
 		Branch    string `json:"branch"`
 		MaxPerDay *int64 `json:"max_per_day"`
+		Duty      string `json:"duty"`
+		Readonly  *bool  `json:"readonly"`
+		CheckCmd  string `json:"check_cmd"`
 	}
 	_ = q.json(&b)
 	me := q.who.userID
+	readonly := b.Readonly == nil || *b.Readonly
+	check, bad := checkCmdOf(b.Kind, b.CheckCmd)
+	if bad != "" {
+		errJSON(w, 400, bad)
+		return
+	}
 	perDay := int64(defaultMaxPerDay)
 	if b.MaxPerDay != nil {
 		if *b.MaxPerDay < 1 || *b.MaxPerDay > ceilingMaxPerDay {
@@ -143,7 +166,7 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		perDay = *b.MaxPerDay
 	}
 	c, ok := h.channel(b.ChannelID)
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "没有这个频道")
 		return
 	}
@@ -200,20 +223,42 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		}
 	}
 	var confirmed any
-	if me == a.OwnerID || !a.Confirm {
+	checkOK := ""
+	if me == a.OwnerID {
+		checkOK = check
+	}
+	if me == a.OwnerID || (!a.Confirm && check == "") { // a check command always waits for the owner (teamchecks.go)
 		confirmed = me
+	} else if c.Private && !h.isMember(c.ID, "user", a.OwnerID) {
+		// its owner would have to confirm it in the channel's triggers, which they cannot see
+		errJSON(w, 403, "@"+a.Handle+" 的主人不在这个私有频道里，没法确认触发器；请主人进来，或换一个 Agent")
+		return
 	}
 	id := newID("trg_")
-	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs(), perDay))
+	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day, duty, readonly, check_cmd, check_confirmed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs(), perDay, dutyName(b.Duty), boolInt(readonly), check, checkOK))
 	t, _ := h.trigger(id)
 	if confirmed == nil {
-		if o, ok := h.user(a.OwnerID); ok {
-			h.insertMessage(c.ID, nil, member{"user", me}, "@"+o.Handle+" 我给 @"+a.Handle+" 设了一个触发器（"+describeTrigger(t)+"："+text+"），请在频道的「成员 → 触发器」里确认一次")
-		}
+		h.askTriggerConfirm(t, a, me, false)
 	}
 	h.triggerChanged(t, false)
 	writeJSON(w, 200, t)
+}
+
+// askTriggerConfirm: the agent's owner is asked, in the channel, to confirm a trigger (its check command shown);
+// changed: only its check command is new.
+func (h *Hub) askTriggerConfirm(t triggerView, a agentView, by string, changed bool) {
+	o, ok := h.user(a.OwnerID)
+	if !ok {
+		return
+	}
+	text := "@" + o.Handle + " 我给 @" + a.Handle + " 设了一个触发器（" + describeTrigger(t) + "：" + t.Text + "）"
+	if changed {
+		text = "@" + o.Handle + " 我改了 @" + a.Handle + " 的触发器（" + describeTrigger(t) + "：" + t.Text + "）的检查命令，改成每次先在 @" + a.Handle + " 的电脑上跑：\n```\n" + t.CheckCmd + "\n```\n"
+	} else if t.CheckCmd != "" {
+		text += "，它每次先在 @" + a.Handle + " 的电脑上跑检查命令：\n```\n" + t.CheckCmd + "\n```\n"
+	}
+	h.insertMessage(t.ChannelID, nil, member{"user", by}, text+"请在频道的「成员 → 触发器」里确认一次")
 }
 
 // describeTrigger: "每个工作日 09:00" / "acme/pay 有新 PR" / "推送到 acme/pay main".
@@ -240,6 +285,10 @@ func (h *Hub) mayManageTrigger(w http.ResponseWriter, q *request) (triggerView, 
 	}
 	a, _ := h.agent(t.AgentID)
 	me := q.who.userID
+	if !h.userCanRead(me, t.ChannelID) { // a private channel's triggers: its members only
+		errJSON(w, 404, "not found")
+		return t, a, false
+	}
 	if me != t.CreatedBy && me != a.OwnerID && !h.isAdmin(me) {
 		errJSON(w, 403, "只有设置它的人、Agent 的主人或管理员能改")
 		return t, a, false
@@ -253,27 +302,56 @@ func (h *Hub) v1TriggerConfirm(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
-	if q.who.userID != a.OwnerID && !h.isAdmin(q.who.userID) {
+	if q.who.userID != a.OwnerID && (!h.isAdmin(q.who.userID) || t.CheckCmd != "") { // a command on their computer: the owner only (teamchecks.go)
 		errJSON(w, 403, "由 @"+a.Handle+" 的主人确认")
 		return
 	}
-	h.must(h.db.Exec("UPDATE triggers SET confirmed_by = ? WHERE id = ?", q.who.userID, t.ID))
+	// {check_cmd}: a check command is confirmed as the owner saw it; changed meanwhile, they look again
+	var b struct {
+		CheckCmd *string `json:"check_cmd"`
+	}
+	_ = q.json(&b)
+	if t.CheckCmd != "" && (b.CheckCmd == nil || *b.CheckCmd != t.CheckCmd) {
+		errJSON(w, 409, "检查命令刚被改了，请看过新的再确认")
+		return
+	}
+	h.must(h.db.Exec("UPDATE triggers SET confirmed_by = ?, check_confirmed = ? WHERE id = ?", q.who.userID, t.CheckCmd, t.ID))
 	h.triggerChanged(t, false)
 	t, _ = h.trigger(t.ID)
 	writeJSON(w, 200, t)
 }
 
-// v1TriggerPatch: {enabled?, max_per_day?}.
+// v1TriggerPatch: {enabled?, max_per_day?, duty?, readonly?}.
 func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 	t, _, ok := h.mayManageTrigger(w, q)
 	if !ok {
 		return
 	}
 	var b struct {
-		Enabled   *bool  `json:"enabled"`
-		MaxPerDay *int64 `json:"max_per_day"`
+		Enabled   *bool   `json:"enabled"`
+		MaxPerDay *int64  `json:"max_per_day"`
+		Duty      *string `json:"duty"`
+		Readonly  *bool   `json:"readonly"`
+		CheckCmd  *string `json:"check_cmd"`
 	}
 	_ = q.json(&b)
+	if b.CheckCmd != nil {
+		check, bad := checkCmdOf(t.Kind, *b.CheckCmd)
+		if bad != "" {
+			errJSON(w, 400, bad)
+			return
+		}
+		if check != t.CheckCmd {
+			a, _ := h.agent(t.AgentID)
+			if q.who.userID == a.OwnerID || check == "" { // its owner's own command, or none: nothing to confirm
+				h.must(h.db.Exec("UPDATE triggers SET check_cmd = ?, check_confirmed = ?, check_hash = '' WHERE id = ?", check, check, t.ID))
+			} else { // another command on the owner's computer: it waits for them again
+				h.must(h.db.Exec("UPDATE triggers SET check_cmd = ?, check_hash = '' WHERE id = ?", check, t.ID))
+				t, _ = h.trigger(t.ID)
+				h.askTriggerConfirm(t, a, q.who.userID, true)
+			}
+		}
+	}
 	if b.MaxPerDay != nil {
 		if *b.MaxPerDay < 1 || *b.MaxPerDay > ceilingMaxPerDay {
 			errJSON(w, 400, fmt.Sprintf("每天最多触发 1 到 %d 次", ceilingMaxPerDay))
@@ -283,6 +361,12 @@ func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 	}
 	if b.Enabled != nil {
 		h.must(h.db.Exec("UPDATE triggers SET enabled = ? WHERE id = ?", boolInt(*b.Enabled), t.ID))
+	}
+	if b.Duty != nil {
+		h.must(h.db.Exec("UPDATE triggers SET duty = ? WHERE id = ?", dutyName(*b.Duty), t.ID))
+	}
+	if b.Readonly != nil {
+		h.must(h.db.Exec("UPDATE triggers SET readonly = ? WHERE id = ?", boolInt(*b.Readonly), t.ID))
 	}
 	h.triggerChanged(t, false)
 	t, _ = h.trigger(t.ID)
@@ -295,6 +379,7 @@ func (h *Hub) v1TriggerDelete(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM triggers WHERE id = ?", t.ID))
+	h.must(h.db.Exec("DELETE FROM trigger_runs WHERE trigger_id = ?", t.ID))
 	h.triggerChanged(t, true)
 	writeJSON(w, 200, obj{"ok": true})
 }
@@ -329,27 +414,35 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	}
 	if reason != "" {
 		h.must(h.db.Exec("UPDATE triggers SET skipped = skipped + 1, skipped_run = skipped_run + 1, skip_reason = ? WHERE id = ?", reason, t.ID))
+		h.noteTriggerRun(t.ID, runSkipped, map[string]string{"busy": "上一个任务还没结束", "limit": "今天的次数到上限了"}[reason], "")
 		return "skipped"
 	}
 	text := "⚡ @" + a.Handle + " " + t.Text
 	if extra != "" {
 		text += "\n\n" + extra
 	}
-	m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
-	id := h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	var id string
+	if t.Readonly { // a patrol: its message goes up only when the agent first speaks; untracked until it delivers something
+		m := messageView{ID: newID("msg_"), ChannelID: c.ID, Author: member{"user", t.CreatedBy}, Text: text}
+		id = h.createTaskWith(m, m.ID, a.ID, false, false, taskOrigin{Trigger: t.ID, Confirmed: true, Readonly: true, Held: text})
+	} else {
+		m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
+		id = h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	}
+	h.noteTriggerRun(t.ID, runRunning, "", id)
 	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
 		h.nowMs(), id, today, fires+1, t.ID))
 	return "fired"
 }
 
 // noteStuckTrigger: a schedule skipped because its last task has sat queued for stuckAfter (no machine takes it: the
-// machine is offline, the agent paused) tells the person who set it up, once for that task, in the task's thread.
+// machine is offline, its runtime there out of quota or logged out) tells the person who set it up, once for that task, in the task's thread.
 func (h *Hub) noteStuckTrigger(t triggerView, last taskView, a agentView) {
 	if last.State != taskQueued || h.nowMs()-last.Updated < stuckAfter.Milliseconds() || t.stuckNoted == last.ID {
 		return
 	}
 	mins := (h.nowMs() - last.Updated) / 60_000
-	text := fmt.Sprintf("%s 触发器（%s）这次没有跑：上一次的 %s 已经排队 %d 分钟，还没有机器接手（机器离线，或 @%s 暂停了）。它跑起来以后，触发器会照常继续。",
+	text := fmt.Sprintf("%s 触发器（%s）这次没有跑：上一次的 %s 已经排队 %d 分钟，还没有机器接手（机器离线，或 @%s 用的运行时在那台机器上额度用完、没有登录）。它跑起来以后，触发器会照常继续。",
 		h.handle(t.CreatedBy), describeTrigger(t), last.ID, mins, a.Handle)
 	h.insertMessage(last.ChannelID, &last.ThreadID, member{"agent", a.ID}, text)
 	h.must(h.db.Exec("UPDATE triggers SET stuck_noted = ? WHERE id = ?", last.ID, t.ID))
@@ -361,7 +454,11 @@ func (h *Hub) fireTriggers() {
 	for _, t := range scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE kind = 'schedule' AND enabled = 1 AND due <= ?", now.UnixMilli())) {
 		next := nextDue(time.UnixMilli(*t.Due).In(now.Location()), t.Repeat, now)
 		h.must(h.db.Exec("UPDATE triggers SET due = ? WHERE id = ?", next.UnixMilli(), t.ID))
-		if t.ConfirmedBy != nil {
+		switch {
+		case !t.checkReady(): // not confirmed yet, or its check command waits for the owner again
+		case t.CheckCmd != "":
+			h.startCheck(t) // it fires, or not, when the check's output comes back (teamchecks.go)
+		default:
 			h.fire(t, "")
 		}
 		h.triggerChanged(t, false)

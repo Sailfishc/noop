@@ -1,19 +1,22 @@
 // Signing in: an invite link (name and @handle), a one-time login code or link from a signed-in device, or asking
 // to join (an admin approves; this device keeps the application's token and signs in with it then).
-import { cleanup, Image, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
+import { cleanup, effect, Image, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { LOGO } from "./logo";
-import { colors } from "../ui";
-import { call, errorOf, type Reply, loginServer, normalizeServer, parseInvite, type Session, TEAM_KEYS } from "./api";
-import { Btn, Choice, ErrorNote, Field, unreachable } from "./ui";
+import { Btn, canScan, Choice, colors, ErrorNote, Field, Modal, QrScanner, toast } from "../ui";
+import { call, errorOf, type Reply, normalizeServer, parseInvite, parseLoginLink, type Session, TEAM_KEYS } from "./api";
+import { unreachable } from "./ui";
 
 /** Sign in with email + the authenticator's 6 digits, or join with an invite (bind an authenticator first). */
-export function SignIn(props: { url: string; email: string; notice: string; onSession: (s: Session, email: string) => void }) {
+/** `link`: a login link the app was opened with (the QR a phone's camera scanned): it signs in with it at once. */
+export function SignIn(props: { url: string; email: string; notice: string; link?: { server: string; code: string } | null; onLinkUsed?: () => void; onSession: (s: Session, email: string) => void }) {
   const mode = signal<"login" | "invite" | "ask">("login");
   const url = signal(props.url);
   const code = signal("");
   const error = signal(props.notice);
   const busy = signal(false);
+  /** The camera is open, reading a login QR (canScan: iOS, Android, macOS). */
+  const scanning = signal(false);
   // invite
   const link = signal("");
   const invite = signal<{ server: string; code: string; email: string } | null>(null);
@@ -80,15 +83,42 @@ export function SignIn(props: { url: string; email: string; notice: string; onSe
     error.set(r.status === 0 ? unreachable(server, r.error) : errorOf(r, fallback));
 
   async function login() {
-    const server = loginServer(code()) || normalizeServer(url());
+    // a whole login link works in either box (people paste it into the server's)
+    const link = parseLoginLink(code()) ?? parseLoginLink(url());
+    const server = link?.server || normalizeServer(url());
+    const typed = link?.code ?? code().trim();
+    if (link) { url.set(link.server); code.set(link.code); }
     if (!server) return error.set(L("Enter the server address", "请填写服务器地址"));
-    if (!code().trim() || busy()) return;
+    if (!typed || busy()) return;
     busy.set(true);
     error.set("");
-    const r = await call(server, "POST", "/api/v1/login", "", { code: code().trim() });
+    const r = await call(server, "POST", "/api/v1/login", "", { code: typed });
     busy.set(false);
     if (!r.ok || typeof r.data.session !== "string") return fail(r, server, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
     props.onSession({ url: server, session: r.data.session }, String(r.data.user?.email ?? props.email));
+  }
+
+  // opened with a login link (a scanned QR, or the web page …/login/CODE): fill it in and sign in
+  effect(() => {
+    const l = props.link;
+    if (!l) return;
+    untracked(() => {
+      props.onLinkUsed?.();
+      mode.set("login");
+      url.set(l.server);
+      code.set(l.code);
+      void login();
+    });
+  });
+
+  /** A QR the camera read: a login link signs in with it; anything else is said and the camera keeps looking. */
+  function scanned(text: string) {
+    const l = parseLoginLink(text);
+    if (!l) return toast(L("That isn’t a Remi login code. Scan the one in Settings › Account on a signed-in device.", "这不是 Remi 的登录码，请扫已登录设备 设置 › 账号 里的二维码"), "info");
+    scanning.set(false);
+    url.set(l.server);
+    code.set(l.code);
+    void login();
   }
 
   async function openInvite() {
@@ -169,8 +199,13 @@ export function SignIn(props: { url: string; email: string; notice: string; onSe
               else={
                 <If when={mode() === "login"}>
                   <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="team-url" />
-                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("On a signed-in device: Settings › Account › Sign in on another device.", "在已登录的设备上：设置 › 账号 › 在其他设备登录。")} />
-                  <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim()} onPress={login} />
+                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("Get one on a signed-in device in Settings › Account.", "在已登录设备的 设置 › 账号 里生成")} />
+                  <View style={{ flexDirection: "row", gap: 8 }}>
+                    <If when={canScan()}>
+                      <Btn testID="team-scan" icon="scan" label={L("Scan", "扫码")} onPress={() => scanning.set(true)} />
+                    </If>
+                    <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
+                  </View>
                 </If>
               }
             >
@@ -195,6 +230,11 @@ export function SignIn(props: { url: string; email: string; notice: string; onSe
             </If>
             <ErrorNote text={error()} testID="signin-error" />
           </View>
+          <Modal open={scanning()} onClose={() => scanning.set(false)} title={L("Scan to sign in", "扫码登录")} width={480} testID="scan">
+            <If when={scanning()}>
+              <QrScanner testID="scan-camera" onScan={scanned} />
+            </If>
+          </Modal>
         </View>
       </View>
     </Scroll>

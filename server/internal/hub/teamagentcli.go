@@ -76,12 +76,18 @@ func (h *Hub) whoLine(kind, id string) string {
 	return fmt.Sprintf("%s (@%s), agent on %s%s%s", ag.Name, ag.Handle, ag.Runtime, owner, desc)
 }
 
-// v1AgentWho: `remi who @HANDLE`: who a person or an agent is, and (an agent) what it works on now.
+// v1AgentWho: `remi who @HANDLE`: who a person or an agent is, and (an agent) what it works on now. `remi who` alone:
+// the agents this task's agent may turn to (teamreach.go).
 func (h *Hub) v1AgentWho(w http.ResponseWriter, q *request) {
-	if _, _, ok := h.reader(w, q); !ok {
+	t, _, ok := h.reader(w, q)
+	if !ok {
 		return
 	}
 	handle := strings.TrimPrefix(strings.TrimSpace(q.query("handle")), "@")
+	if handle == "" {
+		h.v1AgentWhoList(w, t)
+		return
+	}
 	var id string
 	if h.db.QueryRow("SELECT id FROM users WHERE handle = ? AND disabled = 0", handle).Scan(&id) == nil {
 		writeText(w, h.whoLine("user", id)+"\n")
@@ -93,16 +99,17 @@ func (h *Hub) v1AgentWho(w http.ResponseWriter, q *request) {
 	}
 	var b strings.Builder
 	b.WriteString(h.whoLine("agent", id) + "\n")
+	cond, args := readableBy("channel_id", t.CreatedBy) // not what it does in channels the asker cannot see
 	for _, x := range scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE agent_id = ?
-		AND state NOT IN ('done', 'closed') ORDER BY updated DESC LIMIT 10`, id)) {
+		AND state NOT IN ('done', 'closed') AND `+cond+` ORDER BY updated DESC LIMIT 10`, append([]any{id}, args...)...)) {
 		b.WriteString("  " + h.taskLine(x) + "\n")
 	}
 	writeText(w, b.String())
 }
 
-// v1AgentFile: `remi file /media/…`: a file attached to a message in one of the agent's channels.
+// v1AgentFile: `remi file /media/…`: a file attached to a message in one of the channels the agent sees (agentSees).
 func (h *Hub) v1AgentFile(w http.ResponseWriter, q *request) {
-	_, a, ok := h.reader(w, q)
+	t, a, ok := h.reader(w, q)
 	if !ok {
 		return
 	}
@@ -112,8 +119,9 @@ func (h *Hub) v1AgentFile(w http.ResponseWriter, q *request) {
 		return
 	}
 	like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(`"`+p+`"`) + "%"
+	cond, args := readableBy("m.channel_id", t.CreatedBy)
 	n := h.count(`SELECT COUNT(*) FROM messages m JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.kind = 'agent'
-		AND cm.member_id = ? WHERE m.attachments LIKE ? ESCAPE '\'`, a.ID, like)
+		AND cm.member_id = ? WHERE m.attachments LIKE ? ESCAPE '\' AND `+cond, append([]any{a.ID, like}, args...)...)
 	if n == 0 {
 		errJSON(w, 404, "没有这个附件，或者它不在 @"+a.Handle+" 的频道里")
 		return

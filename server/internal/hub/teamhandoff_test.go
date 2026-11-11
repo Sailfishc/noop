@@ -26,29 +26,74 @@ func (e *taskEnv) zwAgent(handle string) string {
 	return id
 }
 
+// agentOf: an agent of the person with this session, on the machine, in the channel when in.
+func (e *taskEnv) agentOf(session, machine, handle, dispatch string, confirm, in bool) string {
+	r := e.do("POST", "/api/v1/agents", session, map[string]any{"handle": handle, "machine_id": machine, "dispatch": dispatch, "confirm": confirm})
+	if r.status != 200 {
+		e.t.Fatalf("agent: %d %s", r.status, r.raw)
+	}
+	id := r.body["id"].(string)
+	if in {
+		e.do("POST", "/api/v1/channels/"+e.cid+"/members", session, map[string]any{"kind": "agent", "id": id})
+	}
+	return id
+}
+
+// lastReply: the text of the thread's last reply.
+func (e *taskEnv) lastReply(root string) string {
+	rs := e.do("GET", "/api/v1/messages/"+root+"/thread", e.zw.session, nil).body["replies"].([]any)
+	if len(rs) == 0 {
+		return ""
+	}
+	return rs[len(rs)-1].(map[string]any)["text"].(string)
+}
+
 func TestHandoffAndHolder(t *testing.T) {
 	e := newTaskEnv(t, "channel", false)
-	bei, san := e.zwAgent("bei"), e.zwAgent("san")
+	bei, san := e.zwAgent("bei"), e.zwAgent("san") // 张伟's own (they ask him first, but not for his own work)
 	e.zwAgent("si")
+	wu := e.agentOf(e.wl.session, e.mid, "wu", "channel", true, true) // 王磊's, his yes first
 	id, tok, m := e.claimed("@acha 修一下退款")
 	root := m["id"].(string)
 	holder := func(id string) map[string]any { h, _ := e.task(id)["holder"].(map[string]any); return h }
 	check(t, "while it works the agent has the ball", holder(id)["kind"] == "agent" && holder(id)["why"] == "work")
 
-	r := e.do("POST", "/api/v1/agent/handoff", tok, map[string]any{"text": "@bei 改完后写发布说明"})
-	check(t, "an agent proposes handing on to another agent", r.status == 200, r)
-	tk := e.task(id)
-	x := tk["handoffs"].([]any)[0].(map[string]any)
-	check(t, "a card waits for a person; the requester has the ball", x["state"] == "proposed" && holder(id)["id"] == e.zw.id && holder(id)["why"] == "handoff_card")
-	check(t, "on the requester's list", len(e.inbox(e.zw.session)) == 1)
+	// to 王磊's agent, which takes work from 张伟 only with 王磊's yes: a card only 王磊 clicks
+	r := e.do("POST", "/api/v1/agent/handoff", tok, map[string]any{"text": "@wu 改完后写发布说明"})
+	check(t, "an agent proposes handing on to an agent that needs its owner's yes", r.status == 200 && strings.Contains(string(r.raw), "proposed"), r)
+	x := e.task(id)["handoffs"].([]any)[0].(map[string]any)
+	check(t, "a card waits for the other agent's owner; he has the ball", x["state"] == "proposed" && holder(id)["id"] == e.wl.id && holder(id)["why"] == "handoff_card")
+	check(t, "on his list, not the requester's", len(e.inbox(e.wl.session)) == 1 && len(e.inbox(e.zw.session)) == 0)
 	check(t, "a bystander can't click it", e.do("POST", "/api/v1/tasks/"+id+"/handoff", e.ll.session, map[string]any{"id": x["id"], "accept": true}).status == 403)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/handoff", e.zw.session, map[string]any{"id": x["id"], "accept": true})
-	check(t, "the requester accepts it", r.status == 200, r)
+	check(t, "nor the requester: it is 王磊's yes", r.status == 403, r)
+	check(t, "nothing for @wu yet", e.h.count("SELECT COUNT(*) FROM tasks_v1 WHERE agent_id = ?", wu) == 0)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/handoff", e.wl.session, map[string]any{"id": x["id"], "accept": true})
+	check(t, "its owner accepts it", r.status == 200, r)
 	x = r.body["handoffs"].([]any)[0].(map[string]any)
+	wt := e.task(x["task"].(string))
+	check(t, "@wu has a task in the thread, in the requester's name, at once (his click was the yes)", wt["agent_id"] == wu &&
+		wt["thread_id"] == root && wt["created_by"] == e.zw.id && wt["state"] == "queued", resp{raw: []byte(fmt.Sprint(wt))})
+	calls := e.task(id)["calls"].([]any)
+	check(t, "the card is a call on 王磊", len(calls) == 1 && calls[0].(map[string]any)["kind"] == "handoff_card" && calls[0].(map[string]any)["who"] == e.wl.id, resp{raw: []byte(fmt.Sprint(calls))})
+
+	// to the requester's own agent: as if he @-ed it himself: no card
+	r = e.do("POST", "/api/v1/agent/handoff", tok, map[string]any{"text": "@bei 补一下退款的单测"})
+	check(t, "handed to the requester's own agent at once", r.status == 200 && strings.Contains(string(r.raw), "no card"), r)
+	x = e.task(id)["handoffs"].([]any)[1].(map[string]any)
 	nt := e.task(x["task"].(string))
 	md := nt["mandate"].(map[string]any)
-	check(t, "the other agent has a task in the same thread, in the requester's name, via the first agent", nt["agent_id"] == bei &&
-		nt["thread_id"] == root && nt["created_by"] == e.zw.id && md["via"].([]any)[0] == e.aid && md["parent"] == id && nt["state"] == "queued", resp{raw: []byte(nt["id"].(string))})
+	check(t, "no card: it has a task in the same thread, in the requester's name, via the first agent", x["state"] == "accepted" && x["auto"] == true &&
+		nt["agent_id"] == bei && nt["thread_id"] == root && nt["created_by"] == e.zw.id && md["via"].([]any)[0] == e.aid && md["parent"] == id &&
+		nt["state"] == "queued", resp{raw: []byte(fmt.Sprint(nt))})
+	check(t, "and no call on anyone", len(e.task(id)["calls"].([]any)) == 1)
+	check(t, "the thread still says so", strings.Contains(e.lastReply(root), "@bei 补一下退款的单测"))
+	check(t, "not twice in one thread", e.do("POST", "/api/v1/agent/handoff", tok, map[string]any{"text": "@bei 再补一点"}).status == 409)
+
+	// an agent not in the channel, which the requester may not bring in: refused
+	e.agentOf(e.wl.session, e.mid, "liu2", "channel", false, false)
+	r = e.do("POST", "/api/v1/agent/handoff", tok, map[string]any{"text": "@liu2 看一下"})
+	check(t, "not one the requester could not bring in", r.status == 403 && strings.Contains(string(r.raw), "不在这个频道"), r)
 
 	// the second agent runs, and tries to hand back: no cycles
 	nr := e.do("POST", "/api/v1/tasks/"+nt["id"].(string)+"/claim", e.otherToken, nil)
@@ -57,8 +102,7 @@ func TestHandoffAndHolder(t *testing.T) {
 	r = e.do("POST", "/api/v1/agent/handoff", btok, map[string]any{"text": "@san 帮忙测一下"})
 	check(t, "on to a third", r.status == 200, r)
 	ho := e.task(nt["id"].(string))["handoffs"].([]any)[0].(map[string]any)
-	r = e.do("POST", "/api/v1/tasks/"+nt["id"].(string)+"/handoff", e.zw.session, map[string]any{"id": ho["id"], "accept": true})
-	third := e.task(r.body["handoffs"].([]any)[0].(map[string]any)["task"].(string))
+	third := e.task(ho["task"].(string))
 	check(t, "the third knows the chain", len(third["mandate"].(map[string]any)["via"].([]any)) == 2 && third["agent_id"] == san)
 	tr := e.do("POST", "/api/v1/tasks/"+third["id"].(string)+"/claim", e.otherToken, nil)
 	r = e.do("POST", "/api/v1/agent/handoff", tr.body["read_token"].(string), map[string]any{"text": "@si 再交给你"})
@@ -70,8 +114,12 @@ func TestHandoffAndHolder(t *testing.T) {
 	check(t, "the ball is hers", holder(id)["id"] == e.ll.id && holder(id)["why"] == "handoff")
 	check(t, "on her list", len(e.inbox(e.ll.session)) == 1)
 	e.post(e.ll.session, "点过了，没问题", root)
-	tk = e.task(id)
+	tk := e.task(id)
 	check(t, "her reply reaches the agent and the ball goes back", tk["news"] == true && holder(id)["kind"] == "agent")
+	calls = tk["calls"].([]any)
+	c0, c1 := calls[0].(map[string]any), calls[1].(map[string]any)
+	check(t, "the card and the handoff to her are calls on people (deciding)", len(calls) == 2 && c0["kind"] == "handoff_card" && c0["who"] == e.wl.id &&
+		c1["kind"] == "handoff" && c1["who"] == e.ll.id && c1["class"] == "decide")
 
 	check(t, "an agent can't @ another agent through a reminder", e.do("POST", "/api/v1/agent/remind", tok,
 		bytes.NewBufferString("2h @bei 写发布说明"), "content-type", "text/plain").status == 400)
@@ -170,7 +218,8 @@ func TestTriggers(t *testing.T) {
 	stuckNotes := func(task string) int {
 		th := e.task(task)["thread_id"].(string)
 		n := 0
-		for _, m := range e.do("GET", "/api/v1/messages/"+th+"/thread", e.zw.session, nil).body["replies"].([]any) {
+		replies, _ := e.do("GET", "/api/v1/messages/"+th+"/thread", e.zw.session, nil).body["replies"].([]any) // a quiet patrol's: none yet
+		for _, m := range replies {
 			if txt := m.(map[string]any)["text"].(string); strings.Contains(txt, "没有机器接手") && strings.Contains(txt, "@zhangwei") {
 				n++
 			}

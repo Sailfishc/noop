@@ -59,6 +59,8 @@ func (h *Hub) v1MachinePatch(w http.ResponseWriter, q *request) {
 		Name           *string `json:"name"`
 		Team           *bool   `json:"team"`
 		SyncTeamConfig *bool   `json:"sync_team_config"`
+		// CheckpointFiles: keep general tasks' directories on the server (teamcheckpoint.go); its owner or an admin
+		CheckpointFiles *bool `json:"checkpoint_files"`
 	}
 	_ = q.json(&b)
 	if b.Team != nil && !h.isAdmin(q.who.userID) {
@@ -73,6 +75,9 @@ func (h *Hub) v1MachinePatch(w http.ResponseWriter, q *request) {
 			return
 		}
 		h.must(h.db.Exec("UPDATE machines SET sync_team_config = ? WHERE id = ?", boolInt(*b.SyncTeamConfig), id))
+	}
+	if b.CheckpointFiles != nil {
+		h.must(h.db.Exec("UPDATE machines SET checkpoint_files = ? WHERE id = ?", boolInt(*b.CheckpointFiles), id))
 	}
 	if b.Name != nil {
 		name := trimmed(*b.Name, 60)

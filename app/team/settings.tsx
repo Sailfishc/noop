@@ -6,18 +6,18 @@
 // Admins also look after the team machines and the agents on them (teamowned.go), beside their own.
 // An agent = one machine + one runtime on it + who can hand it work + its memory. A machine hosts many agents; the
 // repository follows the task (a channel's default, or one named in the message), not the agent.
-import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
-import { Dialog, Input } from "nsh/base";
+import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, IconBtn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
 import {
-  installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
-  type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
+  blockedReason, installCommand, isLoopback, loginQr, machineNow, machinesOf, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn, runtimeTrouble,
+  type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
+import { momentsLine, outsideLine, statsLine } from "./calls";
 import { SignupSection } from "./signups";
-import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, growing, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
+import { agentState, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
 
@@ -250,6 +250,16 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
           </View>
         </View>
       </Panel>
+      <Panel title={L("My preferences", "我的偏好")} testID="preferences"
+        note={L("Agents read this on every task you ask for, after the channel's and the team's conventions (those win where they differ). It goes to the computer the agent runs on: no passwords or keys.",
+          "你发起的每个任务，Agent 开工时都会读到这段话；排在频道约定和团队约定之后，冲突时以约定为准。它会随任务发到 Agent 所在的电脑上，别写密码和密钥。")}>
+        <MyPreferences team={t} />
+      </Panel>
+      <Panel title={L("When proposals come", "提案什么时候给我")} testID="digest"
+        note={L("What agents propose for you (from triggers you set up or tasks you asked for) waits and comes on one card at these times, in the server's time zone. Urgent ones come at once, at most 2 per agent a day, held during quiet hours.",
+          "Agent 提给你的提案（来自你设的触发器或你发起的任务）先攒着，到这些时间合成一张卡片给你，按服务器的时区。紧急的立刻给，每个 Agent 每天最多 2 条，安静时段里先压着。")}>
+        <DigestSetting team={t} />
+      </Panel>
       <LoginCodePanel team={t} />
       <DevicesPanel team={t} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 4 }}>
@@ -267,10 +277,93 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
   );
 }
 
-/** Sign in on another device: a one-time code to type (or the link to open) there, valid 15 minutes. */
+/** 「提案什么时候给我」: once or twice each workday, or once a week, and the quiet hours. */
+function DigestSetting(props: { team: Team }) {
+  const t = props.team;
+  const d = () => t.digest() ?? { every: "daily" as const, at: "09:30", at2: "14:00", quiet: "22:00-08:00" };
+  const every = signal(untracked(d).every);
+  const at = signal(untracked(d).at);
+  const at2 = signal(untracked(d).at2);
+  const quiet = signal(untracked(d).quiet);
+  effect(() => { const x = d(); every.set(x.every); at.set(x.at); at2.set(x.at2); quiet.set(x.quiet); });
+  const busy = signal(false);
+  const saved = signal(false);
+  const error = signal("");
+  const changed = () => every() !== d().every || at().trim() !== d().at || at2().trim() !== d().at2 || quiet().trim() !== d().quiet;
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.saveDigest({ every: every(), at: at().trim(), at2: at2().trim(), quiet: quiet().trim() });
+    busy.set(false);
+    saved.set(r.ok);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <View style={{ gap: 8 }}>
+      <Choice testID="digest-every" value={every()} onChange={(v) => { every.set(v); saved.set(false); }}
+        options={[{ value: "daily", label: L("Each workday", "每个工作日一次") }, { value: "twice", label: L("Twice each workday", "每个工作日两次") }, { value: "weekly", label: L("Mondays", "每周一次（周一）") }]} />
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <Field grow label={L("At", "时间")} value={at()} onChange={(v) => { at.set(v); saved.set(false); }} placeholder="9:30" testID="digest-at" />
+        <If when={every() === "twice"}>
+          <Field grow label={L("And at", "第二次")} value={at2()} onChange={(v) => { at2.set(v); saved.set(false); }} placeholder="14:00" testID="digest-at2" />
+        </If>
+        <Field grow label={L("Quiet hours", "安静时段")} value={quiet()} onChange={(v) => { quiet.set(v); saved.set(false); }} placeholder="22:00-08:00" testID="digest-quiet" />
+      </View>
+      <ErrorNote text={error()} testID="digest-error" />
+      <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+        <Btn small testID="digest-save" label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+    </View>
+  );
+}
+
+/** 「我的偏好」: one's own words for the agents, on the tasks one asks for. */
+function MyPreferences(props: { team: Team }) {
+  const t = props.team;
+  const value = signal(untracked(t.preferences));
+  const busy = signal(false);
+  const saved = signal(false);
+  const error = signal("");
+  const changed = () => value().trim() !== t.preferences();
+  // loaded after the page opened, and nothing typed yet: show it
+  effect(() => {
+    const p = t.preferences();
+    if (!untracked(changed) || !untracked(value).trim()) value.set(p);
+  });
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.savePreferences(value().trim());
+    busy.set(false);
+    saved.set(r.ok);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <TextArea
+        testID="preferences-input"
+        value={value()}
+        min={76}
+        max={260}
+        placeholder={L("e.g. Reply in Chinese. In a PR description, say what changed before why. Ask me when unsure.", "比如：回复用中文；PR 描述先写改了什么再写为什么；不确定的地方先问我。")}
+        onChange={(v) => { value.set(v); saved.set(false); }}
+      />
+      <ErrorNote text={error()} testID="preferences-error" />
+      <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+        <Btn small testID="preferences-save" label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Sign in on another device: a one-time code, valid 15 minutes. A phone scans its QR with the camera (it opens the
+ * app, which signs in); a computer types the server address and the code, shown apart so nobody types the link
+ * into the server box. The web link (…/login/CODE) only sits behind 复制链接.
+ */
 function LoginCodePanel(props: { team: Team }) {
   const t = props.team;
-  const code = signal<{ code: string; link: string } | null>(null);
+  const code = signal<{ code: string; server: string; link: string } | null>(null);
   const error = signal("");
   const busy = signal(false);
   async function make() {
@@ -280,25 +373,36 @@ function LoginCodePanel(props: { team: Team }) {
     const r = await t.loginCode();
     busy.set(false);
     if (!r.ok) return error.set(failed(r));
-    code.set({ code: r.data.code, link: `${t.shareUrl()}${r.data.path}` });
+    code.set({ code: r.data.code, server: t.shareUrl(), link: `${t.shareUrl()}${r.data.path}` });
   }
   return (
-    <Panel title={L("Sign in on another device", "在其他设备登录")}>
-      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-        {L("On the other device choose Sign in, then enter this code with the server address, or paste the link.", "在另一台设备上选「登录」，填服务器地址和这个登录码，或者直接粘贴链接。")}
-      </Text>
+    <Panel title={L("Sign in on another device", "在其他设备登录")} testID="login-code-panel"
+      note={L("Phone: scan the code with the camera and open it in Remi. Computer: on Remi's sign-in screen, enter the server address and the login code. A code works once, for 15 minutes.",
+        "手机：用相机扫二维码，在 Remi 里打开就登录了。电脑：在 Remi 登录页分别填服务器地址和登录码。登录码 15 分钟内有效，只能用一次。")}>
       <If when={code()}>
         {(c) => (
-          <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-            <Text testID="login-code" style={{ fontSize: 24, letterSpacing: 3, color: colors.text, ...mono }}>{c().code}</Text>
-            <Text testID="login-code-url" style={{ fontSize: 12.5, color: colors.muted, ...mono }}>{c().link}</Text>
-            <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次。")}</Text>
-            <LoopbackNote team={t} testID="login-code-loopback" />
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <Btn small icon="copy" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
+          <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 16 }}>
+            <QrCode testID="login-code-qr" value={loginQr(c().server, c().code)} size={148} label={L("Login QR code", "登录二维码")} />
+            <View style={{ flex: 1, minWidth: 200, gap: 12 }}>
+              <View style={{ gap: 4 }}>
+                <Label text={L("Login code", "登录码")} />
+                <Txt testID="login-code" variant="display" mono>{c().code}</Txt>
+              </View>
+              <View style={{ gap: 4 }}>
+                <Label text={L("Server address", "服务器地址")} />
+                <Txt testID="login-code-server" mono>{c().server}</Txt>
+              </View>
+              <Txt variant="caption" tone="faint">{L("Valid for 15 minutes, works once.", "15 分钟内有效，只能用一次")}</Txt>
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                <Btn small icon="copy" testID="login-code-copy" label={L("Copy code", "复制登录码")} onPress={() => void Clipboard.writeText(c().code)} />
+                <Btn small icon="copy" testID="login-code-copy-link" label={L("Copy link", "复制链接")} onPress={() => void Clipboard.writeText(c().link)} />
+              </View>
             </View>
           </View>
         )}
+      </If>
+      <If when={code()}>
+        <LoopbackNote team={t} testID="login-code-loopback" />
       </If>
       <ErrorNote text={error()} testID="login-code-error" />
       <View style={{ flexDirection: "row" }}>
@@ -421,7 +525,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
   const split = () => windowSize().width >= 1080;
   /** Phones: the list, or one agent's page (never both). */
   const narrow = () => windowSize().width < WIDE;
-  const machineOf = (a: Agent) => t.machines().find((m) => m.id === a.machine_id);
+  const machineOf = (a: Agent) => machineNow(t, a); // where its new work goes
   const list = () => (
     <View style={{ gap: 4, ...(split() ? { width: 280 } : {}) }}>
       <Each of={mine()} key={(a) => a.id}>
@@ -447,7 +551,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
                   <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                  <StateDot tone={st().tone} />
+                  <Dot tone={st().tone} />
                   <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
                 </View>
               </View>
@@ -489,6 +593,61 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
   );
 }
 
+/** An agent's computers: the ones it may run on, ticked and in order (a new task goes to the first that can take it),
+ * each with whether it can take work now. A team machine's agent has that one machine. */
+function AgentMachines(props: { team: Team; agent: Agent; onChange: (ids: string[]) => void }) {
+  const t = props.team;
+  const a = () => props.agent;
+  const picked = () => machinesOf(t, a()).map((m) => m.id);
+  const onTeam = () => !!machinesOf(t, a())[0]?.team;
+  /** The rows: its computers in order, then the owner's others (a team agent: just its machine, or pick one). */
+  const rows = () => {
+    const own = myMachinesOf(t).filter((m) => (onTeam() ? !!m.team : !m.team && m.owner_id === a().owner_id));
+    return [...machinesOf(t, a()), ...own.filter((m) => !picked().includes(m.id))];
+  };
+  const set = (ids: string[]) => props.onChange(ids);
+  const toggle = (id: string, on: boolean) => {
+    if (onTeam()) return set(on ? [id] : []);
+    set(on ? [...picked(), id] : picked().filter((x) => x !== id));
+  };
+  const move = (id: string, by: number) => {
+    const ids = [...picked()];
+    const i = ids.indexOf(id);
+    const j = i + by;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    set(ids);
+  };
+  return (
+    <View style={{ gap: 2 }}>
+      <Each of={rows()} key={(m) => m.id}>
+        {(m) => {
+          const at = () => picked().indexOf(m().id);
+          const why = () => blockedReason(a(), m(), lang() !== "zh");
+          const id = () => `agent-${a().handle}-machine-${m().id}`;
+          return (
+            <View testID={id()} style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 40 }}>
+              <Toggle testID={`${id()}-on`} label={m().name} value={at() >= 0} onChange={(on) => toggle(m().id, on)} />
+              <Dot on={m().online} />
+              <Txt weight="medium" lines={1}>{m().name}</Txt>
+              <View style={{ flex: 1 }}>
+                <If when={at() >= 0}>
+                  <Noted testID={`${id()}-status`} note={why() || undefined}
+                    label={<Txt variant="caption" lines={1} tone={why() ? "warn" : "up"}>{at() === 0 && picked().length > 1 ? L("first · ", "第一 · ") : ""}{why() ? L("can’t take work now", "暂时接不了活") : L("can take work", "能接活")}</Txt>} />
+                </If>
+              </View>
+              <If when={at() >= 0 && picked().length > 1}>
+                <IconBtn size="sm" icon="arrow-up" testID={`${id()}-up`} label={L("Try it earlier", "往前排")} disabled={at() === 0} onPress={() => move(m().id, -1)} />
+                <IconBtn size="sm" icon="arrow-down" testID={`${id()}-down`} label={L("Try it later", "往后排")} disabled={at() === picked().length - 1} onPress={() => move(m().id, 1)} />
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+    </View>
+  );
+}
+
 function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }) {
   const t = props.team;
   const a = () => props.agent;
@@ -497,7 +656,6 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
   const owner = () => t.users().find((u) => u.id === a().owner_id);
   const st = () => agentState(t, a());
   const error = signal("");
-  const moving = signal(false);
   const removing = signal(false);
   async function patch(p: Partial<Agent>) {
     error.set("");
@@ -522,7 +680,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
             <RuntimeBadge runtime={a().runtime} />
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <StateDot tone={st().tone} />
+            <Dot tone={st().tone} />
             <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.muted }}>{st().label}</Text>
           </View>
         </View>
@@ -540,19 +698,11 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         </Panel>
       </If>
 
-      <Panel title={L("Runs on", "运行在")} testID={`agent-runs-${a().handle}`} note={L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Dot on={!!machine()?.online} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }}>{machine()?.name ?? L("No machine", "没有机器")}</Text>
-            <Text style={{ fontSize: 12.5, color: colors.muted }}>{machine() ? [machine()!.online ? L("online", "在线") : L("offline", "离线"), machine()!.os, L(`${machine()!.max_sessions} at a time`, `同时 ${machine()!.max_sessions} 个`)].filter(Boolean).join(" · ") : L("Pick one of your machines.", "选一台你的机器。")}</Text>
-          </View>
-          <If when={myMachines().length} else={<Btn small label={L("Add a machine", "添加机器")} onPress={props.onMachines} />}>
-            <Btn small testID={`agent-move-${a().handle}`} label={L("Change machine", "换机器")} onPress={() => moving.update((v) => !v)} />
-          </If>
-        </View>
-        <If when={moving()}>
-          <Choice testID={`agent-machine-${a().handle}`} options={myMachines().map((m) => ({ value: m.id, label: m.name }))} value={a().machine_id ?? ""} onChange={async (v) => { if (await patch({ machine_id: v })) moving.set(false); }} />
+      <Panel title={L("Runs on", "运行在")} testID={`agent-runs-${a().handle}`} note={machine()?.team
+        ? L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")
+        : L("Tick the computers it may run on and put them in order: a new task goes to the first one that can take it (online, its runtime logged in and not out of quota, a free slot). A task stays on the computer that took it.", "勾上它可以用的电脑并排好先后：新任务交给第一台能接活的（在线、Runtime 已登录且没在等额度、还有空位）。任务被哪台接走就留在那台。")}>
+        <If when={myMachines().length} else={<View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}><Txt grow tone="muted">{L("No machine", "没有机器")}</Txt><Btn small label={L("Add a machine", "添加机器")} onPress={props.onMachines} /></View>}>
+          <AgentMachines team={t} agent={a()} onChange={(ids) => void patch({ machines: ids })} />
         </If>
         <Label text="Runtime" />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -574,7 +724,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <AgentRepo team={t} agent={a()} />
       </Panel>
 
-      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}>
+      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads all of this at the start of every task, whoever asked and wherever, and rewrites it when it learns something that will matter later. Only you (for a team agent, the admins too) can see it here, but the agent may repeat it in its replies: keep private matters out.", "它每次开工前都会读全部内容（不管是谁、在哪个频道派的活），学到以后用得上的东西时会自己改写。这里只有你能看到（团队 Agent 还有管理员），但 Agent 干活时可能在回复里说出来，私事别让它记。")}>
         <AgentMemory team={t} agent={a()} />
       </Panel>
 
@@ -625,7 +775,6 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   const busy = signal(false);
   const saved = signal(false);
   const changed = () => value().trim() !== (props.agent.memory ?? "");
-  const grow = growing({ min: 96, max: 260, pad: 22, line: 20 });
   // the agent rewrote it while it was open here and nothing was typed: show the new text
   effect(() => {
     const m = props.agent.memory ?? "";
@@ -639,15 +788,13 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Input
+      <TextArea
         testID={`agent-memory-${props.agent.handle}`}
         value={value()}
-        multiline
+        min={96}
+        max={260}
         placeholder={L("- The pay service is Go 1.24; run make test\n- Ask Wang Lei before touching the orders table", "- 支付服务是 Go 1.24，测试用 make test\n- 动 orders 表前先问王磊")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onChange={(v) => { value.set(v); saved.set(false); }}
       />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
@@ -708,7 +855,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     machine.set(props.machine ?? (ms.find((m) => m.online) ?? ms[0])?.id ?? "");
   });
   const picked = () => mine().find((m) => m.id === machine());
-  const agentsOn = (m: Machine) => t.agents().filter((a) => a.machine_id === m.id);
+  const agentsOn = (m: Machine) => t.agents().filter((a) => a.machine_id === m.id || !!a.machines?.includes(m.id));
   /** Can this runtime be picked on the picked machine, and what to say about it. */
   const rt = (name: string): { ok: boolean; note: string; warn: boolean } => {
     const r = RUNTIMES.find((x) => x.name === name)!;
@@ -745,79 +892,69 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     </View>
   );
   return (
-    <Dialog
+    <Modal
       testID="new-agent"
       open={props.open}
-      animation="fade"
-      onOpenChange={({ open }) => !open && props.onClose()}
-      backdropClass="bg-scrim"
-      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 16, pointerEvents: "box-none" }}
-    >
-      <View style={{ width: "100%", maxWidth: 640, maxHeight: windowSize().height - 32, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.background, overflow: "hidden" }}>
-        <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: 20, paddingRight: 10, height: 54, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-          <Text style={{ flex: 1, fontSize: 17, fontWeight: "600", color: colors.text }}>{L("New agent", "新建 Agent")}</Text>
-          <View role="button" testID="new-agent-close" accessibilityLabel={L("Close", "关闭")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-            <Icon name="close" size={16} tint={colors.muted} />
-          </View>
-        </View>
-        <Scroll style={{ flexShrink: 1 }} contentStyle={{ padding: 20, gap: 14 }}>
-          {step("1", L("Who it is", "它是谁"))}
-          <View style={{ flexDirection: "row", gap: 10 }}>
-            <View style={{ flex: 1 }}><Field label={L("Name", "名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Tester", "阿测")} testID="agent-name" autoFocus /></View>
-            <View style={{ flex: 1 }}><Field label={L("@handle", "@名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="ace" testID="agent-handle" /></View>
-          </View>
-          <Field label={L("What it does (optional)", "职责（可选）")} value={desc()} onChange={(v) => desc.set(v)} placeholder={L("e.g. writes tests for the payments backend", "比如：给支付后端补测试")} testID="agent-desc" hint={L("Shown when people @ it, so they pick the right one.", "大家 @ 的时候能看到，好选对 Agent。")} />
-
-          {step("2", L("Where it runs", "运行在哪里"))}
-          <If when={mine().length} else={
-            <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.warn }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
-          }>
-            <Label text={L("Machine", "机器")} />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              <Each of={mine()} key={(m) => m.id}>
-                {(m) => (
-                  <PickCard
-                    testID={`new-agent-machine-${m().id}`}
-                    title={m().name}
-                    note={[m().online ? L("online", "在线") : L("offline", "离线"), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`), agentsOn(m()).length ? L(`${agentsOn(m()).length} agents`, `已有 ${agentsOn(m()).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}
-                    picked={machine() === m().id}
-                    right={<Dot on={m().online} />}
-                    onPress={() => machine.set(m().id)}
-                  />
-                )}
-              </Each>
-            </View>
-            <Label text={L(`Runtime on ${picked()?.name ?? "it"}`, `${picked()?.name ?? "这台机器"} 上的 Runtime`)} />
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-              <Each of={[...RUNTIMES]}>
-                {(r) => (
-                  <PickCard
-                    testID={`new-agent-runtime-${r().name}`}
-                    title={r().label}
-                    note={rt(r().name).note}
-                    picked={runtime() === r().name}
-                    disabled={!rt(r().name).ok}
-                    onPress={() => { if (runtime() !== r().name) { runtime.set(r().name); model.set(""); } }}
-                  />
-                )}
-              </Each>
-            </View>
-            <Label text={L("Model", "模型")} />
-            <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
-          </If>
-          <Field label={L("Fallback checkout on that machine (optional)", "本机默认仓库（可选，一般不用填）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
-
-          {step("3", L("Who can use it", "谁能用它"))}
-          <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
-          <ErrorNote text={error()} testID="agent-create-error" />
-        </Scroll>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 20, paddingVertical: 12, borderTopWidth: 1, borderTopColor: colors.border }}>
+      onClose={props.onClose}
+      title={L("New agent", "新建 Agent")}
+      footer={
+        <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="new-agent-summary" style={{ flex: 1, fontSize: 13.5, color: colors.muted, numberOfLines: 1 }}>{summary()}</Text>
           <Btn kind="ghost" label={L("Cancel", "取消")} onPress={props.onClose} />
           <Btn testID="agent-create" kind="primary" label={L("Create agent", "创建 Agent")} busy={busy()} disabled={!cleanHandle() || !rt(runtime()).ok} onPress={create} />
         </View>
+      }
+    >
+      {step("1", L("Who it is", "它是谁"))}
+      <View style={{ flexDirection: "row", gap: 10 }}>
+        <View style={{ flex: 1 }}><Field label={L("Name", "名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Tester", "阿测")} testID="agent-name" autoFocus /></View>
+        <View style={{ flex: 1 }}><Field label={L("@handle", "@名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="ace" testID="agent-handle" /></View>
       </View>
-    </Dialog>
+      <Field label={L("What it does (optional)", "职责（可选）")} value={desc()} onChange={(v) => desc.set(v)} placeholder={L("e.g. writes tests for the payments backend", "比如：给支付后端补测试")} testID="agent-desc" hint={L("Shown when people @ it, so they pick the right one.", "大家 @ 的时候能看到，好选对 Agent。")} />
+
+      {step("2", L("Where it runs", "运行在哪里"))}
+      <If when={mine().length} else={
+        <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.warn }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
+      }>
+        <Label text={L("Machine", "机器")} />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Each of={mine()} key={(m) => m.id}>
+            {(m) => (
+              <PickCard
+                testID={`new-agent-machine-${m().id}`}
+                title={m().name}
+                note={[m().online ? L("online", "在线") : L("offline", "离线"), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`), agentsOn(m()).length ? L(`${agentsOn(m()).length} agents`, `已有 ${agentsOn(m()).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}
+                picked={machine() === m().id}
+                right={<Dot on={m().online} />}
+                onPress={() => machine.set(m().id)}
+              />
+            )}
+          </Each>
+        </View>
+        <Label text={L(`Runtime on ${picked()?.name ?? "it"}`, `${picked()?.name ?? "这台机器"} 上的 Runtime`)} />
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          <Each of={[...RUNTIMES]}>
+            {(r) => (
+              <PickCard
+                testID={`new-agent-runtime-${r().name}`}
+                title={r().label}
+                note={rt(r().name).note}
+                picked={runtime() === r().name}
+                disabled={!rt(r().name).ok}
+                onPress={() => { if (runtime() !== r().name) { runtime.set(r().name); model.set(""); } }}
+              />
+            )}
+          </Each>
+        </View>
+        <Label text={L("Model", "模型")} />
+        <ModelPicker testID="new-agent-model" models={modelsOn(picked(), runtime())} value={model()} onChange={(v) => model.set(v)} />
+      </If>
+      <Field label={L("Fallback checkout on that machine (optional)", "本机默认仓库（可选，一般不用填）")} value={repo()} onChange={(v) => repo.set(v)} placeholder="~/work/orders" testID="agent-repo-new" />
+
+      {step("3", L("Who can use it", "谁能用它"))}
+      <DispatchControls testID="new-agent-dispatch" dispatch={dispatch()} confirm={confirm()} onDispatch={(v) => dispatch.set(v)} onConfirm={(v) => confirm.set(v)} />
+      <ErrorNote text={error()} testID="agent-create-error" />
+    </Modal>
   );
 }
 
@@ -949,7 +1086,7 @@ function InstallCommand(props: { team: Team; name: string; code: string }) {
 function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => void; onAgent: (handle: string) => void }) {
   const t = props.team;
   const m = () => props.machine;
-  const agents = () => t.agents().filter((a) => a.machine_id === m().id);
+  const agents = () => t.agents().filter((a) => a.machine_id === m().id || !!a.machines?.includes(m().id));
   const confirming = signal(false);
   const join = signal("");
   const joinError = signal("");
@@ -1032,12 +1169,18 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <If when={reported()} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("Start the daemon on that computer; it reports its runtimes when it connects.", "在那台电脑上启动守护进程，连上后会上报它的 Runtime。")}</Text>}>
         <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
           <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Login", "登录"), 0.8, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1.4, colors.muted)}
+            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Status", "状态"), 1.6, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1, colors.muted)}
           </View>
           <Each of={[...RUNTIMES]}>
             {(r) => {
               const info = () => runtimeOn(m(), r().name);
               const users = () => agents().filter((a) => a.runtime === r().name);
+              const trouble = () => m().runtime_status?.[r().name];
+              // can it take work: its trouble (a quota it waits for, credit, login), else how it is logged in
+              const status = (): [string, TextTone] => !info()?.installed ? ["—", "faint"]
+                : trouble() ? [runtimeTrouble(trouble()!, lang() !== "zh"), trouble()!.state === "quota" ? "warn" : "danger"]
+                : info()!.logged_in === false ? [L("not logged in", "未登录"), "warn"]
+                : info()!.logged_in === true ? [L("✓ logged in", "✓ 已登录"), "default"] : [L("unknown", "未知"), "default"];
               return (
                 <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
                   <View style={{ flex: 1.2, flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1045,8 +1188,11 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
                     <If when={!r().ready}><Tag label={L("phase 2", "第二阶段")} /></If>
                   </View>
                   {cell(info()?.installed ? (info()!.version ? `v${info()!.version}` : L("installed", "已安装")) : L("not installed", "未安装"), 0.8, info()?.installed ? colors.text : colors.faint)}
-                  {cell(!info()?.installed ? "—" : info()!.logged_in === true ? L("✓ logged in", "✓ 已登录") : info()!.logged_in === false ? L("not logged in", "未登录") : L("unknown", "未知"), 0.8, info()?.logged_in === false ? colors.warn : colors.text)}
-                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1.4, colors.muted)}
+                  <View style={{ flex: 1.6 }}>
+                    <Noted testID={`machine-${m().id}-runtime-${r().name}-status`} note={trouble()?.note}
+                      label={<Txt lines={1} grow tone={status()[1]}>{status()[0]}</Txt>} />
+                  </View>
+                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1, colors.muted)}
                 </View>
               );
             }}
@@ -1094,6 +1240,14 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
         </View>
       </If>
 
+      <If when={t.me()?.id === m().owner_id || isAdmin(t)}>
+        <Noted testID={`machine-${m().id}-checkpoint`} label={<Txt>{L("Keep general tasks’ files on the server", "把不用 Git 的任务的工作目录存到服务端")}</Txt>}
+          note={L("A task with no repository keeps its directory on the server as its checkpoint (at most 100 MB; not in/, dependency folders or files that look like keys), so another computer could go on with it. Those files then leave this computer: whoever runs the server can read them in its database. Repository tasks always keep theirs on a wip branch of the repository. On by default for your own computer, off for a team machine.",
+            "没有仓库的任务把工作目录存到服务端作为检查点（最多 100 MB，不含 in/、依赖目录和看起来是密钥的文件），换一台电脑能接着做。这些文件因此会离开这台电脑：管理服务端的人能在它的数据库里读到。用仓库的任务始终存在仓库的 wip 分支上。个人电脑默认开，团队机器默认关。")}
+          right={<Toggle testID={`machine-${m().id}-checkpoint-files`} value={!!m().checkpoint_files} label={L("Keep general tasks’ files on the server", "把不用 Git 的任务的工作目录存到服务端")}
+            onChange={async (v) => { const r = await t.patchMachine(m().id, { checkpoint_files: v }); if (!r.ok) joinError.set(failed(r)); }} />} />
+      </If>
+
       <Label text={L("Agents on this machine", "跑在这台机器上的 Agent")} />
       <Each of={agents()} key={(a) => a.id}>
         {(a) => {
@@ -1104,7 +1258,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
               <Text style={{ fontSize: 14, color: colors.text }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
               <RuntimeBadge runtime={a().runtime} />
               <View style={{ flex: 1 }} />
-              <StateDot tone={st().tone} />
+              <Dot tone={st().tone} />
               <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
             </View>
           );
@@ -1389,8 +1543,11 @@ export function span(ms: number): string {
   return L(`${+(h / 24).toFixed(1)} d`, `${+(h / 24).toFixed(1)} 天`);
 }
 
+const NO_CALLS: CallStats = { calls: 0, tasks: 0, outside: 0, by_class: {}, by_kind: {} };
+
 const REPLY_KINDS: { key: keyof Metrics["reply_by"]; label: () => string }[] = [
   { key: "confirm", label: () => L("Start it", "确认开工") },
+  { key: "align", label: () => L("Align", "对齐") },
   { key: "decide", label: () => L("Decide", "做决定") },
   { key: "accept", label: () => L("Accept", "验收") },
   { key: "unblock", label: () => L("Unblock", "解除阻塞") },
@@ -1410,22 +1567,30 @@ function MetricsSection(props: { team: Team }) {
   });
   const waits = (s: DurationStats | undefined) =>
     !s || s.count === 0 ? L("none answered yet", "还没有") : L(`median ${span(s.median)} · 90% within ${span(s.p90)} · ${s.count} times`, `中位 ${span(s.median)} · 90% 在 ${span(s.p90)}内 · 共 ${s.count} 次`);
-  const row = (label: string, value: string, testID?: string) => (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 3 }}>
-      <Text style={{ width: 120, fontSize: 13.5, color: colors.muted }}>{label}</Text>
-      <Text testID={testID} style={{ flex: 1, fontSize: 13.5, color: colors.text }}>{value}</Text>
+  const row = (label: string, value: string, testID?: string, tone?: TextTone) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 }}>
+      <View style={{ width: 120 }}><Txt tone="muted">{label}</Txt></View>
+      <Txt grow tone={tone} testID={testID}>{value}</Txt>
     </View>
   );
   return (
     <>
       <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-        {L("Three numbers to watch while the team tries working with agents. Everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这三个数。全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
+        {L("Numbers to watch while the team tries working with agents. Apart from your own count, everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这几组数。除了你自己的次数，全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
       </Text>
       <Choice testID="metrics-days" options={[{ value: "7", label: L("Last 7 days", "最近 7 天") }, { value: "30", label: L("Last 30 days", "最近 30 天") }]} value={days()} onChange={(v) => days.set(v)} />
       <ErrorNote text={error()} />
       <If when={data()} else={<If when={!error()}><Spinner size={16} tint={colors.muted} /></If>}>
         {(d) => (
           <>
+            <Panel testID="metrics-mine" title={L("How often I was needed", "找我的次数")}
+              note={L("Only you see this part; tasks in your private channels count too. Agents should need you only to align, to decide and to accept; the rest is what to bring down.", "这一段只有你自己看得到，包含你私有频道里的任务。Agent 只该在对齐、拍板、验收时找你，其余的是要压下去的数字。")}>
+              {row(L("Asked me", "一共"), statsLine(d().mine ?? NO_CALLS), "metrics-mine-calls")}
+              <If when={d().mine?.calls}>
+                {row(L("By moment", "按时刻"), momentsLine(d().mine!.by_class) || L("none", "没有"), "metrics-mine-moments")}
+              </If>
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().mine ?? NO_CALLS), "metrics-mine-outside", d().mine?.outside ? "warn" : undefined)}
+            </Panel>
             <Panel title={L("How fast people answer", "人回复「待你处理」要多久")}>
               {row(L("All", "全部"), waits(d().reply), "metrics-reply")}
               <Each of={REPLY_KINDS.filter((k) => d().reply_by[k.key])} key={(k) => k.key}>
@@ -1443,6 +1608,11 @@ function MetricsSection(props: { team: Team }) {
               {row(L("Cancelled", "被取消"), String(d().cancelled))}
               {row(L("Asked again", "其中重新派了"), String(d().redone), "metrics-redone")}
               <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Asked again: the same person asked in the same channel within a day.", "重新派：同一个人在同一个频道一天内又派了一次。")}</Text>
+            </Panel>
+            <Panel testID="metrics-team-calls" title={L("How often people were needed", "全队被找的次数")}
+              note={L("Everyone's, without private channels and without names.", "全队合计，不含私有频道，不分人。")}>
+              {row(L("All", "全部"), statsLine(d().team ?? NO_CALLS), "metrics-team-calls-all")}
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().team ?? NO_CALLS), "metrics-team-outside", d().team?.outside ? "warn" : undefined)}
             </Panel>
             <Panel title={L("Which agents people go to", "大家找哪个 Agent")}>
               <Each of={d().agents.filter((a) => a.tasks > 0)} key={(a) => a.agent_id}>

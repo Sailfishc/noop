@@ -20,11 +20,20 @@ export type Machine = {
   team?: boolean;
   /** A person's own machine that takes the team config repository too (its owner turned it on; team machines always do). */
   sync_team_config?: boolean;
+  /** General tasks' directories are kept on the server as their checkpoints (on for a person's own computer, off for a
+   * team machine, unless set). */
+  checkpoint_files?: boolean;
   /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
   skills?: string[] | null; mcp?: string[] | null;
   /** How the team config repository last synced there. */
   team_config?: TeamConfigStatus | null;
+  /** Its runtimes that take no work now, by name: a usage limit that resets, or something a person must fix. */
+  runtime_status?: Record<string, RuntimeStatus> | null;
 };
+/** Why a runtime on a machine takes no work now. quota: waits for its limit to reset (until: when the runtime said;
+ * next_at: when a task tries again); blocked: out of credit (billing), logged out (auth), missing (not_installed). */
+export type RuntimeStatus = { state: "quota" | "blocked"; reason: "quota" | "billing" | "auth" | "not_installed"; text: string; note?: string;
+  until?: number; next_at?: number; since: number; at: number; stale?: boolean };
 /** The team config repository (AGENTS.md, skills/, mcp.json) on one machine: which commit, when, what went wrong. */
 export type TeamConfigStatus = { repo: string; commit: string; synced: number; error?: string; instructions: boolean };
 /** A repository, named by its remote the same way on every machine: host/owner/name. */
@@ -43,22 +52,41 @@ export type Device = { id: string; ua: string; created: number; last_seen: numbe
 /** Who may hand an agent work: only its owner, members of a channel it is in, or anyone in the team. */
 export type Dispatch = "owner" | "channel" | "team";
 export type Autonomy = "cautious" | "assist" | "auto";
-export type Agent = { id: string; owner_id: string; machine_id: string | null; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
+export type Agent = { id: string; owner_id: string;
+  /** The first of `machines`. */
+  machine_id: string | null;
+  /** The computers it runs on, in its owner's order: a new task goes to the first that can take it. */
+  machines?: string[]; handle: string; name: string; description: string; runtime: string; dispatch: Dispatch;
   /** Work from people other than the owner waits for the owner's yes. */
   confirm: boolean; autonomy: Autonomy; model?: string; repo?: string; archived?: boolean;
   /** Its memory.md: what it keeps between tasks. */
-  memory?: string;
-  /** Why it takes no work now (its runtime logged out, out of credit); its tasks wait in the queue. */
-  paused?: { reason: string; text: string; at: number } | null };
+  memory?: string };
 export type TaskState = "pending" | "queued" | "running" | "waiting" | "needs_decision" | "review" | "blocked" | "failed" | "done" | "closed";
-export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string };
+export type Decision = { question: string; options: string[] | null; recommendation?: string; answer?: string; answered_by?: string;
+  /** align: before it starts, what "done" will mean: the criteria it proposes, what it leaves alone, how, and whether it
+   * had already changed files. */
+  kind?: "align"; acceptance?: string[]; not_doing?: string[]; approach?: string; dirty?: boolean };
 export type PR = { provider: "github" | "gitlab"; url: string; number: number; title?: string; state: "open" | "merged" | "closed"; checks: "pending" | "success" | "failure" | "none"; repo?: string };
 /** On whose word the agent works and how far it may go, fixed when the task was made. */
 export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: boolean; autonomy: Autonomy; branch: string; runtime: string; model?: string;
   /** People in the channel who took it over from the one who asked; by is the last. */
   takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
   /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
-  via?: string[] | null; parent?: string; trigger?: string };
+  via?: string[] | null; parent?: string; trigger?: string;
+  /** The parent's agent delegated it (remi delegate): its result goes back to that agent; redos: times it sent it back. */
+  delegated?: boolean; redos?: number };
+/** since: when the computer it ran on was last seen; proposed: the agent's owner decides; waited: they wait for it;
+ * moved; withdrawn: the computer came back, or it no longer needs to run. */
+export type Move = { from: string; to: string; at: number; since: number; state: "proposed" | "waited" | "moved" | "withdrawn"; decided_by?: string };
+/** from is held back on machine (reason: quota | billing | auth | not_installed) since since; proposed: the agent's
+ * owner decides; kept: they wait for it; switched: this task runs with to; withdrawn: from came back, or it went on. */
+export type Engine = { from: string; to: string; machine: string; at: number; since: number; reason: string; state: "proposed" | "kept" | "switched" | "withdrawn"; decided_by?: string };
+/** A task's latest checkpoint: when it was saved, when it was last found still current, and why one was not. */
+export type Checkpoint = {
+  at: number; checked: number; machine: string;
+  repos: { repo: string; branch: string; commit?: string; head?: string; error?: string }[];
+  files?: { id: string; size: number } | null; error?: string;
+};
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -69,6 +97,9 @@ export type Task = {
   runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
   /** Where it runs: host/owner/name; "" = a general task (or the agent's own repo path). */
   repo?: string;
+  /** A task in a private channel this person is not in (they own its agent and still confirm it): no title, words,
+   * channel or outputs, only who asked, which agent and where it stands. */
+  redacted?: boolean;
   /** What came out of it: its PR first, files from out/, results kept by outside services. */
   outputs?: Output[] | null;
   /** What it waits for while "waiting" (and why it woke, until its next run). */
@@ -82,6 +113,20 @@ export type Task = {
   titled?: boolean;
   /** Its status as it changed, oldest first (older servers send none): shown between the thread's replies. */
   events?: TaskEvent[] | null;
+  /** Per acceptance criterion, how the agent checked it at its last delivery ("unstated": it said nothing). */
+  evidence?: Evidence[] | null;
+  /** Its agent aligned with people once (an align card): it may not again. */
+  aligned?: boolean;
+  /** Where it got to, kept off its computer (a wip branch, or its directory on the server); null: none yet. */
+  checkpoint?: Checkpoint | null;
+  /** Times it moved to another computer; a run claimed before the last move is refused. */
+  moves?: number;
+  /** The 换电脑继续 card: its computer has been gone a while and another of the agent's can take it. */
+  move?: Move | null;
+  /** The runtime this task runs with when its agent's owner switched it ("" or absent: the agent's, with its model). */
+  runtime?: string;
+  /** The 换引擎继续 card: its runtime is held back on its computer and another runtime there can take it. */
+  engine?: Engine | null;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
@@ -92,19 +137,47 @@ export type Task = {
   submits?: { what: string; at: number }[] | null;
   /** Who has the ball now (null once it ended). */
   holder?: Holder | null;
+  /** Each time it needed a person, and why, oldest first (older servers send none). */
+  calls?: Call[] | null;
+  /** The tasks its agent delegated (remi delegate), oldest first. */
+  delegates?: Delegate[] | null;
 };
+/** A task its agent delegated, as the parent lists it. */
+export type Delegate = { task: string; agent: string; state: string; status: string; redos?: number };
+/** The task needed this person for this: kind confirm | decide | ask | handoff | handoff_card | align | accept | unblock
+ * | retry; class: the moment it counts as (calls.go). */
+export type Call = { at: number; who: string; kind: string; class: CallClass };
+export type Evidence = { criterion: number; how: "ran" | "saw" | "not_verified" | "unstated"; proof?: string; file?: string };
+export type CallClass = "align" | "decide" | "accept" | "outside";
 /** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
-export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
+export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string;
+  /** No card: the asker may use that agent without its owner's yes, so it went at once. */
+  auto?: boolean;
+  /** delegate: a part of the work that comes back to this task (remi delegate); else the work moves on. */
+  kind?: "delegate" };
 /** Whose move it is, and why. */
-export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" | "move" | "engine" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
   /** at most this many firings a day; skipped: firings skipped (its last task still open, or the day's limit) */
   max_per_day?: number; skipped?: number; last_task?: string;
   /** skipped in a row since it last fired, and why the last one was: busy (last_task is not over) | limit (the day's) */
-  skipped_run?: number; skip_reason?: "busy" | "limit" };
+  skipped_run?: number; skip_reason?: "busy" | "limit";
+  /** the duty it belongs to ("" none): triggers of one name, agent and channel are seen and paused together */
+  duty?: string;
+  /** its runs are patrols: read-only, silent when they find nothing */
+  readonly?: boolean;
+  /** how its last seven days went, by outcome */
+  recent?: Partial<Record<TriggerOutcome, number>>;
+  /** schedule: a command run first on the agent's computer; same output as last time, no firing */
+  check_cmd?: string;
+  /** its check command waits for the agent's owner to confirm it (new, or changed since) */
+  check_waits?: boolean };
+/** What came of one firing (a duty's history). running: its task has not said yet. */
+export type TriggerOutcome = "running" | "nochange" | "nothing" | "spoke" | "proposed" | "failed" | "skipped";
+export type TriggerRun = { trigger_id: string; at: number; outcome: TriggerOutcome; note?: string; task_id?: string };
 /** The questions to people still waiting for an answer. */
 export const openQuestions = (t: Task) => (t.asked ?? []).filter((q) => !q.answered);
 /** Handoff cards still waiting for a person. */
@@ -113,9 +186,11 @@ export const openHandoffs = (t: Task) => (t.handoffs ?? []).filter((x) => x.stat
 export type TaskEvent = { at: number; status: "todo" | "in_progress" | "in_review" | "done" | "closed"; needs?: string };
 /** A task waiting for an outside result: the platform only wakes the agent (a callback, a check, a time). */
 export type Wait = {
-  how: "callback" | "poll" | "timer" | "answer"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
+  how: "callback" | "poll" | "timer" | "answer" | "quota" | "delegates"; every?: number; expect?: number; deadline: number; since: number; next_at?: number;
   checked?: number; checks?: number; errors?: number; note?: string; what?: string;
   wake?: { reason: string; note?: string; at: number } | null;
+  /** quota: the runtime's limit on that machine; stale: it waited a day and its people were told. */
+  machine?: string; runtime?: string; stale?: boolean;
 };
 /** How many times a task may hand work to an outside service before a person decides. */
 export const EXTERNAL_TRIES = 3;
@@ -136,6 +211,11 @@ export const installCommand = (server: string, code: string) => {
 export const isLoopback = (server: string) => /^https?:\/\/(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(server);
 
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
+  /** Only its members see it, or that it exists (admins too); its creator may make it public, never the other way. */
+  private?: boolean;
+  created_by?: string;
+  /** A private chat between its creator and this agent: two members, fixed; its name is the agent's handle. */
+  dm_agent?: string;
   /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
   repo?: string;
   /** How the channel works, written by its members; every agent working here reads it. */
@@ -183,11 +263,34 @@ export function parseInvite(text: string, server: string): { server: string; cod
   return null;
 }
 
-/** A login link as pasted ("http://hub:8080/login/ABCD-EFGH"): its server; the code is sent as typed. */
-export function loginServer(text: string): string {
-  const m = text.trim().match(/^(.*?)\/login\/[A-Za-z0-9-]+\/?$/);
-  return m ? normalizeServer(m[1]) : "";
+/** A login code's QR link, for the phone's camera to open the app with: remi://login?server=…&code=…. */
+export const loginQr = (server: string, code: string) =>
+  `remi://login?server=${encodeURIComponent(server)}&code=${encodeURIComponent(code)}`;
+
+/**
+ * A login link, as scanned, opened or pasted: the QR's "remi://login?server=…&code=…" or the web
+ * "http://hub:8080/login/ABCD-EFGH". Its server and code; null when it is neither. A link can come from anyone,
+ * so only an http(s) server and a code's characters are taken.
+ */
+export function parseLoginLink(text: string): { server: string; code: string } | null {
+  const t = text.trim();
+  const qr = t.match(/^remi:\/\/login\/?\?(.*)$/i);
+  if (qr) {
+    const q: Record<string, string> = {};
+    for (const part of qr[1].split("&")) {
+      const [k, v = ""] = part.split("=");
+      try { q[k] = decodeURIComponent(v.replace(/\+/g, " ")); } catch { /* not ours */ }
+    }
+    const server = normalizeServer(q.server ?? "");
+    const code = (q.code ?? "").trim();
+    return /^https?:\/\/[^\s/?#]+/i.test(server) && /^[A-Za-z0-9-]{4,32}$/.test(code) ? { server, code } : null;
+  }
+  const m = t.match(/^(https?:\/\/[^\s?#]*?)\/login\/([A-Za-z0-9-]{4,32})\/?$/i);
+  return m ? { server: normalizeServer(m[1]), code: m[2] } : null;
 }
+
+/** A login link as pasted ("http://hub:8080/login/ABCD-EFGH", or the QR's): its server, else "". */
+export const loginServer = (text: string) => parseLoginLink(text)?.server ?? "";
 
 /** Whether a failed call was refused because the app may not use plain http here (App Transport Security on
  * Apple platforms, cleartext rules on Android) rather than because the server is unreachable. */
@@ -245,9 +348,45 @@ export function runtimeOn(m: Machine | undefined, name: string): RuntimeInfo | u
   return m.runtime_info?.find((r) => r.name === name) ?? (m.runtimes.includes(name) ? { name, version: "", installed: true, logged_in: null } : undefined);
 }
 
-/** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing or logged out. */
-const PAUSE_EN: Record<string, string> = { auth: "its runtime is not logged in", billing: "its runtime is out of credit", not_installed: "its runtime is not installed" };
+/** "14:30", or "11/12 14:30" on another day, in this device's zone. */
+export const clock = (ms: number) => {
+  const d = new Date(ms), now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return d.toDateString() === now.toDateString() ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+};
 
+const TROUBLE_EN: Record<string, string> = { billing: "needs you: out of credit", auth: "not logged in", not_installed: "not installed" };
+
+/** A runtime's trouble on a machine in a few words: "等额度恢复，预计 14:30", "需要你处理：余额不足…". */
+export function runtimeTrouble(s: RuntimeStatus, en = false): string {
+  if (s.state === "quota") {
+    if (s.until) return en ? `waiting for its quota, back about ${clock(s.until)}` : `等额度恢复，预计 ${clock(s.until)}`;
+    return en ? `waiting for its quota, tries again ${clock(s.next_at ?? 0)}` : `等额度恢复，时间未知，${clock(s.next_at ?? 0)} 再试`;
+  }
+  return en ? TROUBLE_EN[s.reason] ?? s.text : s.text;
+}
+
+/** An agent's computers, in its owner's order. */
+export function machinesOf(t: { machines: () => Machine[] }, a: Agent): Machine[] {
+  const ids = a.machines?.length ? a.machines : a.machine_id ? [a.machine_id] : [];
+  return ids.map((id) => t.machines().find((m) => m.id === id)).filter((m): m is Machine => !!m);
+}
+/** The computer an agent's new work goes to now (as the server picks): the first that can take it; else the first
+ * online one, else the first. */
+export function machineNow(t: { machines: () => Machine[] }, a: Agent): Machine | undefined {
+  const ms = machinesOf(t, a);
+  return ms.find((m) => !blockedReason(a, m, false)) ?? ms.find((m) => m.online) ?? ms[0];
+}
+/** The computer a task runs on: the one that took it, else the one its agent's new work goes to. */
+/** The runtime a task runs with: its own when its agent's owner switched it, else the agent's. */
+export const taskRuntime = (task: Task, a: Agent | undefined) => task.runtime || a?.runtime || "codex";
+
+export function taskMachine(t: { machines: () => Machine[] }, task: Task, a: Agent | undefined): Machine | undefined {
+  return t.machines().find((m) => m.id === task.claimed_by) ?? (a ? machineNow(t, a) : undefined);
+}
+
+/** Why an agent can't take work now ("" when it can): no machine, the machine offline, its runtime missing, logged
+ * out, out of credit or waiting for its quota there. */
 export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): string {
   const rt = runtimeLabel(a.runtime);
   if (!a.machine_id || !m) return en ? "no machine" : "没有机器";
@@ -255,7 +394,8 @@ export function blockedReason(a: Agent, m: Machine | undefined, en: boolean): st
   const r = runtimeOn(m, a.runtime);
   if (!r || !r.installed) return en ? `${rt} isn’t installed on ${m.name}` : `${m.name} 上没装 ${rt}`;
   if (r.logged_in === false) return en ? `${rt} isn’t logged in on ${m.name}` : `${m.name} 上的 ${rt} 没登录`;
-  if (a.paused) return en ? `paused: ${PAUSE_EN[a.paused.reason] ?? a.paused.text}` : `已暂停：${a.paused.text}`;
+  const s = m.runtime_status?.[a.runtime];
+  if (s) return `${m.name}${en ? ": " : "："}${runtimeTrouble(s, en)}`;
   return "";
 }
 
@@ -297,6 +437,12 @@ const POLL_MS = 10_000;
 export function createTeam(s: Session) {
   const conn = signal<Conn>("connecting");
   const me = signal<User | null>(null);
+  /** 「我的偏好」: one's own words for the agents on the tasks one asks for (only GET /me has them). */
+  const preferences = signal("");
+  /** 「提案什么时候给我」 (only GET /me has it). */
+  const digest = signal<Digest | null>(null);
+  /** The cards of proposals in 待你决定. */
+  const proposals = signal<ProposalBatch[]>([]);
   /** The address others reach the server at, as the server is set up (-public-url); "" when it isn't. */
   const publicUrl = signal("");
   /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
@@ -376,11 +522,17 @@ export function createTeam(s: Session) {
       case "channel":
         if (f.channel) channels.update((cs) => upsert(cs, f.channel as Channel));
         break;
+      case "channel_removed": // a private channel this person is no longer in
+        forget(String(f.id));
+        break;
       case "user":
         if (f.user) users.update((us) => upsert(us, f.user as User));
         break;
       case "workspace":
         if (f.workspace) workspace.set(f.workspace as Workspace);
+        break;
+      case "proposals": // a card came, or went
+        refreshInbox();
         break;
       case "signup":
         if (untracked(me)?.role === "admin") refreshInbox();
@@ -406,6 +558,14 @@ export function createTeam(s: Session) {
     }
   }
 
+  /** A private channel gone for this person: its messages and tasks too. */
+  function forget(channelId: string) {
+    channels.update((cs) => cs.filter((c) => c.id !== channelId));
+    top.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
+    tasks.update((x) => Object.fromEntries(Object.entries(x).filter(([, v]) => v.channel_id !== channelId)));
+    unread.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
+  }
+
   function putTasks(ts: Task[]) {
     if (ts.length) tasks.update((x) => ({ ...x, ...Object.fromEntries(ts.map((t) => [t.id, t])) }));
   }
@@ -425,6 +585,7 @@ export function createTeam(s: Session) {
     if (!r.ok) return;
     putTasks(r.data.tasks as Task[]);
     inbox.set((r.data.tasks as Task[]).map((t) => t.id));
+    proposals.set((r.data.proposals as ProposalBatch[] | undefined) ?? []);
     signups.set((r.data.signups as Signup[] | undefined) ?? []);
     const w = await api("GET", "/api/v1/tasks?state=waiting&limit=100");
     if (!w.ok) return;
@@ -465,7 +626,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
+    if (m.ok) { me.set(m.data.user as User); preferences.set(String(m.data.preferences ?? "")); if (m.data.digest) digest.set(m.data.digest as Digest); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -605,11 +766,19 @@ export function createTeam(s: Session) {
     return null;
   }
 
-  async function createChannel(name: string, topic: string, members: Member[]): Promise<Reply> {
-    const r = await api("POST", "/api/v1/channels", { name, topic, members });
+  async function createChannel(name: string, topic: string, members: Member[], priv = false): Promise<Reply> {
+    const r = await api("POST", "/api/v1/channels", { name, topic, members, ...(priv ? { private: true } : {}) });
     if (r.ok) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
+  /** My private chat with the agent, made on the server now if there is none yet (on the first message). */
+  async function openDM(agentId: string): Promise<Reply> {
+    const r = await api("POST", "/api/v1/channels", { dm_agent: agentId });
+    if (r.ok) channels.update((cs) => upsert(cs, r.data as Channel));
+    return r;
+  }
+  /** My private chat with the agent, when there is one. */
+  const dmWith = (agentId: string) => channels().find((c) => c.dm_agent === agentId && c.created_by === me()?.id);
   async function join(channelId: string) {
     const r = await api("POST", `/api/v1/channels/${channelId}/members`, {});
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
@@ -620,8 +789,8 @@ export function createTeam(s: Session) {
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
-  /** name, topic, or the default repository (an address; "" clears it). */
-  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string }) {
+  /** name, topic, or the default repository (an address; "" clears it); private: false makes a private channel public. */
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string; private?: false }) {
     const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
@@ -633,7 +802,11 @@ export function createTeam(s: Session) {
   };
   async function removeMember(channelId: string, m: Member) {
     const r = await api("DELETE", `/api/v1/channels/${channelId}/members/${m.kind}/${m.id}`);
-    if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
+    if (r.ok && r.data?.id) {
+      const c = r.data as Channel;
+      if (c.private && m.kind === "user" && m.id === untracked(me)?.id) forget(c.id); // left a private one: it is gone
+      else channels.update((cs) => upsert(cs, c));
+    }
     return r;
   }
 
@@ -665,7 +838,7 @@ export function createTeam(s: Session) {
     return patchMachine(id, { name });
   }
   /** name; team (admins): make it a team machine or no longer one. */
-  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean }) {
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean; checkpoint_files?: boolean }) {
     const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;
@@ -678,8 +851,35 @@ export function createTeam(s: Session) {
     const r = await api("DELETE", `/api/v1/machines/${id}`);
     if (r.ok) {
       machines.update((ms) => ms.filter((m) => m.id !== id));
-      agents.update((as) => as.map((a) => (a.machine_id === id ? { ...a, machine_id: null } : a)));
+      agents.update((as) => as.map((a) => {
+        if (a.machine_id !== id && !a.machines?.includes(id)) return a;
+        const left = (a.machines ?? []).filter((m) => m !== id);
+        return { ...a, machines: left, machine_id: left[0] ?? null };
+      }));
     }
+    return r;
+  }
+  async function saveDigest(d: Digest) {
+    const r = await api("PATCH", `/api/v1/users/${me()?.id ?? ""}`, { digest: d });
+    if (r.ok) digest.set(d);
+    return r;
+  }
+  /** 做 or 不做 one proposal; the cards as they are after. */
+  async function answerProposal(id: string, yes: boolean) {
+    const r = await api("POST", `/api/v1/proposals/${id}/answer`, { do: yes });
+    if (r.ok) proposals.set(r.data.batches as ProposalBatch[]);
+    else refreshInbox();
+    return r;
+  }
+  /** "1 3" does those on the card; "1 3 其余不做" also turns down the rest. */
+  async function answerBatch(id: string, text: string) {
+    const r = await api("POST", `/api/v1/proposal-batches/${id}/answer`, { text });
+    if (r.ok) proposals.set(r.data.batches as ProposalBatch[]);
+    return r;
+  }
+  async function savePreferences(text: string) {
+    const r = await api("PATCH", `/api/v1/users/${me()?.id ?? ""}`, { preferences: text });
+    if (r.ok) preferences.set(text.trim());
     return r;
   }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
@@ -708,15 +908,21 @@ export function createTeam(s: Session) {
   const teamConfig = () => api("GET", "/api/v1/team/config");
   /** A channel's triggers (teamtriggers.go). */
   const triggers = (channelId: string) => api("GET", `/api/v1/triggers?channel=${encodeURIComponent(channelId)}`);
-  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number }) =>
+  const createTrigger = (body: { channel_id: string; agent: string; kind: Trigger["kind"]; text: string; when?: string; repeat?: string; repo?: string; branch?: string; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) =>
     api("POST", "/api/v1/triggers", body);
-  const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
-  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number }) => api("PATCH", `/api/v1/triggers/${id}`, body);
+  /** A duty's history, newest first: by its name (with the channel and agent), or one trigger's. */
+  const triggerRuns = (q: { trigger: string } | { channel: string; agent: string; duty: string }) =>
+    api("GET", `/api/v1/triggers/runs?${Object.entries(q).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`);
+  /** Pause or resume every trigger of a duty. */
+  const pauseDuty = (body: { channel_id: string; agent_id: string; duty: string; enabled: boolean }) => api("POST", "/api/v1/triggers/duty", body);
+  /** A trigger with a check command is confirmed with the command as shown (409 when it changed meanwhile). */
+  const confirmTrigger = (id: string, checkCmd?: string) => api("POST", `/api/v1/triggers/${id}/confirm`, checkCmd ? { check_cmd: checkCmd } : {});
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now) | move ({to} goes on there, {wait} waits for its computer; the agent's owner) | engine ({to} goes on with that runtime, {keep} waits for this one; the agent's owner). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry" | "move" | "engine", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
@@ -771,9 +977,10 @@ export function createTeam(s: Session) {
   });
 
   return {
+    preferences, savePreferences, digest, saveDigest, proposals, answerProposal, answerBatch, openDM, dmWith,
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
-    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,
+    createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, triggerRuns, pauseDuty, logout, dispose, applyFrame, catchUp,
     userById, agentById,
   };
 }
@@ -783,13 +990,45 @@ export type Team = ReturnType<typeof createTeam>;
 export type DurationStats = { count: number; median: number; p90: number; open: number; oldest: number };
 export type Metrics = {
   days: number; since: number;
-  reply: DurationStats; reply_by: Partial<Record<"confirm" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
+  reply: DurationStats; reply_by: Partial<Record<"confirm" | "align" | "decide" | "unblock" | "retry" | "accept", DurationStats>>;
   runs: { tasks: number; mean: number; median: number; max: number; three_plus: number };
   cancelled: number; redone: number;
   agents: { agent_id: string; tasks: number; people: number; others: number; team: boolean; machine: string }[];
+  /** How often tasks needed a person: the reader's own (their private channels included), and the team's (without). */
+  mine?: CallStats; team?: CallStats;
 };
+export type CallStats = { calls: number; tasks: number; outside: number; by_class: Partial<Record<CallClass, number>>; by_kind: Record<string, number>;
+  /** of the calls, cards of proposals (they come from no task) */
+  cards?: number };
+
+/** Something an agent proposes to do (server: teamproposals.go): not a task until its person says 做. */
+export type Proposal = { id: string; channel_id: string; agent_id: string; task_id: string; trigger_id?: string; title: string; why: string; plan: string;
+  key?: string; urgent: boolean; state: "open"; num: number; created: number };
+/** One card of proposals in 待你决定: a batch at the person's time, or one urgent proposal. */
+export type ProposalBatch = { id: string; at: number; urgent: boolean; proposals: Proposal[] };
+/** 「提案什么时候给我」: each workday at `at` (daily), at `at` and `at2` (twice), or Mondays at `at` (weekly); urgent ones wait out `quiet`. */
+export type Digest = { every: "daily" | "twice" | "weekly"; at: string; at2: string; quiet: string };
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
+/** "#支付后端", or "私房菜（私有）" for a private channel: how a channel is named in a line of text. */
+export const channelLabel = (c: Channel) => (c.dm_agent ? L(`chat with @${c.name}`, `和 @${c.name} 的私聊`) : c.private ? L(`${c.name} (private)`, `${c.name}（私有）`) : `#${c.name}`);
+
+/** Who may bring an agent into a private channel: its owner, or anyone when it takes the whole team's work. */
+export const mayBringAgent = (a: Agent, me: User | null) => !!me && (a.owner_id === me.id || a.dispatch === "team");
+/** "王磊的电脑" / "团队电脑「build-01」": where an agent runs, for the line that says a channel's words go there. */
+export function agentHost(t: { machines: () => Machine[]; users: () => User[] }, a: Agent): string {
+  const ms = machinesOf(t, a);
+  const m = ms[0];
+  if (!m) return L("no computer yet", "还没有电脑");
+  if (m.team) return L(`the team computer ${m.name}`, `团队电脑「${m.name}」`);
+  const owner = t.users().find((u) => u.id === m.owner_id);
+  if (ms.length > 1) { // every one of them reads the channel
+    const names = ms.map((x) => x.name).join(L(", ", "、"));
+    return L(`${owner?.name ?? "?"}’s computers (${names})`, `${owner?.name ?? "?"}的 ${ms.length} 台电脑（${names}）`);
+  }
+  return L(`${owner?.name ?? "?"}’s computer`, `${owner?.name ?? "?"}的电脑`);
+}
+
 export const isParty = (t: Task, me: User | null, agent: Agent | undefined) =>
   !!me && (me.id === t.created_by || me.id === t.handler || me.id === agent?.owner_id || me.role === "admin");
 /** Who takes a task that stopped for people (accepts it, decides): the person named, else its creator. */

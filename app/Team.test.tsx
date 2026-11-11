@@ -37,6 +37,21 @@ describe("team sign in", () => {
     expect(app.storage()["team.url"]).toBe(URL);
   });
 
+  test("扫码 opens the camera on a phone, and isn't offered on the web", async () => {
+    const phone = await open("./App.tsx", { platform: "ios", network: server(newLog()) });
+    await phone.waitFor("id:team-signin");
+    expect(phone.shows("id:scan-camera")).toBe(false);
+    await phone.press("id:team-scan");
+    await phone.waitFor("id:scan-camera");
+    await phone.press("id:scan-close");
+    await phone.waitFor("id:scan-camera", { state: "gone" });
+
+    const web = await open("./App.tsx", { platform: "web", width: 1200, height: 800, network: server(newLog()) });
+    await web.waitFor("id:team-signin");
+    expect(web.shows("id:team-login")).toBe(true);
+    expect(web.shows("id:team-scan")).toBe(false);
+  });
+
   test("a login code, or a pasted login link that brings its server, signs in", async () => {
     const logins: any[] = [];
     const net = {
@@ -64,6 +79,41 @@ describe("team sign in", () => {
     await linked.press("id:team-login");
     await linked.waitFor("id:team-composer");
     expect(linked.storage()["team.url"]).toBe(URL);
+
+    // the whole link pasted into the server box (the bad case): it still signs in, with the link's code
+    const misplaced = await open("./App.tsx", { width: 1200, height: 800, network: net });
+    await misplaced.type("id:team-url", `${URL}/login/ABCD-EFGH`);
+    await misplaced.press("id:team-login");
+    await misplaced.waitFor("id:team-composer");
+    expect(misplaced.storage()["team.url"]).toBe(URL);
+    expect(logins.at(-1)).toEqual({ code: "ABCD-EFGH" });
+  });
+
+  test("a scanned login QR opens the app and signs in; signed in already, it is dropped with a word", async () => {
+    const logins: any[] = [];
+    const net = {
+      ...server(newLog()),
+      [`POST ${URL}/api/v1/login`]: (r: { body?: string | null }) => {
+        logins.push(JSON.parse(r.body!));
+        return { body: { session: "sess", user: zw } };
+      },
+    };
+    const qr = `remi://login?server=${encodeURIComponent(URL)}&code=ABCD-EFGH`;
+    const app = await open("./App.tsx", { width: 390, height: 844, network: net, urlScheme: qr });
+    await app.waitUntil(() => app.storage()["team.session"] === "sess");
+    await app.waitFor("text:支付后端");
+    expect(logins).toEqual([{ code: "ABCD-EFGH" }]);
+    expect(app.storage()["team.url"]).toBe(URL);
+
+    await app.openWithUrl(`remi://login?server=${encodeURIComponent(URL)}&code=WXYZ-2345`);
+    await app.waitFor("text:This device is already signed in. Sign out first to switch accounts.");
+    expect(logins.length).toBe(1);
+
+    // a link that isn't a login (or names no http server) is ignored
+    const other = await open("./App.tsx", { width: 390, height: 844, network: net, urlScheme: "remi://login?server=javascript%3Aalert(1)&code=ABCD-EFGH" });
+    await other.waitFor("id:team-signin");
+    await other.wait(50);
+    expect(logins.length).toBe(1);
   });
 
   test("asking to join: the request waits for an admin; once approved this device signs in, even after a restart", async () => {
@@ -359,6 +409,48 @@ describe("settings", () => {
     await app.press(`id:settings-nav-${tab}`);
   };
 
+  test("「提案什么时候给我」: once a workday by default; twice shows the second time; saved as one's own", async () => {
+    const saved: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: { ...server(newLog()),
+      [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } },
+      [`PATCH ${URL}/api/v1/users/u_1`]: (r: { body?: string | null }) => { saved.push(JSON.parse(r.body!)); return { body: zw }; } } });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:digest-at");
+    expect(app.value("id:digest-at")).toBe("09:30");
+    expect(app.shows("id:digest-at2")).toBe(false);
+    expect(app.enabled("id:digest-save")).toBe(false);
+    await app.press("id:digest-every-twice");
+    await app.waitFor("id:digest-at2");
+    await app.clear("id:digest-at2");
+    await app.type("id:digest-at2", "16:00");
+    await app.press("id:digest-save");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ digest: { every: "twice", at: "09:30", at2: "16:00", quiet: "22:00-08:00" } });
+    await app.waitFor("text:已保存");
+  });
+
+  test("「我的偏好」: one's own words for the agents, its explanation behind the ⓘ, saved with a PATCH of oneself", async () => {
+    const saved: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: { ...server(newLog()),
+      [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } },
+      [`PATCH ${URL}/api/v1/users/u_1`]: (r: { body?: string | null }) => { saved.push(JSON.parse(r.body!)); return { body: zw }; } } });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:preferences-input");
+    expect(app.value("id:preferences-input")).toBe("回复用中文；PR 描述先写改了什么再写为什么。");
+    expect(app.shows("id:preferences-note")).toBe(false);
+    await app.press("id:preferences-info");
+    await app.waitFor("text:/别写密码和密钥/");
+    expect(app.enabled("id:preferences-save")).toBe(false);
+    await app.clear("id:preferences-input");
+    await app.type("id:preferences-input", "不确定的地方先问我");
+    await app.press("id:preferences-save");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ preferences: "不确定的地方先问我" });
+    await app.waitFor("text:已保存");
+  });
+
   test("the bottom-left menu and ⌘, open Settings, a page of its own; back returns to the channel", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } } } });
     await app.waitFor("id:team-composer");
@@ -451,6 +543,36 @@ describe("settings", () => {
     expect(app.shows("id:machine-remove-confirm-m_1")).toBe(true);
   });
 
+  test("an agent on several of one's computers: tick them and put them in order", async () => {
+    const saved: any[] = [];
+    const desk = { ...mac, id: "m_3", name: "张伟的台式机", runtime_info: [{ name: "codex", installed: true, logged_in: true }] };
+    let agent = { ...acha };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac, desk] } },
+        [`GET ${URL}/api/v1/agents`]: () => ({ body: { agents: [agent] } }),
+        [`PATCH ${URL}/api/v1/agents/a_1`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          saved.push(b);
+          agent = { ...agent, machines: b.machines, machine_id: b.machines[0] ?? null };
+          return { body: agent };
+        },
+      },
+    });
+    await settings(app, "agents");
+    await app.waitFor("id:agent-acha-machine-m_3-on");
+    expect(app.shows("id:agent-acha-machine-m_1-up")).toBe(false); // one computer: nothing to order
+    await app.press("id:agent-acha-machine-m_3-on");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ machines: ["m_1", "m_3"] });
+    await app.waitFor("id:agent-acha-machine-m_3-up");
+    await app.press("id:agent-acha-machine-m_3-up");
+    await app.waitUntil(() => saved.length === 2);
+    expect(saved[1]).toEqual({ machines: ["m_3", "m_1"] });
+  });
+
   test("a new agent: a machine first, then a runtime on it and its model, then who can use it", async () => {
     const created: any[] = [];
     const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true },
@@ -475,6 +597,7 @@ describe("settings", () => {
     expect(app.shows("text:Not installed on 张伟的 Mac")).toBe(true);
     await app.press("id:new-agent-runtime-claude");
     await app.press("id:new-agent-model-sonnet");
+    await app.scroll("id:new-agent-dispatch-team", 300); // the dialog's last step sits under its footer until scrolled to
     await app.press("id:new-agent-dispatch-team");
     await app.press("id:new-agent-dispatch-confirm");
     await app.type("id:agent-name", "阿测");
@@ -574,7 +697,14 @@ describe("settings", () => {
     await app.press("id:login-code-create");
     await app.waitFor("id:login-code");
     expect(app.shows("text:ABCD-EFGH")).toBe(true);
-    expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(true);
+    expect(app.shows("id:login-code-qr")).toBe(true);
+    expect(app.shows("id:login-code-server")).toBe(true);
+    // the link with the code in it is not on screen (people typed it into the server box); it's behind 复制链接
+    expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(false);
+    await app.press("id:login-code-copy-link");
+    expect(app.clipboard()).toBe(`${URL}/login/ABCD-EFGH`);
+    await app.press("id:login-code-copy");
+    expect(app.clipboard()).toBe("ABCD-EFGH");
     expect(app.shows("text:This device")).toBe(true);
     expect(app.shows("id:device-remove-aaaaaaaaaaaaaaaa")).toBe(false);
     await app.press("id:device-remove-bbbbbbbbbbbbbbbb");
@@ -604,7 +734,9 @@ describe("settings", () => {
     expect(app.shows("id:server-connected")).toBe(true);
     expect(app.shows("id:server-loopback")).toBe(false);
     await app.press("id:login-code-create");
-    await app.waitFor(`text:${PUB}/login/ABCD-EFGH`);
+    await app.waitFor("id:login-code-qr");
+    await app.press("id:login-code-copy-link");
+    expect(app.clipboard()).toBe(`${PUB}/login/ABCD-EFGH`);
     await app.press("id:settings-nav-machines");
     await app.press("id:machine-add");
     await app.waitFor(`text:curl -fsSL ${PUB}/api/v1/install.sh | bash -s -- ${PUB} te_first`);
@@ -902,7 +1034,7 @@ describe("channel v2", () => {
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-repo");
-    expect(app.shows("text:/^None: agents pick a repository/")).toBe(true);
+    expect(app.shows("id:channel-repo-label") && app.shows("text:None")).toBe(true);
     await app.press("id:channel-repo-edit");
     await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
     await app.press("id:channel-repo-picker-save");
@@ -1225,6 +1357,22 @@ describe("passing the ball", () => {
     expect(app.shows("id:task-T-0001-handoff-ho_1")).toBe(false);
   });
 
+  test("a handoff card to someone else's agent: only its owner hands it over; the asker may only say no", async () => {
+    const log = newLog();
+    const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2" };
+    const t1 = task({ created_by: "u_1", state: "running", runs: 1, tracked: true, holder: { kind: "user", id: "u_2", why: "handoff_card" },
+      handoffs: [{ id: "ho_1", to: "a_2", what: "改完后写发布说明", message: "msg_5", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: { ...server(log, {}, [t1]), [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei] } } } });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-holder");
+    expect(app.shows("text:球在 王磊 手里 · 决定要不要交接")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-accept")).toBe(false);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-decline")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-who-info")).toBe(true);
+  });
+
   test("a person the agent handed the ball to sees it as theirs", async () => {
     const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: true, asked: [{ user: "u_1", question: "在测试环境点一下退款", message: "msg_9", at: T0, kind: "handoff" }] });
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900,
@@ -1245,7 +1393,9 @@ describe("passing the ball", () => {
     await app.waitFor("id:trigger-trg_1");
     expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
     expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还在排队或运行")).toBe(true);
-    expect(app.shows("text:/每天最多 10 次；上一个任务还在排队或运行时跳过/")).toBe(true);
+    expect(app.shows("text:/每天最多 10 次/")).toBe(false); // its limits wait behind the ⓘ
+    await app.press("id:trigger-limits-trg_9-info");
+    await app.waitFor("text:/每天最多 10 次；上一个任务还在排队或运行时跳过/");
     await app.press("id:trigger-confirm-trg_1");
     await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
     await app.waitFor("text:还没触发过");
@@ -1257,8 +1407,249 @@ describe("passing the ball", () => {
     await app.type("id:trigger-max", "3");
     await app.press("id:trigger-save");
     await app.waitUntil(() => log.created.length === 1);
-    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3, readonly: true } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
-    expect(app.shows("text:每天最多 3 次")).toBe(true); // a PR is never skipped for an open task
+    expect(app.shows("id:trigger-readonly-trg_3")).toBe(true); // read-only unless switched off
+    await app.press("id:trigger-limits-trg_3-info");
+    await app.waitFor("text:每天最多 3 次"); // a PR is never skipped for an open task
+  });
+
+  test("a duty: its triggers in one group with how the week went, one switch pauses them all, its history", async () => {
+    const log = newLog();
+    const base = { channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", repeat: "daily", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 9, created: T0, max_per_day: 10, skipped: 0, duty: "看住主干", readonly: true };
+    const ci = { ...base, id: "trg_1", text: "看主干的 CI", recent: { nochange: 31, nothing: 9 } };
+    const deps = { ...base, id: "trg_2", text: "看过期的依赖", recent: { proposed: 2 } };
+    const runs = [{ trigger_id: "trg_1", at: T0, outcome: "nothing", note: "主干是绿的", task_id: "T-0009" }, { trigger_id: "trg_2", at: T0 - 3600_000, outcome: "failed", note: "仓库打不开" }];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log, { __triggers: [ci, deps] }),
+      [`GET ${URL}/api/v1/triggers/runs?*`]: (r: { url: string }) => { log.acts.push(decodeURIComponent(r.url.split("?")[1]!)); return { body: { runs } }; },
+      [`POST ${URL}/api/v1/triggers/duty`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); log.patches.push({ duty: b }); ci.enabled = deps.enabled = b.enabled; return { body: { triggers: [ci, deps] } }; },
+    } });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:duty-trg_1");
+    expect(app.shows("text:看住主干")).toBe(true);
+    expect(app.shows("text:近 7 天：31 次没变化，9 次没发现，2 次提了案")).toBe(true);
+    expect(app.shows("id:trigger-toggle-trg_1")).toBe(false); // paused as a duty, not one by one
+    await app.press("id:duty-trg_1-history");
+    await app.waitFor("id:duty-trg_1-runs");
+    expect(log.acts).toContain("channel=c_1&agent=a_1&duty=看住主干");
+    expect(app.shows("text:/没发现 · 主干是绿的 · T-0009/")).toBe(true);
+    expect(app.shows("text:/失败 · 仓库打不开/")).toBe(true);
+    await app.press("id:duty-trg_1-toggle");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ duty: { channel_id: "c_1", agent_id: "a_1", duty: "看住主干", enabled: false } });
+    await app.waitFor("text:已暂停");
+  });
+
+  test("a check command: shown under what it asks, waits for the owner again when it changed; a schedule can be given one", async () => {
+    const log = newLog();
+    const changed = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "主干 CI 红了就看看", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 3, created: T0,
+      max_per_day: 10, skipped: 0, readonly: true, check_cmd: "gh run list -b main -s failure -L 5", check_waits: true };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [changed] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:trigger-check-trg_1");
+    expect(app.shows("text:$ gh run list -b main -s failure -L 5")).toBe(true);
+    expect(app.shows("text:检查命令改了，等 @zhangwei 确认")).toBe(true);
+    await app.press("id:trigger-confirm-trg_1");
+    await app.waitUntil(() => log.acts.includes("trg_1 confirm gh run list -b main -s failure -L 5")); // the command as shown
+    await app.waitFor("text:/触发过 3 次/");
+    await app.press("id:trigger-add");
+    expect(app.shows("text:/输出和上次一样/")).toBe(false); // what it does waits behind the ⓘ
+    await app.press("id:trigger-check-about-info");
+    await app.waitFor("text:/输出和上次一样就什么都不做/");
+    await app.type("id:trigger-text", "有新告警就看看");
+    await app.type("id:trigger-check", "cat alerts.txt");
+    await app.press("id:trigger-save");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "schedule", text: "有新告警就看看", when: "9:00", repeat: "weekdays", check_cmd: "cat alerts.txt", readonly: true } });
+    await app.waitFor("text:$ cat alerts.txt");
+  });
+});
+
+describe("proposals", () => {
+  const prop = (id: string, num: number, title: string, extra: object = {}) => ({ id, channel_id: "c_1", agent_id: "a_1", task_id: "T-0009", title, why: `看到：${title}`, plan: `做到：${title}`, key: id, urgent: false, state: "open", num, created: T0, ...extra });
+  const batch = { id: "pb_1", at: T0, urgent: false, proposals: [prop("p1", 1, "升级 lodash"), prop("p2", 2, "删掉没人管的分支"), prop("p3", 3, "补上 /orders 的测试")] };
+  const urgent = { id: "pb_2", at: T0, urgent: true, proposals: [prop("p4", 1, "主干红了，今天发不了版", { urgent: true })] };
+
+  test("one card, numbered; details on demand; 做 or 不做 each; numbers in the box; an urgent one on its own", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __proposals: [batch, urgent] }) });
+    await app.waitFor("id:team-composer");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:proposals-pb_1");
+    expect(app.shows("text:/提案（3）/")).toBe(true);
+    expect(app.shows("text:1. 升级 lodash")).toBe(true);
+    expect(app.shows("text:/#支付后端 · @acha/")).toBe(true);
+    expect(app.shows("text:做到：升级 lodash")).toBe(false); // the plan waits behind 详情
+    await app.press("id:proposal-p1-more");
+    await app.waitFor("text:打算：做到：升级 lodash");
+    expect(app.shows("text:为什么：看到：升级 lodash")).toBe(true);
+    expect(app.shows("text:/其余留在卡片上/")).toBe(false); // how the box works waits behind its ⓘ
+    await app.press("id:proposals-pb_1-numbers-info");
+    await app.waitFor("text:/其余留在卡片上/");
+    await app.press("id:proposal-p2-no");
+    await app.waitUntil(() => log.acts.includes("p2 no"));
+    await app.waitUntil(() => !app.shows("id:proposal-p2"));
+    await app.type("id:proposals-pb_1-text", "1 3");
+    await app.press("id:proposals-pb_1-send");
+    await app.waitUntil(() => log.acts.includes("pb_1 1 3"));
+    await app.waitUntil(() => !app.shows("id:proposals-pb_1"));
+    expect(app.shows("id:proposals-pb_2")).toBe(true);
+    expect(app.shows("text:紧急提案")).toBe(true);
+    expect(app.shows("id:proposals-pb_2-text")).toBe(false); // one proposal: no box
+    await app.press("id:proposal-p4-do");
+    await app.waitUntil(() => log.acts.includes("p4 do"));
+  });
+});
+
+describe("private channels", () => {
+  // 张伟's own project: him and @acha; 王磊 owns @bei (his channels' work only) and @helper (the whole team's)
+  const home = { id: "c_3", slug: "p-1a2b3c4d", name: "私房菜", topic: "", archived: false, created: T0, private: true, created_by: "u_1",
+    members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 0 };
+  const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, machines: [], dispatch: "channel" };
+  const helper = { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", machines: ["m_2"], dispatch: "team" };
+  const wlMac = { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" };
+  const net = (log: Log, over: Record<string, unknown> = {}, tasks: any[] = []) => ({
+    ...server(log, {}, tasks),
+    [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home] } },
+    [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei, helper] } },
+    [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac, wlMac] } },
+    [`GET ${URL}/api/v1/channels/c_3/messages?*`]: { body: { messages: [], more: false } },
+    ...over,
+  });
+
+  test("a new channel can be private: only one's own or team-wide agents are offered, and others' say where they run", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); log.created.push(b); return { body: { ...home, id: "c_9", name: b.name } }; },
+    }) });
+    await app.waitFor("id:new-channel");
+    await app.press("id:new-channel");
+    await app.waitFor("id:channel-private-toggle");
+    expect(app.shows("id:pick-a_2")).toBe(true);
+    await app.press("id:channel-private-toggle");
+    await app.waitUntil(() => !app.shows("id:pick-a_2"));
+    expect(app.shows("id:channel-private-note")).toBe(false); // the explanation waits behind its ⓘ
+    await app.press("id:channel-private-info");
+    await app.waitFor("id:channel-private-note");
+    expect(app.shows("text:/服务器管理员仍能接触数据库文件/")).toBe(true);
+    expect(app.shows("id:pick-a_2")).toBe(false); // 王磊's, for his channels only
+    expect(app.shows("id:pick-a_3")).toBe(true);
+    expect(app.shows("text:/运行在王磊的电脑上/")).toBe(true);
+    await app.type("id:channel-name", "私房菜");
+    await app.press("id:pick-a_1");
+    await app.press("id:channel-create");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ name: "私房菜", topic: "", members: [{ kind: "agent", id: "a_1" }], private: true });
+  });
+
+  test("a private channel: a lock, no joining; its members panel keeps others' agents out or says where they run; its creator makes it public", async () => {
+    const log = newLog();
+    const added: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels/c_3/members`]: (r: { body?: string | null }) => { added.push(JSON.parse(r.body!)); return { body: { ...home, members: [...home.members, JSON.parse(r.body!)] } }; },
+      [`PATCH ${URL}/api/v1/channels/c_3`]: (r: { body?: string | null }) => { log.patches.push(JSON.parse(r.body!)); return { body: { ...home, private: false } }; },
+    }) });
+    await app.waitFor("id:channel-p-1a2b3c4d");
+    await app.press("id:channel-p-1a2b3c4d");
+    await app.waitFor("id:header-icon");
+    expect(app.shows("id:join")).toBe(false);
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-publish");
+    await app.press("id:members-add");
+    await app.waitFor("id:members-add-bei-why-info");
+    expect(app.enabled("id:members-add-bei")).toBe(false);
+    expect(app.shows("id:members-add-bei-why-note")).toBe(false);
+    await app.press("id:members-add-bei-why-info");
+    await app.waitFor("text:/只有它的主人能拉进私有频道/");
+    await app.press("id:members-add-helper");
+    await app.waitFor("id:members-host-warning");
+    expect(app.shows("text:/@helper 运行在王磊的电脑上，频道内容会发到那里/")).toBe(true);
+    expect(added.length).toBe(0);
+    await app.press("id:members-host-ok");
+    await app.waitUntil(() => added.length === 1);
+    expect(added[0]).toEqual({ kind: "agent", id: "a_3" });
+    await app.press("id:channel-publish-start");
+    await app.waitFor("id:channel-publish-warning");
+    expect(app.shows("text:/所有历史消息都会对全队可见/")).toBe(true);
+    await app.press("id:channel-publish-ok");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ private: false });
+  });
+
+  test("私聊: the agents I may hand work are listed; the first message makes the chat, and needs no @", async () => {
+    const log = newLog();
+    const made: any[] = [];
+    const chat = { id: "c_9", slug: "p-9f9f9f9f", name: "helper", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_3",
+      members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_3" }], last_seq: 0 };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels`]: (r: { body?: string | null }) => { made.push(JSON.parse(r.body!)); return { body: chat }; },
+      // the server has what was posted by the time the chat opens
+      [`GET ${URL}/api/v1/channels/c_9/messages?*`]: () => ({ body: { messages: log.posts.map((p, i) => msg({ id: `msg_9${i}`, seq: i + 1, channel_id: "c_9", text: p.text })), more: false } }),
+    }) });
+    await app.waitFor("id:side-agent-acha");
+    expect(app.shows("id:side-agent-helper")).toBe(true); // 王磊's, takes the whole team's work
+    expect(app.shows("id:side-agent-bei")).toBe(false); // 王磊's, his channels' only
+    expect(app.shows("text:/^王磊的 · /")).toBe(true);
+    await app.press("id:side-agent-helper");
+    await app.waitFor("id:dm-draft-helper");
+    expect(app.shows("text:私聊 · 运行在王磊的电脑上")).toBe(true);
+    expect(made.length).toBe(0); // nothing made by opening it
+    await app.type("id:team-composer", "整理一下菜谱");
+    await app.waitFor("text:/将派给 帮手/");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(made).toEqual([{ dm_agent: "a_3" }]);
+    expect(log.posts[0]).toMatchObject({ text: "整理一下菜谱" });
+    await app.waitFor("text:整理一下菜谱");
+    expect(app.shows("id:channel-members")).toBe(false); // its members are fixed
+    expect(app.shows("id:channel-p-9f9f9f9f")).toBe(false); // not among the channels
+  });
+
+  test("a private chat whose agent was deleted keeps its history and takes no more messages", async () => {
+    const log = newLog();
+    const chat = { id: "c_8", slug: "p-8e8e8e8e", name: "gone", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_9",
+      members: [{ kind: "user", id: "u_1" }], last_seq: 1 };
+    const said = msg({ id: "msg_80", seq: 1, channel_id: "c_8", text: "以前说过的话" });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home, chat] } },
+      [`GET ${URL}/api/v1/channels/c_8/messages?*`]: { body: { messages: [said], more: false } },
+    }) });
+    await app.waitFor("id:side-agent-gone");
+    await app.press("id:side-agent-gone");
+    await app.waitFor("text:以前说过的话");
+    expect(app.shows("id:dm-closed")).toBe(true);
+    expect(app.shows("id:team-composer")).toBe(false);
+  });
+
+  test("an agent's owner not in the private channel gets a row without what it is about, and still confirms it", async () => {
+    const log = newLog();
+    const hidden = task({ id: "T-0007", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "pending", tracked: true, redacted: true });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {}, [hidden]) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0007");
+    expect(app.shows("text:私有频道里的任务")).toBe(true);
+    expect(app.shows("text:/@acha · 在一个私有频道里 · 发起人 王磊/")).toBe(true);
+    expect(app.shows("id:task-T-0007-open")).toBe(false);
+    await app.press("id:task-T-0007-confirm");
+    await app.waitUntil(() => log.acts.length === 1);
+    expect(log.acts[0]).toBe("T-0007 confirm");
+  });
+
+  test("an agent's owner not in the private channel clicks a handoff card to it from a row without its words", async () => {
+    const log = newLog();
+    const hidden = task({ id: "T-0008", agent_id: "a_9", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "running", tracked: true, redacted: true,
+      holder: { kind: "user", id: "u_1", why: "handoff_card" }, handoffs: [{ id: "ho_7", to: "a_1", what: "", message: "", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {}, [hidden]) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0008-handoff-ho_7");
+    expect(app.shows("text:私有频道里的任务")).toBe(true);
+    await app.press("id:task-T-0008-handoff-ho_7-accept");
+    await app.waitUntil(() => log.acts.length === 1);
+    expect(log.acts[0]).toBe("T-0008 handoff");
   });
 });

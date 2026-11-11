@@ -23,7 +23,9 @@ const sh = (cwd: string, ...cmd: string[]) => {
   if (r.exitCode) throw new Error(`${cmd.join(" ")}: ${r.stderr.toString()}`);
 };
 
-type State = { zw: string; wl: string; zwId: string; wlId: string; machineToken: string; channel: string };
+type State = { zw: string; wl: string; zwId: string; wlId: string; machineToken: string; channel: string;
+  /** 张伟's second computer: @acha runs on both, 开发机 first (teampool.go) */
+  machine2Token?: string };
 let state: State;
 if (existsSync(STATE)) {
   state = JSON.parse(readFileSync(STATE, "utf8"));
@@ -43,6 +45,8 @@ if (existsSync(STATE)) {
   const wl = await api("POST", `/api/v1/invites/${(await api("POST", "/api/v1/invites", zw.session, { email: "wl@dev.local" })).code}/accept`, "", { name: "王磊", handle: "wanglei" });
   const mach = await api("POST", "/api/v1/machines", zw.session, { name: "开发机" });
   const acha = await api("POST", "/api/v1/agents", zw.session, { handle: "acha", name: "阿查", machine_id: mach.machine.id, repo, description: "管 orders 仓库的 Agent（假 Codex）" });
+  const mach2 = await api("POST", "/api/v1/machines", zw.session, { name: "开发机 2" });
+  await api("PATCH", `/api/v1/agents/${acha.id}`, zw.session, { machines: [mach.machine.id, mach2.machine.id] });
   const notes = await api("POST", "/api/v1/agents", zw.session, { handle: "notes", name: "记录员", machine_id: mach.machine.id, description: "不碰代码，写笔记和报告" });
   await api("PATCH", `/api/v1/agents/${acha.id}`, zw.session, { dispatch: "team" });
   await api("PATCH", `/api/v1/agents/${notes.id}`, zw.session, { dispatch: "team", confirm: false });
@@ -51,9 +55,15 @@ if (existsSync(STATE)) {
   await api("POST", "/api/v1/channels", zw.session, { name: "运维", members: [{ kind: "user", id: wl.user.id }] });
   await api("POST", `/api/v1/channels/${pay.id}/messages`, wl.session, { text: "今天下午三点发版，大家注意一下" });
   await api("POST", `/api/v1/channels/${pay.id}/messages`, zw.session, { text: "收到 👍" });
-  state = { zw: zw.session, wl: wl.session, zwId: zw.user.id, wlId: wl.user.id, machineToken: mach.token, channel: pay.id };
+  // 张伟's own project: only he (and @notes, his) sees it; 王磊 sees no trace of it
+  const mine = await api("POST", "/api/v1/channels", zw.session, { name: "私房菜", topic: "周末的菜谱整理", private: true, members: [{ kind: "agent", id: notes.id }] });
+  await api("POST", `/api/v1/channels/${mine.id}/messages`, zw.session, { text: "这里记我自己的事，团队看不到" });
+  // and his private chat with @notes: no @ needed, the message is its work
+  const dm = await api("POST", "/api/v1/channels", zw.session, { dm_agent: notes.id });
+  await api("POST", `/api/v1/channels/${dm.id}/messages`, zw.session, { text: "帮我列一下这周要做的事" });
+  state = { zw: zw.session, wl: wl.session, zwId: zw.user.id, wlId: wl.user.id, machineToken: mach.token, channel: pay.id, machine2Token: mach2.token };
   writeFileSync(STATE, JSON.stringify(state, null, 2));
-  console.log("dev: seeded 张伟 (admin), 王磊, the machine 开发机, @acha (orders repo, needs 张伟's confirm), @notes, #支付后端, #运维");
+  console.log("dev: seeded 张伟 (admin), 王磊, the machines 开发机 and 开发机 2, @acha (on both, orders repo, needs 张伟's confirm), @notes, #支付后端, #运维, 张伟's private 私房菜 and his private chat with @notes");
 }
 
 for (const [who, session] of [["张伟", state.zw], ["王磊", state.wl]] as const) {
@@ -68,7 +78,12 @@ const ta = startTeamAgent({ cloud: { url: BASE }, server: { token: state.machine
   stateFile: join(DIR, "teamagent.json"), log: (s: string) => console.log(`machine: ${s}`),
   worker: { workRoot: join(DIR, "work"), logDir: join(DIR, "logs") },
 })!;
-const bye = () => { ta.stop(); process.exit(0); };
+// the second computer, its own daemon (its own state and work folders); a team seeded before it had none
+const ta2 = state.machine2Token ? startTeamAgent({ cloud: { url: BASE }, server: { token: state.machine2Token }, host: { max_parallel: 2 } }, {
+  stateFile: join(DIR, "teamagent2.json"), log: (s: string) => console.log(`machine 2: ${s}`),
+  worker: { workRoot: join(DIR, "work2"), logDir: join(DIR, "logs2") },
+}) : null;
+const bye = () => { ta.stop(); ta2?.stop(); process.exit(0); };
 process.on("SIGINT", bye);
 process.on("SIGTERM", bye);
-console.log("dev: the machine is running (Ctrl-C stops everything)");
+console.log("dev: the machines are running (Ctrl-C stops everything)");

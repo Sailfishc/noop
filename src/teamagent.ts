@@ -222,13 +222,21 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
         const r = await fetch(`${base}/api/v1/tasks/${taskId}/outputs/preview?${query}`, { method: "POST", headers: auth, body: data, signal: AbortSignal.timeout(60_000) }).catch(() => null);
         return !!r?.ok;
       },
+      async checkpoint(taskId, data) {
+        const r = await fetch(`${base}/api/v1/tasks/${taskId}/checkpoint/files`, { method: "POST", headers: { ...auth, "content-type": "application/gzip" }, body: data, signal: AbortSignal.timeout(300_000) }).catch(() => null);
+        return r?.ok ? ((await r.json().catch(() => null)) as { id: string; size: number } | null) : null;
+      },
+      async restore(taskId) {
+        const r = await fetch(`${base}/api/v1/tasks/${taskId}/checkpoint/files`, { headers: auth, signal: AbortSignal.timeout(300_000) }).catch(() => null);
+        return r?.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      },
       async download(path) {
         const url = path.startsWith("/media/") ? `${base}/api/v1/media/${path.slice(7)}` : base + path; // a person's attachment
         const r = await fetch(url, { headers: auth, signal: AbortSignal.timeout(120_000) }).catch(() => null);
         return r?.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       },
     },
-    team: () => team.context,
+    team: () => team.context, checkpoints: true,
     workRoot: join(HOME_DIR, "teamagent", "work"), logDir: join(HOME_DIR, "logs", "teamagent"), ...opts.worker,
   });
   const mine = (agentId: string) => agents.some((a) => a.id === agentId);
@@ -247,6 +255,8 @@ export function startTeamAgent(cfg: Cfg, opts: { stateFile?: string; log?: (s: s
       let d: any; try { d = JSON.parse(String(e.data)); } catch { return; } // "pong"
       if (d?.type === "message") void deliver(d.message);
       else if (d?.type === "task") worker.onTask(d.task as TeamTask, mine);
+      else if (d?.type === "ask") worker.onAsk(d.ask, mine);
+      else if (d?.type === "check") void worker.onCheck(d.check);
       else if (d?.type === "agent" || d?.type === "agent_removed" || d?.type === "channel") void report(); // our agents or their channels changed
     };
     ws.onclose = () => {

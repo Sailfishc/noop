@@ -3,14 +3,13 @@
 // it from the person: by default the tasks that concern me (I asked, my agent does it, it waits for me), narrowed
 // further by channel, by who asked and by which agent does it. Only tasks people track show; a question the agent
 // only answered stays in the conversation.
-import { computed, effect, Scroll, signal, Storage, Text, View, windowSize, type JSX } from "nsh";
-import { Menu, MenuItem } from "nsh/base";
+import { computed, effect, type JSX, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon } from "../ui";
-import type { Task, Team } from "./api";
+import { alpha, Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu } from "../ui";
+import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
-import { Avatar, Header, StateDot, time, WIDE } from "./ui";
+import { Header, time, WIDE } from "./ui";
 
 export type TaskLayout = "board" | "list";
 /** The page's quick views: what concerns me (the default), what waits for me, what I asked for, my agents' work, all. */
@@ -22,7 +21,7 @@ const VIEWS: TaskView[] = ["related", "needs", "mine", "agents", "all"];
 
 export const toneColor = (t: Tone | string) => (t === "accent" ? colors.accent : t === "warn" ? colors.warn : t === "danger" ? colors.danger : t === "up" ? colors.up : colors.muted);
 
-export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false);
+export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false && !x.redacted);
 
 /** A layout remembered on this device (per place: the page, or channels). */
 export function rememberedLayout(place: string) {
@@ -35,7 +34,7 @@ export function rememberedLayout(place: string) {
 export function WaitsChip(props: { label: string; tone: Tone; testID?: string }) {
   return (
     <View testID={props.testID} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneColor(props.tone), 0.13) }}>
-      <StateDot tone={props.tone} />
+      <Dot tone={props.tone} />
       <Text style={{ fontSize: 12, fontWeight: "600", color: toneColor(props.tone) }}>{props.label}</Text>
     </View>
   );
@@ -82,28 +81,53 @@ function TaskRow(props: { team: Team; task: Task; showStatus?: boolean; showChan
   );
 }
 
+/** A task and, indented under it, what its agent delegated (they follow it rather than standing alone). */
+function TaskWithChildren(props: { team: Team; task: Task; showStatus?: boolean; showChannel?: boolean; onOpen: (t: Task) => void }) {
+  const kids = () => childrenOf(props.team, props.task);
+  return (
+    <View style={{ gap: 6 }}>
+      <TaskRow team={props.team} task={props.task} showStatus={props.showStatus} showChannel={props.showChannel} onOpen={props.onOpen} />
+      <If when={kids().length}>
+        <View testID={`taskrow-${props.task.id}-children`} style={{ gap: 6, paddingLeft: 16 }}>
+          <Each of={kids()} key={(x) => x.id}>
+            {(x) => <TaskRow team={props.team} task={x()} showStatus onOpen={props.onOpen} />}
+          </Each>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+/** The tasks a task's agent delegated, oldest first. */
+export const childrenOf = (t: Team, task: Task) =>
+  Object.values(t.tasks()).filter((x) => x.mandate?.delegated && x.mandate.parent === task.id).sort((a, b) => a.created - b.created);
+
 /** Tasks as a board (a column per status, what waits for me first; done and closed folded until opened) or a list
- * (newest first). */
+ * (newest first). A delegated task whose parent is shown goes under it. */
 export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout; showChannel?: boolean; onOpen: (t: Task) => void; empty?: string }) {
   const t = props.team;
+  const top = () => {
+    const ids = new Set(props.tasks.map((x) => x.id));
+    return props.tasks.filter((x) => !(x.mandate?.delegated && x.mandate.parent && ids.has(x.mandate.parent)));
+  };
   // phones: five columns don't fit, so always the list
   const layout = () => (windowSize().width < WIDE ? "list" : props.layout);
   const unfolded = signal<Record<string, boolean>>({});
   const folded = (s: Status) => (s === "done" || s === "closed") && !unfolded()[s];
   const byStatus = computed(() => {
     const cols: Record<Status, Task[]> = { todo: [], in_progress: [], in_review: [], done: [], closed: [] };
-    for (const x of props.tasks) cols[statusOf(x.state).status].push(x);
+    for (const x of top()) cols[statusOf(x.state).status].push(x);
     const rank = (x: Task) => (needsMe(t, x) ? 2 : statusOf(x.state).needs ? 1 : 0);
     for (const k of STATUSES) cols[k].sort((a, b) => rank(b) - rank(a) || b.updated - a.updated);
     return cols;
   });
-  const sorted = () => [...props.tasks].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
+  const sorted = () => [...top()].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
   return (
     <If when={props.tasks.length} else={<Text testID="tasks-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{props.empty ?? L("No tasks yet.", "还没有任务。")}</Text>}>
       <If when={layout() === "board"} else={
         <Scroll testID="tasks-list" style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 8, maxWidth: 720 }}>
           <Each of={sorted()} key={(x) => x.id}>
-            {(x) => <TaskRow team={t} task={x()} showStatus showChannel={props.showChannel} onOpen={props.onOpen} />}
+            {(x) => <TaskWithChildren team={t} task={x()} showStatus showChannel={props.showChannel} onOpen={props.onOpen} />}
           </Each>
         </Scroll>
       }>
@@ -115,7 +139,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
                 <View role={s() === "done" || s() === "closed" ? "button" : undefined} testID={`tasks-col-${s()}-head`}
                   onPress={s() === "done" || s() === "closed" ? () => unfolded.update((u) => ({ ...u, [s()]: !u[s()] })) : undefined}
                   style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
-                  <StateDot tone={STATUS[s()].tone} />
+                  <Dot tone={STATUS[s()].tone} />
                   <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{STATUS[s()].label()}</Text>
                   <Text testID={`tasks-col-${s()}-count`} style={{ flex: 1, fontSize: 12, color: colors.faint }}>{String(byStatus()[s()].length)}</Text>
                   <If when={s() === "done" || s() === "closed"}>
@@ -124,7 +148,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
                 </View>
                 <If when={!folded(s())}>
                   <Each of={byStatus()[s()]} key={(x) => x.id}>
-                    {(x) => <TaskRow team={t} task={x()} showChannel={props.showChannel} onOpen={props.onOpen} />}
+                    {(x) => <TaskWithChildren team={t} task={x()} showChannel={props.showChannel} onOpen={props.onOpen} />}
                   </Each>
                 </If>
               </View>
@@ -168,11 +192,9 @@ function PickFilter(props: { testID: string; label: string; options: { id: strin
   const on = (id: string) => props.picked.includes(id);
   const toggle = (id: string) => props.onChange(on(id) ? props.picked.filter((x) => x !== id) : [...props.picked, id]);
   return (
-    <Menu
+    <PopMenu
       align="start"
-      offset={4}
-      margin={8}
-      popupStyle={{ minWidth: 200, maxHeight: 360, padding: 5, borderRadius: 12, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
+      maxHeight={360}
       trigger={
         <View role="button" testID={props.testID} hoverStyle={hovered()}
           style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, borderRadius: 7, borderWidth: 1, borderColor: props.picked.length ? colors.accentFill : colors.border, backgroundColor: props.picked.length ? alpha(colors.accent, 0.08) : "transparent" }}>
@@ -182,21 +204,12 @@ function PickFilter(props: { testID: string; label: string; options: { id: strin
       }
     >
       <If when={props.picked.length}>
-        <MenuItem testID={`${props.testID}-clear`} onSelect={() => props.onChange([])} hoverStyle={hovered()} activeStyle={hovered()} style={{ height: 30, justifyContent: "center", paddingHorizontal: 10, borderRadius: 7 }}>
-          <Text style={{ fontSize: 13, color: colors.muted }}>{L("Clear", "清除")}</Text>
-        </MenuItem>
+        <MenuRow testID={`${props.testID}-clear`} label={L("Clear", "清除")} onSelect={() => props.onChange([])} />
       </If>
       {props.options.map((o) => (
-        <MenuItem testID={`${props.testID}-${o.id}`} onSelect={() => toggle(o.id)} hoverStyle={hovered()} activeStyle={hovered()}
-          style={{ height: 32, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 7 }}>
-          <View style={{ width: 14, alignItems: "center" }}>
-            <If when={on(o.id)}><Icon name="check" size={13} tint={colors.accent} /></If>
-          </View>
-          <Text style={{ flex: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{o.label}</Text>
-          <If when={o.note}><Text style={{ fontSize: 12, color: colors.faint }}>{o.note}</Text></If>
-        </MenuItem>
+        <MenuRow testID={`${props.testID}-${o.id}`} label={o.label} right={o.note} checked={on(o.id)} onSelect={() => toggle(o.id)} />
       ))}
-    </Menu>
+    </PopMenu>
   );
 }
 
@@ -234,7 +247,7 @@ export function TasksPage(props: { team: Team; back: boolean; onBack: () => void
     </View>
   );
   const me = () => t.me();
-  const channelOptions = () => t.channels().map((c) => ({ id: c.id, label: `#${c.name}` }));
+  const channelOptions = () => t.channels().map((c) => ({ id: c.id, label: channelLabel(c) }));
   const creatorOptions = () => {
     const ids = new Set(trackedTasks(t).map((x) => x.created_by));
     return t.users().filter((u) => ids.has(u.id)).sort((a, b) => Number(b.id === me()?.id) - Number(a.id === me()?.id))

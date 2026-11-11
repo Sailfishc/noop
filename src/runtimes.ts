@@ -31,6 +31,8 @@ export type RunOptions = {
   stallMs?: number;
   /** Stop the run after this long in all (ms; 0: never). */
   timeoutMs?: number;
+  /** Answer only, change nothing (another agent's question, teamask.go): the runtime's own read-only mode. */
+  readOnly?: boolean;
 };
 
 export type RunResult = {
@@ -122,11 +124,14 @@ export function codexEnvArgs(env: Record<string, string> = {}): string[] {
 }
 
 /** The command line of a Codex run: non-interactive, sandboxed to the work directory (plus `writable`), with network. */
-export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model" | "mcp" | "env">): string[] {
-  const cmd = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
-    "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", ...codexMcpArgs(o.mcp?.servers ?? {}),
-    ...codexEnvArgs(o.env), "--cd", o.cwd];
-  for (const d of o.writable ?? []) cmd.push("--add-dir", d);
+export function codexCommand(o: Pick<RunOptions, "cwd" | "resume" | "writable" | "model" | "mcp" | "env" | "readOnly">): string[] {
+  // read-only: Codex's own sandbox (Seatbelt on macOS, Landlock on Linux) refuses every write, and no MCP servers
+  const cmd = o.readOnly
+    ? ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-c", 'approval_policy="never"', ...codexEnvArgs(o.env), "--cd", o.cwd]
+    : ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "workspace-write",
+      "-c", 'approval_policy="never"', "-c", "sandbox_workspace_write.network_access=true", ...codexMcpArgs(o.mcp?.servers ?? {}),
+      ...codexEnvArgs(o.env), "--cd", o.cwd];
+  if (!o.readOnly) for (const d of o.writable ?? []) cmd.push("--add-dir", d);
   if (o.model) cmd.push("-m", o.model);
   if (o.resume) cmd.push("resume", o.resume);
   return [...cmd, "-"];
@@ -309,6 +314,8 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
 
 /** Tools a Claude Code run may use without asking (nobody is there to answer), and what it may never run. Skill: the
  * skills installed on the machine (~/.claude/skills, the team config repo) and in the repository. */
+/** What a read-only run of Claude Code may use (answering another agent's question). */
+export const CLAUDE_READ_TOOLS = ["Read", "Glob", "Grep", "WebFetch", "WebSearch"];
 const CLAUDE_TOOLS = ["Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit", "Skill"];
 
 /** The MCP servers Claude Code would load in `cwd`: the user's (~/.claude.json mcpServers), the local ones of `cwd` and
@@ -334,7 +341,14 @@ export function claudeMcpServers(cwd: string, home = homedir()): string[] {
 
 /** The command line of a Claude Code run: print mode, JSON stream, edits accepted, the listed tools and the machine's
  * MCP servers allowed, the gates denied; its own attribution lines off (the task's PR says who did it). */
-export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model"> & { mcp?: string[]; mcpConfig?: RunOptions["mcp"] }): string[] {
+export function claudeCommand(o: Pick<RunOptions, "resume" | "writable" | "model" | "readOnly"> & { mcp?: string[]; mcpConfig?: RunOptions["mcp"] }): string[] {
+  if (o.readOnly) { // plan mode, and only tools that read: no shell, no edits, no MCP servers
+    const cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "plan",
+      "--tools", CLAUDE_READ_TOOLS.join(","), "--allowedTools", CLAUDE_READ_TOOLS.join(","), "--strict-mcp-config",
+      "--settings", JSON.stringify({ attribution: { commit: "", pr: "" }, includeCoAuthoredBy: false })];
+    if (o.model) cmd.push("--model", o.model);
+    return cmd;
+  }
   const team = o.mcpConfig?.file ? Object.keys(o.mcpConfig.servers).map((n) => `mcp__${n}`) : [];
   const allowed = [...new Set([...CLAUDE_TOOLS, ...(o.mcp ?? []), ...team])];
   const cmd = ["claude", "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits",
@@ -393,8 +407,9 @@ export function piEvent(line: string): RunEvent | RunEvent[] | null {
 
 /** The command line of a pi run: print mode with the JSON event stream; the session continues by id. pi has no sandbox
  * of its own: the gate environment (no push, no gh/glab credentials) is what holds it back. */
-export function piCommand(o: Pick<RunOptions, "resume" | "model">): string[] {
+export function piCommand(o: Pick<RunOptions, "resume" | "model" | "readOnly">): string[] {
   const cmd = ["pi", "-p", "--mode", "json"];
+  if (o.readOnly) cmd.push("--tools", "read,grep,find,ls", "--no-session"); // its documented read-only mode: no bash, edit or write
   if (o.model) cmd.push("--model", o.model);
   if (o.resume) cmd.push("--session", o.resume);
   return cmd;

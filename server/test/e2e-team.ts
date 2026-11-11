@@ -83,6 +83,56 @@ await until("an earlier sync is cleared from a machine that isn't given the team
   !existsSync(link) && !existsSync(join(root, "team-config")) && !existsSync(join(root, "team-config.mcp.json")));
 
 ta.stop();
+
+// a private channel: 王磊's own project with his @acha in it. 张伟 (an admin, not in it) sees no trace of it anywhere,
+// and @acha, asked by 张伟 in a public channel, cannot bring up what it read there.
+const priv = await api("POST", "/api/v1/channels", wl.session, { name: "私房菜", private: true, members: [{ kind: "agent", id: agent.json.id }] });
+check("a private channel", priv.status === 200 && priv.json.private === true, JSON.stringify(priv.json).slice(0, 160));
+const secret = await api("POST", `/api/v1/channels/${priv.json.id}/messages`, wl.session, { text: "@acha 整理 zebra 菜谱" });
+const secretTask = (await api("GET", `/api/v1/tasks?thread=${secret.json.id}`, wl.session)).json.tasks[0];
+const trace = (r: { json: any }) => JSON.stringify(r.json).includes("zebra") || JSON.stringify(r.json).includes(priv.json.id);
+check("an outsider's channel list has no trace of it", !trace(await api("GET", "/api/v1/channels", zw.session)));
+check("nor their search", !trace(await api("GET", "/api/v1/search?q=zebra", zw.session)));
+check("nor their task list", !trace(await api("GET", "/api/v1/tasks", zw.session)));
+check("nor their inbox", !trace(await api("GET", "/api/v1/inbox", zw.session)));
+for (const path of [`/api/v1/channels/${priv.json.id}`, `/api/v1/channels/${priv.json.id}/messages`, `/api/v1/messages/${secret.json.id}/thread`, `/api/v1/tasks/${secretTask.id}`]) {
+  check(`by id it is not found: ${path.replace(/\/(?:[a-z]+_[0-9a-f]+|T-\d+)/g, "/…")}`, (await api("GET", path, zw.session)).status === 404);
+}
+// the daemon above found no codex here and held codex back on this machine (teamquota.go): say it is there now
+await api("PUT", "/api/v1/machine", token, { runtimes: ["codex"], runtime_info: [{ name: "codex", installed: true, logged_in: true }] });
+const claim = await api("POST", `/api/v1/tasks/${secretTask.id}/claim`, token);
+check("on its owner's task the agent finds the private words", (await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim.json.read_token}` } })).text()).includes("zebra"));
+await api("POST", `/api/v1/tasks/${secretTask.id}/report`, token, { state: "review", summary: "好了", run: claim.json.task.runs });
+const ask = await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "@acha 找找菜谱" });
+const askTask = (await api("GET", `/api/v1/tasks?thread=${ask.json.id}`, zw.session)).json.tasks[0];
+await api("POST", `/api/v1/tasks/${askTask.id}/confirm`, wl.session);
+const claim2 = await api("POST", `/api/v1/tasks/${askTask.id}/claim`, token);
+const found = await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim2.json.read_token}` } })).text();
+check("asked by an outsider elsewhere, it finds nothing there", !found.includes("zebra"), found.slice(0, 160));
+
+// 「我的偏好」 travel with the tasks their writer asks for; an agent's memory is read only by its owner, and a
+// private channel of someone else's leaves it alone.
+await api("PATCH", `/api/v1/users/${zw.user.id}`, zw.session, { preferences: "回复用中文" });
+const prefTask = (await api("GET", `/api/v1/tasks?thread=${(await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "@acha 再看一眼" })).json.id}`, zw.session)).json.tasks[0];
+await api("POST", `/api/v1/tasks/${prefTask.id}/confirm`, wl.session);
+const claim3 = await api("POST", `/api/v1/tasks/${prefTask.id}/claim`, token);
+check("the claim carries the asker's preferences", claim3.json.requester_preferences === "回复用中文", JSON.stringify(claim3.json.requester_preferences));
+check("and may write memory in a public channel", claim3.json.memory_writable === true);
+await api("POST", `/api/v1/tasks/${prefTask.id}/report`, token, { state: "review", summary: "好了", memory: "- zw 喜欢中文", run: claim3.json.task.runs });
+const memOf = async (s: string) => (await api("GET", "/api/v1/agents", s)).json.agents.find((a: any) => a.id === agent.json.id)?.memory;
+check("its owner reads its memory", (await memOf(wl.session)) === "- zw 喜欢中文");
+check("others don't", (await memOf(zw.session)) === undefined);
+check("nobody else reads 张伟's preferences", !JSON.stringify((await api("GET", "/api/v1/users", wl.session)).json).includes("回复用中文"));
+
+// a private chat: 王磊 and his @acha, made by its first message, which needs no @
+const dm = await api("POST", "/api/v1/channels", wl.session, { dm_agent: agent.json.id });
+check("a private chat", dm.status === 200 && dm.json.dm_agent === agent.json.id && dm.json.private === true, JSON.stringify(dm.json).slice(0, 160));
+check("one per person and agent", (await api("POST", "/api/v1/channels", wl.session, { dm_agent: agent.json.id })).json.id === dm.json.id);
+const dmPost = await api("POST", `/api/v1/channels/${dm.json.id}/messages`, wl.session, { text: "整理一下这周的事" });
+const dmTasks = (await api("GET", `/api/v1/tasks?thread=${dmPost.json.id}`, wl.session)).json.tasks;
+check("a message without an @ is the agent's work", dmTasks.length === 1 && dmTasks[0].agent_id === agent.json.id, JSON.stringify(dmTasks).slice(0, 160));
+check("nobody else sees the chat", !JSON.stringify((await api("GET", "/api/v1/channels", zw.session)).json).includes(dm.json.id));
+
 rmSync(W, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : "ALL OK");
 process.exit(fails ? 1 : 0);

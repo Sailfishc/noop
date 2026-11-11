@@ -1,0 +1,95 @@
+{
+  "app/App.tsx": {
+    "nsh-base": 1
+  },
+  "app/team/TeamApp.tsx": {
+    "font-size": 15,
+    "radius": 8,
+    "spacing": 16,
+    "pressable": 7
+  },
+  "app/team/channel.tsx": {
+    "nsh-base": 1,
+    "font-size": 24,
+    "radius": 12,
+    "spacing": 14,
+    "pressable": 7
+  },
+  "app/team/composer.tsx": {
+    "font-size": 12,
+    "radius": 9,
+    "color": 1,
+    "spacing": 9,
+    "pressable": 3
+  },
+  "app/team/inbox.tsx": {
+    "font-size": 2,
+    "spacing": 2
+  },
+  "app/team/logo.ts": {
+    "color": 7
+  },
+  "app/team/messages.tsx": {
+    "nsh-base": 1,
+    "font-size": 15,
+    "radius": 6,
+    "spacing": 9,
+    "pressable": 6
+  },
+  "app/team/reminders.tsx": {
+    "font-size": 4,
+    "radius": 2,
+    "spacing": 2,
+    "pressable": 2
+  },
+  "app/team/search.tsx": {
+    "font-size": 8,
+    "radius": 2,
+    "spacing": 6,
+    "pressable": 2
+  },
+  "app/team/settings.tsx": {
+    "font-size": 97,
+    "radius": 17,
+    "spacing": 43,
+    "pressable": 6
+  },
+  "app/team/signin.tsx": {
+    "font-size": 4,
+    "radius": 1,
+    "spacing": 4
+  },
+  "app/team/signups.tsx": {
+    "font-size": 4,
+    "radius": 1,
+    "spacing": 3
+  },
+  "app/team/taskcard.tsx": {
+    "font-size": 23,
+    "radius": 9,
+    "spacing": 9,
+    "pressable": 2
+  },
+  "app/team/taskfacts.tsx": {
+    "font-size": 22,
+    "radius": 4,
+    "spacing": 4,
+    "pressable": 4
+  },
+  "app/team/tasks.tsx": {
+    "font-size": 13,
+    "radius": 6,
+    "spacing": 11,
+    "pressable": 4
+  },
+  "app/team/ui.tsx": {
+    "font-size": 2,
+    "spacing": 1
+  },
+  "app/team/updates.tsx": {
+    "font-size": 3,
+    "radius": 1,
+    "spacing": 2,
+    "pressable": 1
+  }
+}

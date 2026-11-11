@@ -1,11 +1,11 @@
 // A task's facts beside its thread: who does it, who asked, time spent; folded: acceptance criteria, repository, mandate, run log.
-import { openUrl, signal, Text, View, type JSX } from "nsh";
-import { Input } from "nsh/base";
+import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius } from "../ui";
-import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
+import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, Noted, TextArea, Txt } from "../ui";
+import { taskCalls } from "./calls";
+import { isParty, EXTERNAL_TRIES, taskMachine, taskRuntime, runtimeLabel, repoLabel, type Checkpoint, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
-import { Btn, ErrorNote, failed, growing, RuntimeBadge, time } from "./ui";
+import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
 
 const minutes = (ms: number) => {
@@ -23,10 +23,11 @@ export function TaskFacts(props: { team: Team; task: Task }) {
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
   const creator = () => t.users().find((u) => u.id === task().created_by);
   const handler = () => t.users().find((u) => u.id === task().handler);
-  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const machine = () => taskMachine(t, task(), agent());
   const fold = signal<"" | "acceptance" | "repo" | "mandate" | "log">("");
   const allOutputs = signal(false);
   const live = () => ["running", "queued", "pending", "needs_decision"].includes(task().state);
+  const calls = () => taskCalls(task().calls, t.me()?.id);
   const fact = (label: string, value: JSX.Element) => (
     <View style={{ flexDirection: "row", gap: 10, alignItems: "center", minHeight: 22 }}>
       <Text style={{ width: 52, fontSize: 12.5, color: colors.faint }}>{label}</Text>
@@ -47,8 +48,14 @@ export function TaskFacts(props: { team: Team; task: Task }) {
     <View testID={`task-${task().id}-facts`} style={{ gap: 6, paddingTop: 2 }}>
       {fact(L("Done by", "执行"), <>
         {plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`)}
-        <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-        <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
+        <RuntimeBadge runtime={taskRuntime(task(), agent())} />
+        <If when={task().runtime && task().engine?.state === "switched" ? task().engine : null}>
+          {(en) => <Noted testID={`task-${task().id}-switched`}
+            note={L(`This task only: its owner switched it from ${runtimeLabel(en().from)} when that was held back, in a fresh session with ${runtimeLabel(task().runtime!)}’s default model. The agent still uses ${runtimeLabel(agent()?.runtime ?? "codex")}.`,
+              `只对这个任务：${runtimeLabel(en().from)} 被拦住时由 Agent 的主人换过来，新开会话，用 ${runtimeLabel(task().runtime!)} 的默认模型。Agent 平时仍用 ${runtimeLabel(agent()?.runtime ?? "codex")}。`)}
+            label={<Txt variant="caption" tone="muted">{L(`switched from ${runtimeLabel(en().from)}`, `从 ${runtimeLabel(en().from)} 换来`)}</Txt>} />}
+        </If>
+        <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[task().runtime ? "" : agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
       </>)}
       {fact(L("Asked by", "发起人"), plain(`${creator()?.name ?? "?"} · ${time(task().created)}`))}
       <If when={handler()}>
@@ -62,6 +69,18 @@ export function TaskFacts(props: { team: Team; task: Task }) {
           </Text>
         </If>
       </>)}
+      <If when={calls().total}>
+        {fact(calls().mine ? L("Asked you", "找你") : L("Asked people", "找人"), <>
+          <Txt testID={`task-${task().id}-calls`}>{L(`${calls().total} time${calls().total === 1 ? "" : "s"}${calls().moments ? `: ${calls().moments}` : ""}`, `${calls().total} 次${calls().moments ? `：${calls().moments}` : ""}`)}</Txt>
+          <If when={calls().outside}>
+            <Txt tone="warn" weight="semibold" testID={`task-${task().id}-calls-outside`}>{L(`${calls().outside} outside align, decide, accept`, `${calls().outside} 次在对齐、拍板、验收之外`)}</Txt>
+          </If>
+        </>)}
+      </If>
+      <If when={task().checkpoint}>
+        {(c) => fact(L("Saved", "检查点"), <Noted testID={`task-${task().id}-checkpoint`} note={checkpointNote(t, c())}
+          label={<Txt tone={checkpointSaved(c()) ? "default" : "faint"} testID={`task-${task().id}-checkpoint-at`}>{checkpointSaved(c()) ? time(c().at) : L("No checkpoint", "没有检查点")}</Txt>} />)}
+      </If>
       <If when={task().state === "waiting" && task().wait}>
         {fact(L("Waiting", "等待"), <View testID={`task-${task().id}-wait`} style={{ flex: 1, gap: 2 }}>
           <Each of={waitLines(task())} key="index">{(l) => <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{l()}</Text>}</Each>
@@ -112,6 +131,24 @@ export function TaskFacts(props: { team: Team; task: Task }) {
   );
 }
 
+/** Whether anything of the task was kept (a wip commit, its directory). */
+const checkpointSaved = (c: Checkpoint) => !!c.files || c.repos.some((r) => r.commit);
+
+/** What a checkpoint holds, behind its ⓘ: where it is kept, what failed, and what it is for. */
+export function checkpointNote(t: Team, c: Checkpoint): string {
+  const machine = t.machines().find((m) => m.id === c.machine)?.name ?? L("its computer", "它的电脑");
+  const lines: string[] = [];
+  for (const r of c.repos) {
+    const name = r.repo ? repoLabel(r.repo) : L("repository", "仓库");
+    lines.push(r.error ? `${name}：${r.error}` : L(`${name}: branch ${r.branch}`, `${name}：分支 ${r.branch}`));
+  }
+  if (c.files) lines.push(L(`Its directory, ${Math.max(1, Math.round(c.files.size / 1024))} KB, on the server`, `工作目录（${Math.max(1, Math.round(c.files.size / 1024))} KB）存在服务端`));
+  if (c.error) lines.push(c.error);
+  if (c.checked > c.at) lines.push(L(`Still current at ${time(c.checked)}`, `${time(c.checked)} 时仍是最新`));
+  lines.push(L(`Saved from ${machine} when a run stops and every 10 minutes while it runs, so another computer could go on from here.`, `从 ${machine} 存出，运行停下时和运行中每 10 分钟存一次，换一台电脑时从这里接着做。`));
+  return lines.join("\n");
+}
+
 /** Who handed the task over, under which rule, who confirmed it, and how far the agent may go. */
 export function mandateLine(t: Team, task: Task): string {
   const m = task.mandate;
@@ -150,15 +187,14 @@ export function RepoPicker(props: { team: Team; value: string; testID: string; o
   }
   return (
     <View testID={props.testID} style={{ gap: 6, padding: 8, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
-      <Input
+      <Field
+        small
         testID={`${props.testID}-input`}
         value={draft()}
         autoFocus
         placeholder={L("https://github.com/owner/name, or pick one below", "https://github.com/owner/name，或从下面选")}
-        class="placeholder:text-faint"
-        onChange={({ value }) => draft.set(value)}
+        onChange={draft.set}
         onSubmit={() => void pick(draft().trim())}
-        style={{ height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, color: colors.text }}
       />
       <Each of={shown()} key={(r) => r.remote}>
         {(r) => (
@@ -230,7 +266,6 @@ function Acceptance(props: { team: Team; task: Task }) {
   const t = props.team;
   const editing = signal(false);
   const draft = signal("");
-  const grow = growing({ min: 64, max: 160, pad: 22, line: 20 });
   const busy = signal(false);
   const error = signal("");
   const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
@@ -258,16 +293,14 @@ function Acceptance(props: { team: Team; task: Task }) {
       </If>
       <If when={editing()}>
         <View style={{ gap: 6 }}>
-          <Input
+          <TextArea
             testID={`task-${props.task.id}-acceptance-input`}
             value={draft()}
-            multiline
+            min={64}
+            max={160}
             autoFocus
             placeholder={L("One per line, e.g. P99 under 200 ms; no table locks", "一行一条，比如：P99 低于 200ms；上线不锁表")}
-            class="placeholder:text-faint"
-            onChange={({ value }) => draft.set(value)}
-            onContentSizeChange={grow.onContentSizeChange}
-            style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14, lineHeight: 20, color: colors.text }}
+            onChange={draft.set}
           />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>

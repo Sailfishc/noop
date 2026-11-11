@@ -1,13 +1,17 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
-import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
-import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
+import { L, lang } from "../i18n";
+import { alpha, Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, Txt } from "../ui";
+import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
-import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
+import { AlignCard } from "./aligncard";
+import { EvidenceLine, EvidenceList } from "./evidence";
+import { Delegates, waitingFor } from "./delegates";
+import { MoveCard } from "./movecard";
+import { EngineCard } from "./enginecard";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -39,12 +43,21 @@ const HOW: Record<string, () => string> = {
   poll: () => L("checked now and then", "定时查询"),
   timer: () => L("looks again at a set time", "到点再看"),
   answer: () => L("woken by the answer", "等人回答"),
+  quota: () => L("its runtime’s usage limit", "运行时的额度"),
 };
+
+/** A task waiting for its runtime's usage limit: when it goes on by itself. */
+function quotaShort(w: Wait): string {
+  if (w.expect) return L(`Waiting for quota, goes on about ${time(w.expect)}`, `等额度恢复，预计 ${time(w.expect)} 自动继续`);
+  return L(`Waiting for quota, tries again ${time(w.next_at ?? 0)}`, `等额度恢复，${time(w.next_at ?? 0)} 再试`);
+}
 
 /** What a waiting task waits for, in one short line (its card). */
 export function waitShort(task: Task): string {
   const w = task.wait;
   if (!w) return "";
+  if (w.how === "quota") return quotaShort(w);
+  if (w.how === "delegates") return L("what it delegated", "委派出去的部分");
   const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
   return [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), until].join(" · ");
 }
@@ -53,6 +66,8 @@ export function waitShort(task: Task): string {
 export function waitLines(task: Task): string[] {
   const w = task.wait;
   if (!w) return [];
+  if (w.how === "quota") return [quotaShort(w), ...(w.note ? [w.note] : [])];
+  if (w.how === "delegates") return [L("What it delegated: woken once, when all of it is back", "委派出去的部分：全部交回时叫醒一次")];
   const lines = [
     [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), HOW[w.how]?.() ?? w.how].join(" · "),
     [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
@@ -160,12 +175,19 @@ function conclusion(task: Task): string {
 
 const WHY: Record<Holder["why"], () => string> = {
   confirm: () => L("to say yes", "确认开工"), handoff_card: () => L("to decide a handoff", "决定要不要交接"), answer: () => L("to answer", "回答问题"),
-  handoff: () => L("to do their part", "做交给他的事"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
+  handoff: () => L("to do their part", "做交给他的事"), align: () => L("to align on what done means", "对齐做完意味着什么"), decide: () => L("to decide", "做决定"), accept: () => L("to accept it", "验收"),
   unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
   work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
+  receipt: () => L("to check what came back", "检查交回的结果"),
+  move: () => L("to decide whether it goes on on another computer", "决定换不换电脑"),
+  engine: () => L("to decide whether it goes on with another runtime", "决定换不换引擎"),
 };
 /** "Ball: 张伟 · to accept it" / "Ball: you · …" / "Ball: @acha · working on it". */
-function holderText(t: Team, hd: Holder, me: string | undefined): string {
+function holderText(t: Team, hd: Holder, me: string | undefined, task?: Task): string {
+  if (hd.why === "wait" && task?.wait?.how === "delegates") {
+    const a = "@" + (t.agents().find((x) => x.id === hd.id)?.handle ?? "?");
+    return L(`Ball: ${a} · waiting for what it delegated`, `球在 ${a} 手里 · 等委派的交回`);
+  }
   const who = hd.kind === "agent" ? "@" + (t.agents().find((a) => a.id === hd.id)?.handle ?? "?") : hd.id === me ? L("you", "你") : t.users().find((u) => u.id === hd.id)?.name ?? "?";
   return L(`Ball: ${who} · ${WHY[hd.why]?.() ?? hd.why}`, `球在 ${who} 手里 · ${WHY[hd.why]?.() ?? hd.why}`);
 }
@@ -175,7 +197,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
-  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const machine = () => taskMachine(t, task(), agent());
   const me = () => t.me();
   const isOwner = () => !!me() && (me()!.id === agent()?.owner_id || me()!.role === "admin");
   const party = () => isParty(task(), me(), agent());
@@ -204,7 +226,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff", body: unknown = {}) {
+  /** Only the agent's owner answers the 换电脑 card (not an admin: it is their computers). */
+  const mayMove = () => !!me() && me()!.id === agent()?.owner_id;
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff" | "retry" | "move" | "engine", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -214,9 +238,20 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const waiting = () => {
     const s = task().state;
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
-    if (s === "queued" && agent()?.paused) return L(`Waiting: the agent is paused (${agent()!.paused!.text}); reply here once it is fixed`, `排队中：Agent 已暂停（${agent()!.paused!.text}），处理好后在这里回复一句`);
+    // several computers and none can take it now (as the server picks): it goes to whichever comes back first
+    if (s === "queued" && !task().claimed_by && agent() && machinesOf(t, agent()!).length > 1 && blockedReason(agent()!, machine(), false)) {
+      return L("Waiting for one of its computers to free up", "等一台能接活的电脑");
+    }
+    const trouble = s === "queued" ? machine()?.runtime_status?.[taskRuntime(task(), agent())] : undefined;
+    if (trouble) return `${machine()!.name}${L(": ", "：")}${runtimeTrouble(trouble, lang() !== "zh")}`;
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
+    // its computer went away mid-run: it goes on when it's back (or on another, if the agent's owner says so)
+    if (s === "running" && task().claimed_by && machine() && !machine()!.online) return L(`${machine()!.name} is offline; it goes on when it’s back`, `${machine()!.name} 离线，等它上线`);
     if (s === "running") return task().step || L("Working…", "干活中…");
+    if (s === "waiting" && task().wait?.how === "delegates") {
+      const who = waitingFor(t, task());
+      return who ? L(`Waiting for ${who}`, `等 ${who}`) : L("Everything delegated is back", "委派的都交回了");
+    }
     if (s === "waiting") return waitShort(task());
     return "";
   };
@@ -225,7 +260,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={props.detail} else={
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-          <Text style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{task().title}</Text>
+          <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.muted : colors.text, numberOfLines: 1 }}>
+            {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
+          </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <If when={task().state === "running"}>
               <Spinner size={11} tint={colors.accent} />
@@ -244,13 +281,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         }>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Input
+            <Field
+              small
+              grow
               testID={`task-${task().id}-title-input`}
               value={draft()}
               autoFocus
-              onChange={({ value }) => draft.set(value)}
+              onChange={draft.set}
               onSubmit={() => void rename()}
-              style={{ flex: 1, height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14.5, color: colors.text }}
             />
             <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => renaming.set(false)} />
             <Btn small kind="primary" testID={`task-${task().id}-title-save`} label={L("Save", "保存")} busy={busy() === "rename"} disabled={!draft().trim()} onPress={() => void rename()} />
@@ -269,7 +307,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={needs()}>
         {(n) => (
           <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
-            <StateDot tone={n().tone} />
+            <Dot tone={n().tone} />
             <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label}</Text>
           </View>
         )}
@@ -296,30 +334,49 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <Each of={openHandoffs(task())} key={(x) => x.id}>
         {(x) => {
           const to = () => t.agents().find((a) => a.id === x().to);
-          const mayDecide = () => party() || (!!me() && me()!.id === to()?.owner_id);
+          const toOwner = () => t.users().find((u) => u.id === to()?.owner_id);
+          // the card is there because @B's owner says yes first: only they hand it over; the task's people may say no
+          const mayAccept = () => !!me() && me()!.id === to()?.owner_id;
+          const mayDecline = () => mayAccept() || party();
           return (
-            <View testID={`task-${task().id}-handoff-${x().id}`} style={{ gap: 6, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
-              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
-                {L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}
-              </Text>
-              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{x().what}</Text>
-              <If when={mayDecide()} else={<Text style={{ fontSize: 12, color: colors.faint }}>{L("Its asker, the person taking it, or an owner of the two agents decides.", "由发起人、处理人或两个 Agent 的主人决定。")}</Text>}>
+            <Card tight testID={`task-${task().id}-handoff-${x().id}`}>
+              <Noted
+                testID={`task-${task().id}-handoff-${x().id}-who`}
+                note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
+                label={<Txt variant="caption" weight="semibold" tone="accent">{x().kind === "delegate"
+                  ? L(`@${agent()?.handle ?? "?"} suggests delegating a part to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议委派给 @${to()?.handle ?? "?"}`)
+                  : L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
+              />
+              <If when={x().what}>
+                <Txt lines={3}>{x().what}</Txt>
+              </If>
+              <If when={mayDecline()}>
                 <View style={{ flexDirection: "row", gap: 6 }}>
-                  <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  <If when={mayAccept()}>
+                    <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  </If>
                   <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
                 </View>
               </If>
-            </View>
+            </Card>
           );
         }}
       </Each>
+      <If when={task().move?.state === "proposed" && mayMove() ? task().move : null}>
+        {(mv) => <MoveCard team={t} task={task()} move={mv()} busy={busy() === "move"} onMove={(to) => act("move", { to })} onWait={() => act("move", { wait: true })} />}
+      </If>
+      <If when={task().engine?.state === "proposed" && mayMove() ? task().engine : null}>
+        {(en) => <EngineCard team={t} task={task()} engine={en()} busy={busy() === "engine"} onSwitch={(to) => act("engine", { to })} onKeep={() => act("engine", { keep: true })} />}
+      </If>
+      <Delegates team={t} task={task()} />
       <If when={props.detail ? task().holder : null}>
-        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id)}</Text>}
+        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id, task())}</Text>}
       </If>
       <If when={props.detail && (task().mandate?.via?.length || task().mandate?.trigger || task().submits?.length)}>
         <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.faint }}>
           {[
-            task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
+            task().mandate?.delegated && task().mandate?.via?.length ? L(`Delegated by @${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"}; its result goes back to it`, `@${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"} 委派的，结果交回给它`)
+            : task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
             task().mandate?.trigger ? L("Started by a trigger", "由触发器发起") : "",
             task().submits?.length ? L(`Outside submissions ${task().submits!.length}/3`, `外部提交 ${task().submits!.length}/3`) : "",
           ].filter(Boolean).join(" · ")}
@@ -327,9 +384,12 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       </If>
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-          <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
-            {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
+          <RuntimeBadge runtime={taskRuntime(task(), agent())} />
+          <Text testID={`task-${task().id}-where`} style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
+            {(task().redacted
+              // its agent's owner is not in that private channel: who asked and which agent, nothing of what it says
+              ? [`@${agent()?.handle ?? "?"}`, L("in a private channel", "在一个私有频道里"), L(`asked by ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`, `发起人 ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`)]
+              : [`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()]).filter(Boolean).join(" · ")}
           </Text>
         </View>
       </If>
@@ -344,7 +404,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         )}
       </If>
-      <If when={task().state === "needs_decision" ? task().decision : null}>
+      <If when={task().state === "needs_decision" && task().decision?.kind === "align" ? task().decision : null}>
+        {(d) => <AlignCard task={task()} decision={d()} party={party()} busy={busy() === "decide"} onGo={(acceptance) => act("decide", acceptance === undefined ? {} : { acceptance })} />}
+      </If>
+      <If when={task().state === "needs_decision" && task().decision?.kind !== "align" ? task().decision : null}>
         {(d) => (
           <View style={{ gap: 6 }}>
             <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{d().question}</Text>
@@ -367,16 +430,23 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         )}
       </If>
+      <If when={task().state === "review" && task().evidence?.length}>
+        <EvidenceLine task={task()} />
+        <If when={props.detail}><EvidenceList team={t} task={task()} /></If>
+      </If>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <If when={task().state === "pending" && isOwner()}>
           <Btn small kind="primary" testID={`task-${task().id}-confirm`} label={L("Start it", "确认开工")} busy={busy() === "confirm"} onPress={() => act("confirm")} />
           <Btn small testID={`task-${task().id}-decline`} label={L("Decline", "不接")} busy={busy() === "decline"} onPress={() => act("decline")} />
         </If>
+        <If when={task().state === "waiting" && task().wait?.how === "quota" && party()}>
+          <Btn small kind="primary" testID={`task-${task().id}-retry`} label={L("Try now", "现在就试")} busy={busy() === "retry"} onPress={() => act("retry")} />
+        </If>
         <If when={task().state === "review" && party()}>
           <Btn small kind="primary" testID={`task-${task().id}-accept`} label={L("Accept", "验收通过")} busy={busy() === "accept"} onPress={() => act("accept")} />
         </If>
         <If when={party() && !["done", "closed"].includes(task().state) && !(task().state === "pending" && isOwner())}>
-          <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
+          <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : task().state === "waiting" ? L("Cancel", "取消") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
         </If>
         <If when={party() && ["review", "needs_decision", "blocked", "failed"].includes(task().state)}>
           <If when={task().state !== "review"}>

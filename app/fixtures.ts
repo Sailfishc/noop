@@ -8,7 +8,7 @@ export const T0 = Date.now() - 3600_000;
 export const zw = { id: "u_1", email: "zw@corp.com", handle: "zhangwei", name: "张伟", role: "admin", disabled: false };
 export const wl = { id: "u_2", email: "wl@corp.com", handle: "wanglei", name: "王磊", role: "member", disabled: false };
 export const mac = { id: "m_1", owner_id: "u_1", name: "张伟的 Mac", os: "darwin", arch: "arm64", runtimes: ["codex"], max_sessions: 3, online: true, last_seen: T0 };
-export const acha = { id: "a_1", owner_id: "u_1", machine_id: "m_1", handle: "acha", name: "阿查", description: "", runtime: "codex", dispatch: "channel", confirm: true, autonomy: "assist", model: "" };
+export const acha = { id: "a_1", owner_id: "u_1", machine_id: "m_1", machines: ["m_1"], handle: "acha", name: "阿查", description: "", runtime: "codex", dispatch: "channel", confirm: true, autonomy: "assist", model: "" };
 export const pay = { id: "c_1", slug: "pay", name: "支付后端", topic: "慢查询", archived: false, created: T0, members: [{ kind: "user", id: "u_1" }, { kind: "user", id: "u_2" }, { kind: "agent", id: "a_1" }], last_seq: 2 };
 export const ops = { id: "c_2", slug: "ops", name: "运维", topic: "", archived: false, created: T0, members: [{ kind: "user", id: "u_2" }], last_seq: 0 };
 export const msg = (over: Record<string, unknown>) => ({
@@ -37,15 +37,37 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     return { body: t };
   };
   const triggers: any[] = [...((over as any).__triggers ?? [])];
-  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
+  let cards: any[] = [...((over as any).__proposals ?? [])];
+  const answered = (ids: string[]) => { cards = cards.map((b) => ({ ...b, proposals: b.proposals.filter((p: any) => !ids.includes(p.id)) })).filter((b) => b.proposals.length); };
+  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state) ||
+    (!["done", "closed"].includes(t.state) && (t.handoffs ?? []).some((x: any) => x.state === "proposed")));
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
-    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),
+    [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting(), proposals: cards } }),
+    [`POST ${URL}/api/v1/proposals/*/answer`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/proposals\/([^/]+)\//)![1];
+      const b = JSON.parse(r.body!);
+      log.acts.push(`${id} ${b.do ? "do" : "no"}`);
+      answered([id]);
+      return { body: { task: b.do ? "T-0042" : "", batches: cards } };
+    },
+    [`POST ${URL}/api/v1/proposal-batches/*/answer`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/proposal-batches\/([^/]+)\//)![1];
+      const b = JSON.parse(r.body!);
+      log.acts.push(`${id} ${b.text}`);
+      const card = cards.find((x) => x.id === id);
+      const nums = (String(b.text).match(/\d+/g) ?? []).map(Number);
+      const rest = /其余不做/.test(b.text);
+      answered((card?.proposals ?? []).filter((p: any) => rest || nums.includes(p.num)).map((p: any) => p.id));
+      return { body: { done: nums.map((n) => ({ num: n, task: "T-0042" })), declined: 0, batches: cards } };
+    },
     [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
     [`GET ${URL}/api/v1/metrics?*`]: { body: { days: 7, since: T0, reply: { count: 9, median: 1_380_000, p90: 9_000_000, open: 2, oldest: 5_400_000 },
       reply_by: { confirm: { count: 3, median: 600_000, p90: 900_000, open: 0, oldest: 0 }, accept: { count: 6, median: 2_400_000, p90: 9_000_000, open: 2, oldest: 5_400_000 } },
       runs: { tasks: 7, mean: 1.9, median: 2, max: 4, three_plus: 2 }, cancelled: 2, redone: 1,
-      agents: [{ agent_id: "a_1", tasks: 9, people: 2, others: 4, team: false, machine: "张伟的 Mac" }] } },
+      agents: [{ agent_id: "a_1", tasks: 9, people: 2, others: 4, team: false, machine: "张伟的 Mac" }],
+      mine: { calls: 12, tasks: 5, outside: 3, by_class: { align: 2, decide: 3, accept: 4, outside: 3 }, by_kind: { align: 2, decide: 2, confirm: 1, accept: 5, unblock: 2 } },
+      team: { calls: 31, tasks: 14, outside: 6, by_class: { align: 5, decide: 9, accept: 11, outside: 6 }, by_kind: { align: 5, decide: 6, ask: 3, accept: 13, unblock: 2, retry: 2 } } } },
     [`POST ${URL}/api/v1/tasks/*/confirm`]: act("confirm", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decline`]: act("decline", (t) => { t.state = "closed"; }),
     [`POST ${URL}/api/v1/tasks/*/cancel`]: act("cancel", (t) => { t.state = "closed"; }),
@@ -71,15 +93,26 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       const b = JSON.parse(r.body!);
       log.created.push({ trigger: b });
       const x = { id: `trg_${triggers.length + 1}`, channel_id: b.channel_id, agent_id: b.agent, created_by: "u_1", kind: b.kind, text: b.text, repeat: b.repeat ?? "",
-        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0 };
+        due: b.kind === "schedule" ? T0 + 86400_000 : undefined, repo: (b.repo ?? "").replace(/^https?:\/\//, ""), branch: b.branch ?? "", confirmed_by: "u_1", enabled: true, fired: null, fires: 0, created: T0, max_per_day: b.max_per_day ?? 10, skipped: 0,
+        duty: b.duty ?? "", readonly: b.readonly ?? true, ...(b.check_cmd ? { check_cmd: b.check_cmd } : {}) };
       triggers.push(x);
       return { body: x };
     },
-    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string }) => {
+    [`GET ${URL}/api/v1/triggers/runs?*`]: { body: { runs: [] } },
+    [`POST ${URL}/api/v1/triggers/duty`]: (r: { body?: string | null }) => {
+      const b = JSON.parse(r.body!);
+      log.patches.push({ duty: b });
+      const xs = triggers.filter((x) => x.agent_id === b.agent_id && x.duty === b.duty);
+      for (const x of xs) x.enabled = b.enabled;
+      return { body: { triggers: xs } };
+    },
+    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string; body?: string | null }) => {
       const id = r.url.match(/triggers\/([^/]+)\//)![1];
-      log.acts.push(`${id} confirm`);
+      const seen = r.body ? JSON.parse(r.body).check_cmd : undefined;
+      log.acts.push(seen ? `${id} confirm ${seen}` : `${id} confirm`);
       const x = triggers.find((y) => y.id === id)!;
       x.confirmed_by = "u_1";
+      x.check_waits = false;
       return { body: x };
     },
     [`GET ${URL}/api/v1/team/config`]: { body: { repo: "" } },
@@ -90,7 +123,8 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
-    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
+    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], preferences: "回复用中文；PR 描述先写改了什么再写为什么。",
+      digest: { every: "daily", at: "09:30", at2: "14:00", quiet: "22:00-08:00" } } },
     [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
     [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
     [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac] } },
@@ -137,7 +171,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers")),
+    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers" && k !== "__proposals")),
   };
 }
 export const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });
