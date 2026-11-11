@@ -10,6 +10,13 @@ Remi: a self-hosted place where a team's people and agents work together. Three 
 | Client app | `app/` (`team/` screens, `ui/` components) | NSH TSX | `nsh check app`, `nsh test`, layout, `check-ui`, screenshots |
 | Both ends together | `server/test/e2e-*.ts` | Bun against a real server | `scripts/e2e.sh` |
 
+## How to work here
+
+1. This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
+2. Before you start, say in a line what you're about to do; brief updates while you work help the user follow along.
+   Close with a short recap that stands on its own (what you found, what you did, and what's next), so a reader who
+   only sees the last message has the full picture.
+
 ## Before you push: `scripts/check.sh`
 
 It runs what CI runs for the parts your change touches (compared with `origin/main`) and prints one summary;
