@@ -10,6 +10,7 @@ import { TaskFacts } from "./taskfacts";
 import { AlignCard } from "./aligncard";
 import { EvidenceLine, EvidenceList } from "./evidence";
 import { Delegates, waitingFor } from "./delegates";
+import { MoveCard } from "./movecard";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -177,6 +178,7 @@ const WHY: Record<Holder["why"], () => string> = {
   unblock: () => L("to unblock it", "解决卡住的地方"), retry: () => L("to retry or close it", "决定重试还是关闭"),
   work: () => L("working on it", "在做"), wait: () => L("waiting for an outside result", "在等外部结果"),
   receipt: () => L("to check what came back", "检查交回的结果"),
+  move: () => L("to decide whether it goes on on another computer", "决定换不换电脑"),
 };
 /** "Ball: 张伟 · to accept it" / "Ball: you · …" / "Ball: @acha · working on it". */
 function holderText(t: Team, hd: Holder, me: string | undefined, task?: Task): string {
@@ -222,7 +224,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff" | "retry", body: unknown = {}) {
+  /** Only the agent's owner answers the 换电脑 card (not an admin: it is their computers). */
+  const mayMove = () => !!me() && me()!.id === agent()?.owner_id;
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff" | "retry" | "move", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -239,6 +243,8 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     const trouble = s === "queued" ? machine()?.runtime_status?.[agent()?.runtime ?? "codex"] : undefined;
     if (trouble) return `${machine()!.name}${L(": ", "：")}${runtimeTrouble(trouble, lang() !== "zh")}`;
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
+    // its computer went away mid-run: it goes on when it's back (or on another, if the agent's owner says so)
+    if (s === "running" && task().claimed_by && machine() && !machine()!.online) return L(`${machine()!.name} is offline; it goes on when it’s back`, `${machine()!.name} 离线，等它上线`);
     if (s === "running") return task().step || L("Working…", "干活中…");
     if (s === "waiting" && task().wait?.how === "delegates") {
       const who = waitingFor(t, task());
@@ -354,6 +360,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           );
         }}
       </Each>
+      <If when={task().move?.state === "proposed" && mayMove() ? task().move : null}>
+        {(mv) => <MoveCard team={t} task={task()} move={mv()} busy={busy() === "move"} onMove={(to) => act("move", { to })} onWait={() => act("move", { wait: true })} />}
+      </If>
       <Delegates team={t} task={task()} />
       <If when={props.detail ? task().holder : null}>
         {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id, task())}</Text>}

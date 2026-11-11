@@ -12,15 +12,16 @@ package hub
 //	accept (the first)                          accept
 //	accept (the second and later)               outside: it was not right the first time
 //	unblock, retry                              outside: the agent could not go on by itself
+//	move                                        outside: its computer went away (teammove.go)
 //
 // confirm, decide, align, accept, unblock and retry are status changes (noteStatus); ask, handoff and handoff_card
 // change no status and are recorded beside them ("side" calls, left out of the status timeline). Nothing older than
 // the who column is counted: there is no backfill.
 
 // side calls: recorded in task_events without a status change of their own.
-var sideKinds = map[string]bool{"ask": true, "handoff": true, "handoff_card": true}
+var sideKinds = map[string]bool{"ask": true, "handoff": true, "handoff_card": true, "move": true}
 
-const sideKindsSQL = "('ask', 'handoff', 'handoff_card')"
+const sideKindsSQL = "('ask', 'handoff', 'handoff_card', 'move')"
 
 // callView: the task needed this person, for this, then; Class is the moment it counts as: align | decide | accept |
 // outside.
@@ -44,7 +45,7 @@ func classify(calls []callView) []callView {
 			if accepts > 1 {
 				calls[i].Class = "outside"
 			}
-		case "unblock", "retry":
+		case "unblock", "retry", "move":
 			calls[i].Class = "outside"
 		default:
 			calls[i].Class = "decide"
@@ -60,7 +61,7 @@ func (h *Hub) calledFor(id, needs string) string {
 	_ = h.db.QueryRow("SELECT t.created_by, t.handler, COALESCE(a.owner_id, '') FROM tasks_v1 t LEFT JOIN agents a ON a.id = t.agent_id WHERE t.id = ?", id).
 		Scan(&by, &handler, &owner)
 	switch needs {
-	case "confirm":
+	case "confirm", "move":
 		return owner
 	case "align", "decide", "accept", "handoff_card":
 		if handler != "" {

@@ -93,6 +93,19 @@ const alignNet = () => server(newLog(), {
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, [aligning, ...tasks.slice(1)]);
+// the first task's computer went away mid-run: its agent's owner (张伟, who is signed in) is asked whether it goes on
+// on the desktop, from the checkpoint 12 minutes before
+const moving = task({ id: "T-0001", state: "running", tracked: true, title: "看下慢查询", step: "在读 slow log", created_by: "u_1", claimed_by: "m_1",
+  holder: { kind: "user", id: "u_1", why: "move" }, moves: 0,
+  move: { from: "m_1", to: "m_2", at: Date.now(), since: Date.now() - 14 * 60_000, state: "proposed" },
+  checkpoint: { at: Date.now() - 26 * 60_000, checked: Date.now() - 26 * 60_000, machine: "m_1", repos: [{ repo: "github.com/acme/pay", branch: "agent/T-0001-wip", commit: "a".repeat(40) }] },
+  calls: [{ at: T0, who: "u_1", kind: "move", class: "outside" }] });
+const moveNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [{ ...box, online: false, last_seen: Date.now() - 14 * 60_000 }, { ...mac, id: "m_2", name: "张伟的台式机", online: true }] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [{ ...acha, machines: ["m_1", "m_2"] }] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [moving, ...tasks.slice(1)]);
 
 // The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
 describe("showcase", () => {
@@ -150,6 +163,18 @@ describe("screens", () => {
     await app.press("id:thread >> id:task-T-0001-align-edit");
     await app.waitFor("id:thread >> id:task-T-0001-align-input");
     await shot(app, "thread-align-edit");
+  });
+
+  test("thread-move: the 换电脑继续 card, for the agent's owner", async () => {
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...SIZE, network: moveNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-move-go");
+    expect(app.shows("id:thread >> id:task-T-0001-move-wait")).toBe(true);
+    expect(app.shows("id:thread >> id:task-T-0001-move-lost")).toBe(true);
+    await shot(app, "thread-move");
   });
 
   test("thread-evidence: a delivered task, each criterion with how it was checked", async () => {

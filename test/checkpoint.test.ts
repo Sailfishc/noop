@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dropCheckpoint, keptCheckpoints, pack, packList, saveCheckpoint } from "../src/checkpoint";
-import { createWorker, prepareWorkdir, type Claim, type TeamTask } from "../src/teamwork";
+import { createWorker, movedPrompt, prepareWorkdir, type Claim, type TeamTask } from "../src/teamwork";
 import type { Runtime } from "../src/runtimes";
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -162,7 +162,7 @@ test("the worker checkpoints when a run stops (after its report), and not when c
     await Bun.sleep(50);
     await w.idle();
     const report = calls.findIndex((c) => c.startsWith("SEND /api/v1/tasks/T-0010/report"));
-    const ck = calls.findIndex((c) => c === "POST /api/v1/tasks/T-0010/checkpoint");
+    const ck = calls.findIndex((c) => c.startsWith("POST /api/v1/tasks/T-0010/checkpoint"));
     expect(report).toBeGreaterThanOrEqual(0);
     if (on) {
       expect(ck).toBeGreaterThan(report);
@@ -173,4 +173,129 @@ test("the worker checkpoints when a run stops (after its report), and not when c
     }
     w.stop();
   }
+});
+
+test("moved to another computer: a fresh worktree comes back from the checkpoint (commits, and changes not committed)", async () => {
+  const r = repo();
+  // computer A: commits one file, leaves two more uncommitted, a checkpoint goes to the remote
+  const wd = await prepareWorkdir(claimFor(r.work, "T-0011"), join(r.root, "a"));
+  writeFileSync(join(wd.cwd, "b.txt"), "committed\n");
+  sh(wd.cwd, "git", "add", "b.txt");
+  sh(wd.cwd, "git", "commit", "-qm", "b on A");
+  writeFileSync(join(wd.cwd, "c.txt"), "new, not committed\n");
+  writeFileSync(join(wd.cwd, "a.txt"), "changed, not committed\n");
+  sh(wd.cwd, "rm", "-f", ".gitignore");
+  const sent: any[] = [];
+  await saveCheckpoint({ api: async (_p, i) => sent.push(JSON.parse(String(i?.body))), dir: join(r.root, "cka") }, "T-0011", wd, true);
+  const point = sent[0].repos[0];
+
+  // computer B: its own clone, no local branch of the task
+  const b = join(r.root, "b-clone");
+  sh(r.root, "git", "clone", "-q", r.origin, b);
+  const moved = claimFor(b, "T-0011");
+  moved.task.moves = 1;
+  moved.task.checkpoint = { at: Date.now(), repos: [point] };
+  const wb = await prepareWorkdir(moved, join(r.root, "b"));
+  expect(wb.restored).toBe("checkpoint");
+  expect(sh(wb.cwd, "git", "log", "-1", "--format=%s")).toBe("b on A");
+  expect(sh(wb.cwd, "git", "rev-parse", "HEAD")).toBe(point.head);
+  expect(readFileSync(join(wb.cwd, "c.txt"), "utf8")).toBe("new, not committed\n");
+  expect(readFileSync(join(wb.cwd, "a.txt"), "utf8")).toBe("changed, not committed\n");
+  expect(existsSync(join(wb.cwd, ".gitignore"))).toBe(false);
+  const st = sh(wb.cwd, "git", "status", "--porcelain");
+  expect(st).toContain(" M a.txt");
+  expect(st).toContain("?? c.txt");
+  expect(sh(wb.cwd, "git", "diff", "--cached", "--name-only")).toBe(""); // not staged: as the agent left them
+  expect(sh(b, "git", "for-each-ref", "refs/remi/")).toBe(""); // nothing of the fetch left behind
+  expect(await movedPrompt(moved, wb)).toContain("restored from the checkpoint");
+
+  // no checkpoint, but the task branch was pushed: it starts from that
+  sh(r.work, "git", "push", "-q", "origin", `${point.head}:refs/heads/agent/T-0012`);
+  const c2 = claimFor(join(r.root, "b-clone"), "T-0012");
+  c2.task.moves = 1;
+  const w2 = await prepareWorkdir(c2, join(r.root, "b"));
+  expect(w2.restored).toBe("branch");
+  expect(sh(w2.cwd, "git", "rev-parse", "HEAD")).toBe(point.head);
+});
+
+test("a general task moved: its directory comes back from the server", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ckm-"));
+  mkdirSync(join(dir, "src", "notes"), { recursive: true });
+  writeFileSync(join(dir, "src", "notes", "draft.md"), "draft");
+  const tgz = pack(join(dir, "src"), packList(join(dir, "src")).files);
+  const c = claimFor("", "T-0013");
+  c.agent.repo = "";
+  c.task.moves = 1;
+  c.task.checkpoint = { at: Date.now(), repos: [], files: { id: "ckpt-T-0013-1", size: tgz.length } };
+  const wd = await prepareWorkdir(c, join(dir, "work"), undefined, async (id) => (id === "T-0013" ? tgz : null));
+  expect(wd.restored).toBe("checkpoint");
+  expect(readFileSync(join(wd.cwd, "notes", "draft.md"), "utf8")).toBe("draft");
+  expect(existsSync(join(wd.cwd, "in"))).toBe(true);
+});
+
+test("a run whose task moved away stops: nothing pushed, no report, no checkpoint", async () => {
+  const r = repo();
+  const calls: string[] = [];
+  let moves = 0, release = () => {};
+  const api = async (path: string, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    if (path.endsWith("/claim")) return { ...claimFor(r.work, "T-0014"), task: { id: "T-0014", state: "running", branch: "", repo: "", runs: 1, moves: 0 } };
+    if (path === "/api/v1/tasks/T-0014") return { id: "T-0014", moves };
+    return { tasks: [] };
+  };
+  const slow: Runtime = { name: "codex", available: () => true, start: (o: any) => {
+    writeFileSync(join(o.cwd, "work.txt"), "done\n");
+    let kill = () => {};
+    const done = new Promise<any>((res) => { release = () => res({ text: "```json\n{\"status\": \"review\", \"summary\": \"ok\"}\n```", exitCode: 0, steps: 1 }); kill = () => res({ killed: true, text: "", exitCode: 1 }); });
+    return { kill: () => kill(), done };
+  } } as any;
+  const pushed: string[] = [];
+  const w = createWorker({ api, maxParallel: 1, workRoot: join(r.root, "tasks"), runtimes: { codex: slow }, checkpoints: true,
+    afterRun: async () => { pushed.push("pr"); return null; }, send: async (p) => { calls.push(`SEND ${p}`); return "ok"; } });
+  const mine = () => true;
+  w.onTask({ id: "T-0014", state: "queued", agent_id: "a" } as TeamTask, mine);
+  await Bun.sleep(100);
+  // the owner moved it while it ran (the socket says so): the run here stops
+  moves = 1;
+  w.onTask({ id: "T-0014", state: "queued", agent_id: "a", moves: 1 } as TeamTask, mine);
+  await w.idle();
+  expect(pushed).toEqual([]);
+  expect(calls.some((c) => c.startsWith("SEND"))).toBe(false);
+  expect(calls.some((c) => c.includes("/checkpoint"))).toBe(false);
+
+  // a frame missed: the run ends, but the machine asks before pushing
+  const r2 = repo();
+  moves = 0;
+  const api2 = async (path: string, init?: RequestInit) => {
+    calls.push(`${init?.method ?? "GET"} ${path}`);
+    if (path.endsWith("/claim")) return { ...claimFor(r2.work, "T-0015"), task: { id: "T-0015", state: "running", branch: "", repo: "", runs: 1, moves: 0 } };
+    if (path === "/api/v1/tasks/T-0015") return { id: "T-0015", moves: 1 };
+    return { tasks: [] };
+  };
+  const w2 = createWorker({ api: api2, maxParallel: 1, workRoot: join(r2.root, "tasks"), runtimes: { codex: fakeRuntime() }, checkpoints: true,
+    afterRun: async () => { pushed.push("pr"); return null; }, send: async (p) => { calls.push(`SEND ${p}`); return "ok"; } });
+  calls.length = 0;
+  w2.onTask({ id: "T-0015", state: "queued", agent_id: "a" } as TeamTask, mine);
+  await Bun.sleep(50);
+  await w2.idle();
+  expect(pushed).toEqual([]);
+  expect(calls.some((c) => c.startsWith("SEND"))).toBe(false);
+  release();
+  w.stop(); w2.stop();
+});
+
+test("a run's reports name the move count it was claimed with", async () => {
+  const r = repo();
+  const sends: string[] = [];
+  const api = async (path: string) => {
+    if (path.endsWith("/claim")) return { ...claimFor(r.work, "T-0016"), task: { id: "T-0016", state: "running", branch: "", repo: "", runs: 1, moves: 2 } };
+    if (path === "/api/v1/tasks/T-0016") return { id: "T-0016", moves: 2 };
+    return { tasks: [] };
+  };
+  const w = createWorker({ api, maxParallel: 1, workRoot: join(r.root, "tasks"), runtimes: { codex: fakeRuntime() }, send: async (p) => { sends.push(p); return "ok"; } });
+  w.onTask({ id: "T-0016", state: "queued", agent_id: "a" } as TeamTask, () => true);
+  await Bun.sleep(50);
+  await w.idle();
+  expect(sends).toEqual(["/api/v1/tasks/T-0016/report?moves=2"]);
+  w.stop();
 });

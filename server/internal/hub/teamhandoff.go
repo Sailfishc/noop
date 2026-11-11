@@ -66,6 +66,10 @@ func (h *Hub) holderOf(t taskView) *holderView {
 		a, _ := h.agent(t.AgentID)
 		return user(a.OwnerID, "confirm")
 	}
+	if t.Move != nil && t.Move.State == "proposed" { // its computer is gone: the agent's owner says where it goes on
+		a, _ := h.agent(t.AgentID)
+		return user(a.OwnerID, "move")
+	}
 	for _, x := range t.Handoffs {
 		if x.State == "proposed" {
 			if b, ok := h.agent(x.To); ok {
