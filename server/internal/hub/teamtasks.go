@@ -165,6 +165,7 @@ type taskView struct {
 	Handoffs    []handoffView `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
 	Submits     []submitView  `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
 	Holder      *holderView   `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
+	Calls       []callView    `json:"calls"`        // each time it needed a person, and why (calls.go)
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -245,7 +246,7 @@ func taskNum(id string) int64 {
 func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
-		Outputs: []outputView{}, Events: []taskEvent{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}}
+		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}}
 	return r
 }
 
@@ -270,32 +271,50 @@ type taskEvent struct {
 	Needs  string `json:"needs,omitempty"`
 }
 
-// noteStatus records the task's status when it differs from the last one recorded.
+// noteStatus records the task's status when it differs from the last one recorded, with the person it now needs
+// (attention.go's calls: who the task came to need, and for what).
 func (h *Hub) noteStatus(id, state string) {
 	status, needs := statusOf(state)
+	if state == taskReview {
+		needs = "accept"
+	}
 	var last, lastNeeds string
-	_ = h.db.QueryRow("SELECT status, needs FROM task_events WHERE task_id = ? ORDER BY at DESC, rowid DESC LIMIT 1", id).Scan(&last, &lastNeeds)
+	_ = h.db.QueryRow("SELECT status, needs FROM task_events WHERE task_id = ? AND needs NOT IN "+sideKindsSQL+" ORDER BY at DESC, rowid DESC LIMIT 1", id).Scan(&last, &lastNeeds)
+	if lastNeeds == "" && last == statusInReview {
+		lastNeeds = "accept" // recorded before the kind was
+	}
 	if last == status && lastNeeds == needs {
 		return
 	}
-	h.must(h.db.Exec("INSERT INTO task_events (task_id, at, status, needs) VALUES (?, ?, ?, ?)", id, h.nowMs(), status, needs))
+	h.must(h.db.Exec("INSERT INTO task_events (task_id, at, status, needs, who) VALUES (?, ?, ?, ?, ?)", id, h.nowMs(), status, needs, h.calledFor(id, needs)))
 }
 
-func (h *Hub) taskEvents(id string) []taskEvent {
-	rows, err := h.db.Query("SELECT at, status, needs FROM task_events WHERE task_id = ? ORDER BY at, rowid", id)
+// taskEvents: the task's status as it changed, and the calls on people among them (calls.go).
+func (h *Hub) taskEvents(id string) ([]taskEvent, []callView) {
+	rows, err := h.db.Query("SELECT at, status, needs, who FROM task_events WHERE task_id = ? ORDER BY at, rowid", id)
 	if err != nil {
 		panic(err)
 	}
 	defer rows.Close()
-	out := []taskEvent{}
+	out, calls := []taskEvent{}, []callView{}
 	for rows.Next() {
 		var e taskEvent
-		if err := rows.Scan(&e.At, &e.Status, &e.Needs); err != nil {
+		var who string
+		if err := rows.Scan(&e.At, &e.Status, &e.Needs, &who); err != nil {
 			panic(err)
+		}
+		if who != "" {
+			calls = append(calls, callView{At: e.At, Who: who, Kind: e.Needs})
+		}
+		if sideKinds[e.Needs] {
+			continue // a call that changed no status: the agent's message says it in the thread
+		}
+		if e.Needs == "accept" {
+			e.Needs = "" // in review says it
 		}
 		out = append(out, e)
 	}
-	return out
+	return out, classify(calls)
 }
 
 func (h *Hub) setTask(id string, cols map[string]any) {

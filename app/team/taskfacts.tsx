@@ -1,7 +1,8 @@
 // A task's facts beside its thread: who does it, who asked, time spent; folded: acceptance criteria, repository, mandate, run log.
 import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, TextArea } from "../ui";
+import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, TextArea, Txt } from "../ui";
+import { taskCalls } from "./calls";
 import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
 import { failed, RuntimeBadge, time } from "./ui";
@@ -26,6 +27,7 @@ export function TaskFacts(props: { team: Team; task: Task }) {
   const fold = signal<"" | "acceptance" | "repo" | "mandate" | "log">("");
   const allOutputs = signal(false);
   const live = () => ["running", "queued", "pending", "needs_decision"].includes(task().state);
+  const calls = () => taskCalls(task().calls, t.me()?.id);
   const fact = (label: string, value: JSX.Element) => (
     <View style={{ flexDirection: "row", gap: 10, alignItems: "center", minHeight: 22 }}>
       <Text style={{ width: 52, fontSize: 12.5, color: colors.faint }}>{label}</Text>
@@ -61,6 +63,14 @@ export function TaskFacts(props: { team: Team; task: Task }) {
           </Text>
         </If>
       </>)}
+      <If when={calls().total}>
+        {fact(calls().mine ? L("Asked you", "找你") : L("Asked people", "找人"), <>
+          <Txt testID={`task-${task().id}-calls`}>{L(`${calls().total} times${calls().moments ? `: ${calls().moments}` : ""}`, `${calls().total} 次${calls().moments ? `：${calls().moments}` : ""}`)}</Txt>
+          <If when={calls().outside}>
+            <Txt tone="warn" weight="semibold" testID={`task-${task().id}-calls-outside`}>{L(`${calls().outside} outside align, decide, accept`, `${calls().outside} 次在对齐、拍板、验收之外`)}</Txt>
+          </If>
+        </>)}
+      </If>
       <If when={task().state === "waiting" && task().wait}>
         {fact(L("Waiting", "等待"), <View testID={`task-${task().id}-wait`} style={{ flex: 1, gap: 2 }}>
           <Each of={waitLines(task())} key="index">{(l) => <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{l()}</Text>}</Each>

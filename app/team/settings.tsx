@@ -10,11 +10,12 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
-  type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
+  type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
+import { momentsLine, outsideLine, statsLine } from "./calls";
 import { SignupSection } from "./signups";
 import { agentState, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
 
@@ -1419,6 +1420,8 @@ export function span(ms: number): string {
   return L(`${+(h / 24).toFixed(1)} d`, `${+(h / 24).toFixed(1)} 天`);
 }
 
+const NO_CALLS: CallStats = { calls: 0, tasks: 0, outside: 0, by_class: {}, by_kind: {} };
+
 const REPLY_KINDS: { key: keyof Metrics["reply_by"]; label: () => string }[] = [
   { key: "confirm", label: () => L("Start it", "确认开工") },
   { key: "decide", label: () => L("Decide", "做决定") },
@@ -1440,22 +1443,30 @@ function MetricsSection(props: { team: Team }) {
   });
   const waits = (s: DurationStats | undefined) =>
     !s || s.count === 0 ? L("none answered yet", "还没有") : L(`median ${span(s.median)} · 90% within ${span(s.p90)} · ${s.count} times`, `中位 ${span(s.median)} · 90% 在 ${span(s.p90)}内 · 共 ${s.count} 次`);
-  const row = (label: string, value: string, testID?: string) => (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 3 }}>
-      <Text style={{ width: 120, fontSize: 13.5, color: colors.muted }}>{label}</Text>
-      <Text testID={testID} style={{ flex: 1, fontSize: 13.5, color: colors.text }}>{value}</Text>
+  const row = (label: string, value: string, testID?: string, tone?: TextTone) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 4 }}>
+      <View style={{ width: 120 }}><Txt tone="muted">{label}</Txt></View>
+      <Txt grow tone={tone} testID={testID}>{value}</Txt>
     </View>
   );
   return (
     <>
       <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
-        {L("Three numbers to watch while the team tries working with agents. Everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这三个数。全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
+        {L("Numbers to watch while the team tries working with agents. Apart from your own count, everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这几组数。除了你自己的次数，全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
       </Text>
       <Choice testID="metrics-days" options={[{ value: "7", label: L("Last 7 days", "最近 7 天") }, { value: "30", label: L("Last 30 days", "最近 30 天") }]} value={days()} onChange={(v) => days.set(v)} />
       <ErrorNote text={error()} />
       <If when={data()} else={<If when={!error()}><Spinner size={16} tint={colors.muted} /></If>}>
         {(d) => (
           <>
+            <Panel testID="metrics-mine" title={L("How often I was needed", "找我的次数")}
+              note={L("Only you see this part; tasks in your private channels count too. Agents should need you only to align, to decide and to accept; the rest is what to bring down.", "这一段只有你自己看得到，包含你私有频道里的任务。Agent 只该在对齐、拍板、验收时找你，其余的是要压下去的数字。")}>
+              {row(L("Asked me", "一共"), statsLine(d().mine ?? NO_CALLS), "metrics-mine-calls")}
+              <If when={d().mine?.calls}>
+                {row(L("By moment", "按时刻"), momentsLine(d().mine!.by_class) || L("none", "没有"), "metrics-mine-moments")}
+              </If>
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().mine ?? NO_CALLS), "metrics-mine-outside", d().mine?.outside ? "warn" : undefined)}
+            </Panel>
             <Panel title={L("How fast people answer", "人回复「待你处理」要多久")}>
               {row(L("All", "全部"), waits(d().reply), "metrics-reply")}
               <Each of={REPLY_KINDS.filter((k) => d().reply_by[k.key])} key={(k) => k.key}>
@@ -1473,6 +1484,11 @@ function MetricsSection(props: { team: Team }) {
               {row(L("Cancelled", "被取消"), String(d().cancelled))}
               {row(L("Asked again", "其中重新派了"), String(d().redone), "metrics-redone")}
               <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Asked again: the same person asked in the same channel within a day.", "重新派：同一个人在同一个频道一天内又派了一次。")}</Text>
+            </Panel>
+            <Panel testID="metrics-team-calls" title={L("How often people were needed", "全队被找的次数")}
+              note={L("Everyone's, without private channels and without names.", "全队合计，不含私有频道，不分人。")}>
+              {row(L("All", "全部"), statsLine(d().team ?? NO_CALLS), "metrics-team-calls-all")}
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().team ?? NO_CALLS), "metrics-team-outside", d().team?.outside ? "warn" : undefined)}
             </Panel>
             <Panel title={L("Which agents people go to", "大家找哪个 Agent")}>
               <Each of={d().agents.filter((a) => a.tasks > 0)} key={(a) => a.agent_id}>

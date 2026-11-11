@@ -95,7 +95,13 @@ export type Task = {
   submits?: { what: string; at: number }[] | null;
   /** Who has the ball now (null once it ended). */
   holder?: Holder | null;
+  /** Each time it needed a person, and why, oldest first (older servers send none). */
+  calls?: Call[] | null;
 };
+/** The task needed this person for this: kind confirm | decide | ask | handoff | handoff_card | align | accept | unblock
+ * | retry; class: the moment it counts as (calls.go). */
+export type Call = { at: number; who: string; kind: string; class: CallClass };
+export type CallClass = "align" | "decide" | "accept" | "outside";
 /** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
 export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
@@ -826,7 +832,10 @@ export type Metrics = {
   runs: { tasks: number; mean: number; median: number; max: number; three_plus: number };
   cancelled: number; redone: number;
   agents: { agent_id: string; tasks: number; people: number; others: number; team: boolean; machine: string }[];
+  /** How often tasks needed a person: the reader's own (their private channels included), and the team's (without). */
+  mine?: CallStats; team?: CallStats;
 };
+export type CallStats = { calls: number; tasks: number; outside: number; by_class: Partial<Record<CallClass, number>>; by_kind: Record<string, number> };
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
 /** "#支付后端", or "私房菜（私有）" for a private channel: how a channel is named in a line of text. */

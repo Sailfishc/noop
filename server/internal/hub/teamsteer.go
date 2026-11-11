@@ -133,6 +133,7 @@ func (h *Hub) v1AgentAsk(w http.ResponseWriter, q *request) {
 	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "@"+target.Handle+" "+trimmed(question, 2000))
 	asked := append(t.Asked, askedView{User: target.ID, Question: trimmed(question, 300), Message: m.ID, At: h.nowMs()})
 	h.setTask(t.ID, map[string]any{"asked": jsonOrNil(asked)})
+	h.noteCall(t, "ask", target.ID)
 	h.taskChanged(t.ID)
 	writeText(w, "asked @"+target.Handle+": msg="+m.ID+"\nGo on with what does not depend on the answer; it reaches you in this session when they reply.\n"+
 		"If nothing else is left, end your turn with status waiting and wait {\"how\": \"answer\", \"what\": \"@"+target.Handle+"'s answer\"}.\n")

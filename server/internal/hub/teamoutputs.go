@@ -97,7 +97,7 @@ func (h *Hub) withOutputs(ts []taskView) []taskView {
 			os = append(os, outputView{ID: ts[i].ID + "-pr", Kind: "pr", Title: title, Status: pr.State, URL: pr.URL, Note: pr.Checks, Updated: ts[i].Updated})
 		}
 		ts[i].Outputs = append(os, h.outputs(ts[i].ID)...)
-		ts[i].Events = h.taskEvents(ts[i].ID)
+		ts[i].Events, ts[i].Calls = h.taskEvents(ts[i].ID)
 		ts[i].Holder = h.holderOf(ts[i])
 	}
 	return ts

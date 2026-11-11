@@ -124,6 +124,7 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 		m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "@"+target.Handle+" 交给你："+what)
 		asked := append(t.Asked, askedView{User: target.ID, Question: trimmed(what, 300), Message: m.ID, At: h.nowMs(), Kind: "handoff"})
 		h.setTask(t.ID, map[string]any{"asked": jsonOrNil(asked), "tracked": 1})
+		h.noteCall(t, "handoff", target.ID)
 		h.taskChanged(t.ID)
 		writeText(w, "handed to @"+target.Handle+": msg="+m.ID+"\nThe ball is theirs now (it is on their list). Their reply in the thread reaches you.\n"+
 			"If your part is done, end your turn (status review, and say what you handed over); if you need their result to go on, end with status waiting and wait {\"how\": \"answer\", \"what\": \"@"+target.Handle+"\"}.\n")
@@ -153,6 +154,7 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "建议交给 @"+target.Handle+"："+what)
 	x := handoffView{ID: newID("ho_"), To: target.ID, What: what, Message: m.ID, At: h.nowMs(), State: "proposed"}
 	h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(append(t.Handoffs, x)), "tracked": 1})
+	h.noteCall(t, "handoff_card", "")
 	h.taskChanged(t.ID)
 	writeText(w, "proposed: a person clicks the card in the thread to hand it to @"+target.Handle+" (id "+x.ID+").\n"+
 		"Finish your own part; when it is done, end your turn with status review and say what you handed over.\n")
