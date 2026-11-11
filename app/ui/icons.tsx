@@ -99,7 +99,8 @@ export type IconName =
   | "folder-open"
   | "file"
   | "tree"
-  | "info";
+  | "info"
+  | "scan";
 
 type Draw = (cx: CanvasRenderingContext2D) => void;
 
@@ -131,6 +132,11 @@ const wave = (cx: CanvasRenderingContext2D, r: number) => {
 };
 
 const glyphs: Record<IconName, Draw> = {
+  // Lucide's scan-line (ISC), on this 20-point grid
+  scan: (c) => {
+    c.stroke(new Path2D("M2.5 6V4.5a2 2 0 0 1 2-2H6M14 2.5h1.5a2 2 0 0 1 2 2V6M17.5 14v1.5a2 2 0 0 1-2 2H14M6 17.5H4.5a2 2 0 0 1-2-2V14"));
+    line(c, [6, 10, 14, 10]);
+  },
   info: (c) => {
     circle(c, 10, 10, 7.5);
     line(c, [10, 9, 10, 14]);
