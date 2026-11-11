@@ -167,6 +167,9 @@ test("the agent's remi command (also installed as teamagent) asks the server wit
   const old = Bun.spawn(["teamagent"], { env, stdout: "pipe" }); // its first name keeps working
   expect(await new Response(old.stdout).text()).toContain("remi search WORDS");
   expect(taskPrompt({ ...claim(), read_token: "rt_abc" }, { cwd: "/w", writable: [] })).toContain("remi read --thread MSG");
+  const listed = taskPrompt({ ...claim(), read_token: "rt_abc", agents: "@bei (贝): 写测试 [can take work now; 0 running; no card; in this channel]\n" }, { cwd: "/w", writable: [] });
+  expect(listed).toContain("# Other agents you may turn to\n@bei (贝)");
+  expect(taskPrompt({ ...claim(), read_token: "rt_abc", agents: "" }, { cwd: "/w", writable: [] })).not.toContain("# Other agents you may turn to");
   expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("# Looking things up");
   rmSync(W, { recursive: true, force: true });
 });

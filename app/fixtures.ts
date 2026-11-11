@@ -37,7 +37,8 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     return { body: t };
   };
   const triggers: any[] = [...((over as any).__triggers ?? [])];
-  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state));
+  const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state) ||
+    (!["done", "closed"].includes(t.state) && (t.handoffs ?? []).some((x: any) => x.state === "proposed")));
   return {
     [`GET ${URL}/api/v1/tasks?*`]: () => ({ body: { tasks: [...live.values()] } }),
     [`GET ${URL}/api/v1/inbox`]: () => ({ body: { tasks: waiting() } }),

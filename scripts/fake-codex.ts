@@ -13,6 +13,8 @@
 //   [quota]     first hits Codex's usage limit, "try again at" FAKE_CODEX_QUOTA_MIN minutes from now (default 10; at 5
 //               or less the daemon waits inside the run); woken after the reset (or 现在就试), it does the work
 //   [quota?]    the same, but the limit names no time (the server tries again after 5 minutes, 15, an hour, …)
+//   [handoff:x] first runs `remi who`, then `remi handoff @x …` (to another agent), then reports review with what
+//               the server said (no @ in the tag: a person's @x would call that agent itself)
 // FAKE_CODEX_DELAY_MS: the pause between its steps (default 1200).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -52,7 +54,19 @@ if ((has("quota") || has("quota?")) && !resume) {
   process.exit(1);
 }
 
-if (has("fail")) finish({ status: "failed", summary: "（假 Codex）按要求失败了：[fail]。" });
+const handoff = request.match(/\[handoff:([a-z][a-z0-9_-]*)\]/)?.[1];
+const remi = (...args: string[]) => {
+  const r = Bun.spawnSync(["remi", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  return (r.stdout.toString() + r.stderr.toString()).trim();
+};
+
+if (handoff && !resume) {
+  await step("remi who");
+  const who = remi("who");
+  await step(`remi handoff @${handoff}`);
+  const said = remi("handoff", `@${handoff}`, "（假 Codex）后面这部分交给你");
+  finish({ status: "review", summary: `（假 Codex）交给 @${handoff}：${said.split("\n")[0]}\n可以找的 Agent：\n${who}` });
+} else if (has("fail")) finish({ status: "failed", summary: "（假 Codex）按要求失败了：[fail]。" });
 else if (has("block")) finish({ status: "blocked", summary: "（假 Codex）缺数据库只读账号，拿到之前做不下去。" });
 else if (has("align") && !resume) {
   finish({

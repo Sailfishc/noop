@@ -1277,6 +1277,22 @@ describe("passing the ball", () => {
     expect(app.shows("id:task-T-0001-handoff-ho_1")).toBe(false);
   });
 
+  test("a handoff card to someone else's agent: only its owner hands it over; the asker may only say no", async () => {
+    const log = newLog();
+    const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2" };
+    const t1 = task({ created_by: "u_1", state: "running", runs: 1, tracked: true, holder: { kind: "user", id: "u_2", why: "handoff_card" },
+      handoffs: [{ id: "ho_1", to: "a_2", what: "改完后写发布说明", message: "msg_5", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800,
+      network: { ...server(log, {}, [t1]), [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei] } } } });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-holder");
+    expect(app.shows("text:球在 王磊 手里 · 决定要不要交接")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-accept")).toBe(false);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-decline")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-who-info")).toBe(true);
+  });
+
   test("a person the agent handed the ball to sees it as theirs", async () => {
     const t1 = task({ created_by: "u_2", state: "running", runs: 1, tracked: true, asked: [{ user: "u_1", question: "在测试环境点一下退款", message: "msg_9", at: T0, kind: "handoff" }] });
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 900,
@@ -1448,5 +1464,19 @@ describe("private channels", () => {
     await app.press("id:task-T-0007-confirm");
     await app.waitUntil(() => log.acts.length === 1);
     expect(log.acts[0]).toBe("T-0007 confirm");
+  });
+
+  test("an agent's owner not in the private channel clicks a handoff card to it from a row without its words", async () => {
+    const log = newLog();
+    const hidden = task({ id: "T-0008", agent_id: "a_9", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "running", tracked: true, redacted: true,
+      holder: { kind: "user", id: "u_1", why: "handoff_card" }, handoffs: [{ id: "ho_7", to: "a_1", what: "", message: "", at: T0, state: "proposed" }] });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {}, [hidden]) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0008-handoff-ho_7");
+    expect(app.shows("text:私有频道里的任务")).toBe(true);
+    await app.press("id:task-T-0008-handoff-ho_7-accept");
+    await app.waitUntil(() => log.acts.length === 1);
+    expect(log.acts[0]).toBe("T-0008 handoff");
   });
 });

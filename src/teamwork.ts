@@ -55,6 +55,8 @@ export type Claim = {
   /** false: the agent may not change its memory on this task (a private channel where that would leak); the server
    * drops it anyway, this only spares the agent the effort. Missing (an older server): it may. */
   memory_writable?: boolean;
+  /** The other agents it may turn to, a line each (\`remi who\`); "" or missing: none. */
+  agents?: string;
 };
 export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message" | "quota"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
@@ -266,11 +268,18 @@ ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
-${mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.agents?.trim() ? `\n${AGENTS(c.agents)}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
 ${REACT}
 
 ${RESULT_SPEC}`;
 }
+
+/** The other agents it may turn to (the server's \`remi who\` list), and when to. */
+const AGENTS = (list: string) => `# Other agents you may turn to
+${list.trim()}
+Do the work yourself unless another agent is clearly the right one for a part (its repository or computer, its
+speciality). Hand a part over with \`remi handoff @AGENT WHAT\` when it is theirs from then on. "no card": it starts at
+once; "needs a card": its owner says yes first.`;
 
 /** The first thing the agent says: one emoji on the request, showing how it read it (the way a teammate reacts in chat). */
 const REACT = `Before anything else (before any tool call), send one short message whose first line is exactly
@@ -599,14 +608,14 @@ export const REMI_CLI = `#!/bin/sh
 #   remi tasks [--status todo|in_progress|in_review|done|closed] [--channel NAME]
 #   remi task T-0001                                       one task: acceptance, summary, PR
 #   remi channel [NAME]                                    what a channel is for, who is in it
-#   remi who @HANDLE                                       who a person or an agent is
+#   remi who [@HANDLE]                                     who someone is; alone: the agents you may turn to
 #   remi file /media/... > FILE                            a file attached to a message (as remi read shows it)
 #   remi memory                                            your memory.md as it is now
 #   remi say TEXT                                          a word on how it goes, in this task's thread (every 5 min at most)
 #   remi upload FILE                                       hand over a file now (the rest of out/ goes when you stop)
 #   remi ask @WHO QUESTION                                 ask someone in the thread and go on; their answer reaches you
 #   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
-#   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent once a person agrees
+#   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent now or once its owner agrees
 #   remi submit WHAT                                       count a submission to an outside service (at most 3 per task)
 #   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
 #                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
@@ -617,7 +626,7 @@ case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
   channel) [ -n "$2" ] && set -- "$1" --channel "$2"; path=channel ;;
-  who) [ -n "$2" ] || usage; exec curl -sS -G "$api/who" -H "$auth" --data-urlencode "handle=$2" ;;
+  who) exec curl -sS -G "$api/who" -H "$auth" --data-urlencode "handle=$2" ;;
   file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
   memory) exec curl -sS "$api/memory" -H "$auth" ;;
   say) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
@@ -665,14 +674,16 @@ up with the \`remi\` command in your shell (\`remi\` alone lists everything):
 - remi search WORDS              messages with all the words, newest first
 - remi tasks [--status in_progress]   the team's tasks;  remi task T-0001   one of them
 - remi channel / remi who @HANDLE     what a channel is for and who is in it; who someone is
+- remi who                       the other agents you may turn to (as in the list below, when there is one)
 - remi file /media/…  > FILE     a file someone attached (remi read shows them)
 Look up only what the request needs. When you need someone's answer to go on (a choice only they can make, a fact
 only they know), ask with \`remi ask @WHO QUESTION\` and keep working on what does not depend on it: their reply
 reaches you in this session. Ask only what you cannot find out yourself. When the work needs changes in a repository
 you do not have here, declare it with \`remi repo owner/name\` first. When part of the work is someone else's to do (a
 person must do or check something; another agent is the right one for the next step), pass it on with
-\`remi handoff @WHO WHAT\`: a person gets the ball at once, another agent only once a person agrees on the card. Do not
-@-mention agents to make them work. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
+\`remi handoff @WHO WHAT\`: a person gets the ball at once; another agent gets it at once where the person who asked
+may use it directly ("no card" in \`remi who\`), else only once its owner agrees on a card. Do not @-mention agents to
+make them work. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
 most every 5 minutes, only when people would want to know), and hand over a file before you stop with
 \`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
 2 minutes", "remind me on Friday…", "every morning…"), always set it with

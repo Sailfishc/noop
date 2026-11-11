@@ -120,7 +120,9 @@ export type Evidence = { criterion: number; how: "ran" | "saw" | "not_verified" 
 export type CallClass = "align" | "decide" | "accept" | "outside";
 /** A question an agent asked someone in the task's thread (kind "handoff": it handed them the ball); answered: when they replied. */
 export type Asked = { user: string; question: string; message: string; at: number; answered?: number; kind?: "handoff" };
-export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string };
+export type Handoff = { id: string; to: string; what: string; message: string; at: number; state: "proposed" | "accepted" | "declined"; task?: string; decided_by?: string;
+  /** No card: the asker may use that agent without its owner's yes, so it went at once. */
+  auto?: boolean };
 /** Whose move it is, and why. */
 export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
