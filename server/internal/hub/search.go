@@ -50,11 +50,13 @@ func initSearch(db *sql.DB) error {
 	return err
 }
 
-// searchQuery: what to look for (all the words), where (channels; nil = all), from whom (a person's or an agent's id).
+// searchQuery: what to look for (all the words), where (channels; nil = all), from whom (a person's or an agent's id),
+// seen by whom (reader: only the channels that person sees; "" = no such limit).
 type searchQuery struct {
 	words    []string
 	channels []string
 	author   string
+	reader   string
 	limit    int
 }
 
@@ -106,6 +108,12 @@ func (h *Hub) search(s searchQuery) ([]messageView, []taskView) {
 		c, a = inList("channel_id", s.channels)
 		twhere, targs = append(twhere, c), append(targs, a...)
 	}
+	if s.reader != "" {
+		c, a := readableBy("m.channel_id", s.reader)
+		where, args = append(where, c), append(args, a...)
+		c, a = readableBy("channel_id", s.reader)
+		twhere, targs = append(twhere, c), append(targs, a...)
+	}
 	if s.author != "" {
 		where, args = append(where, "m.author_id = ?"), append(args, s.author)
 		twhere, targs = append(twhere, "(agent_id = ? OR created_by = ?)"), append(targs, s.author, s.author)
@@ -117,14 +125,14 @@ func (h *Hub) search(s searchQuery) ([]messageView, []taskView) {
 
 // v1Search: the search box. GET /api/v1/search?q=WORDS[&channel=ID][&from=HANDLE][&limit=N]
 func (h *Hub) v1Search(w http.ResponseWriter, q *request) {
-	s := searchQuery{words: strings.Fields(q.query("q")), limit: clampInt(q.query("limit"), 30, 1, 100)}
+	s := searchQuery{words: strings.Fields(q.query("q")), reader: q.who.userID, limit: clampInt(q.query("limit"), 30, 1, 100)}
 	if len(s.words) == 0 {
 		errJSON(w, 400, "要搜什么？")
 		return
 	}
 	if c := q.query("channel"); c != "" {
 		ch, ok := h.channel(c)
-		if !ok {
+		if !ok || !h.canRead(q.who, ch.ID) {
 			errJSON(w, 404, "没有这个频道")
 			return
 		}

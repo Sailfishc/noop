@@ -225,7 +225,9 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={props.detail} else={
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-          <Text style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{task().title}</Text>
+          <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.muted : colors.text, numberOfLines: 1 }}>
+            {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
+          </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <If when={task().state === "running"}>
               <Spinner size={11} tint={colors.accent} />
@@ -328,8 +330,11 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-          <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
-            {[`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()].filter(Boolean).join(" · ")}
+          <Text testID={`task-${task().id}-where`} style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
+            {(task().redacted
+              // its agent's owner is not in that private channel: who asked and which agent, nothing of what it says
+              ? [`@${agent()?.handle ?? "?"}`, L("in a private channel", "在一个私有频道里"), L(`asked by ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`, `发起人 ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`)]
+              : [`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()]).filter(Boolean).join(" · ")}
           </Text>
         </View>
       </If>

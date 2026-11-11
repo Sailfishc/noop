@@ -1,7 +1,7 @@
 // The people around a task (as in the design "Remi 任务视图 v2"): who asked for it, which agent does it and whose
 // agent that is, and whom it waits for right now. The task lives in its channel; these decide whose views it shows in.
 import { L } from "../i18n";
-import { takerOf, type Task, type Team } from "./api";
+import { channelLabel, takerOf, type Task, type Team } from "./api";
 import type { Tone } from "./status";
 
 /** Whom the task waits for now, in a few words ("waits for your acceptance", "waits for zc to confirm"), and
@@ -59,5 +59,5 @@ export function liveLine(task: Task): string {
 /** The task as the team writes it: "#channel · T-0002" (the channel left out where it goes without saying). */
 export function taskRef(t: Team, task: Task, withChannel = true): string {
   const c = withChannel ? t.channels().find((x) => x.id === task.channel_id) : undefined;
-  return c ? `#${c.name} · ${task.id}` : task.id;
+  return c ? `${channelLabel(c)} · ${task.id}` : task.id;
 }

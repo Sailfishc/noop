@@ -116,7 +116,7 @@ func (h *Hub) v1AgentAsk(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "用法：remi ask @某人 问题")
 		return
 	}
-	if !h.isMember(t.ChannelID, "user", target.ID) && !h.isAdmin(target.ID) {
+	if !h.memberOrAdmin(t.ChannelID, target.ID) {
 		errJSON(w, 400, "@"+target.Handle+" 不在这个频道里")
 		return
 	}

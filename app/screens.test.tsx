@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { acha, m1, mac, msg, r1, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
+import { acha, m1, mac, msg, ops, pay, r1, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
 //
@@ -203,5 +203,62 @@ describe("phone", () => {
     await app.waitFor("id:agent-acha");
     await app.press("id:back");
     await app.waitFor("id:tabbar");
+  });
+});
+
+// A private channel (step 1, personal space): 张伟's own project with @acha; 王磊's @helper takes the whole team's work,
+// his @bei only his channels'. And an agent's owner who is not in someone's private channel: a row without its content.
+const home = { id: "c_3", slug: "p-1a2b3c4d", name: "私房菜", topic: "周末的菜谱整理", archived: false, created: T0, private: true, created_by: "u_1",
+  members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 1 };
+const privNet = () => ({
+  ...net(),
+  [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null },
+    { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", dispatch: "team" }] } },
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [box, { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" }] } },
+  [`GET ${URL}/api/v1/channels/c_3/messages?*`]: { body: { messages: [msg({ id: "msg_p1", seq: 1, channel_id: "c_3", author: { kind: "user", id: "u_1" }, text: "@acha 把这周末的菜谱整理成一张表", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] })], more: false } },
+  [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [task({ id: "T-0009", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "pending", tracked: true, redacted: true, updated: Date.now() })] } },
+});
+
+describe("private", () => {
+  const privStart = (size = SIZE) => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...size, network: privNet() });
+
+  test("private-channel, its members panel, the inbox", async () => {
+    const app = await privStart();
+    await app.waitFor("id:channel-p-1a2b3c4d");
+    await app.press("id:channel-p-1a2b3c4d");
+    await app.waitFor("text:@acha 把这周末的菜谱整理成一张表");
+    await shot(app, "private-channel");
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-publish");
+    await app.press("id:members-add");
+    await app.press("id:members-add-helper");
+    await app.waitFor("id:members-host-warning");
+    await shot(app, "private-members");
+    await app.press("id:channel-publish-start");
+    await app.waitFor("id:channel-publish-warning");
+    await shot(app, "private-publish");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0009");
+    await shot(app, "private-inbox-redacted");
+  });
+
+  test("private-new-channel", async () => {
+    const app = await privStart();
+    await app.waitFor("id:new-channel");
+    await app.press("id:new-channel");
+    await app.waitFor("id:channel-private");
+    await app.press("id:channel-private");
+    await app.waitFor("id:channel-private-note");
+    await shot(app, "private-new-channel");
+  });
+
+  test("phone: the channel list with a private one, and the channel", async () => {
+    const app = await privStart(PHONE);
+    await app.waitFor("id:channel-p-1a2b3c4d");
+    await shot(app, "phone-private-1-list");
+    await app.press("id:channel-p-1a2b3c4d");
+    await app.waitFor("text:@acha 把这周末的菜谱整理成一张表");
+    await shot(app, "phone-private-2-channel");
   });
 });

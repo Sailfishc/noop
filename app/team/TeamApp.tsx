@@ -276,7 +276,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           {(x) => (
             <Row
               testID={`channel-${x().c.slug}`}
-              icon="chat"
+              icon={x().c.private ? "lock" : "chat"}
               label={x().c.name}
               dim={!x().member}
               badge={t.unread()[x().c.id] || 0}

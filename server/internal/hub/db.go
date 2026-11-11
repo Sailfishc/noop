@@ -136,6 +136,7 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN skipped_run INTEGER NOT NULL DEFAULT 0", // skipped in a row since it last fired
 		"ALTER TABLE triggers ADD COLUMN skip_reason TEXT NOT NULL DEFAULT ''",   // why the last one was: busy (its last task is open) | limit
 		"ALTER TABLE triggers ADD COLUMN stuck_noted TEXT NOT NULL DEFAULT ''",   // the stuck task its creator was told about, once
+		"ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0",     // only its members see it (chat.go canRead)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

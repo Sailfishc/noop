@@ -165,9 +165,12 @@ type taskView struct {
 	Handoffs    []handoffView `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
 	Submits     []submitView  `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
 	Holder      *holderView   `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
-	Created     int64         `json:"created"`
-	Updated     int64         `json:"updated"`
-	seenSeq     int64
+	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
+	// work): who, which agent and where it stands, without its title, words, channel or outputs
+	Redacted bool  `json:"redacted,omitempty"`
+	Created  int64 `json:"created"`
+	Updated  int64 `json:"updated"`
+	seenSeq  int64
 }
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
@@ -236,6 +239,22 @@ func taskNum(id string) int64 {
 		_, _ = fmt.Sscan(m[1], &n)
 	}
 	return n
+}
+
+// redact: the task as someone who cannot read its channel may see it (Redacted).
+func redact(t taskView) taskView {
+	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
+		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
+		Outputs: []outputView{}, Events: []taskEvent{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}}
+	return r
+}
+
+// taskOut: the task as this person may see it: whole, or redacted when its channel is private and they are not in it.
+func (h *Hub) taskOut(q *request, t taskView) taskView {
+	if q.who.machineID == "" && !h.userCanRead(q.who.userID, t.ChannelID) {
+		return redact(t)
+	}
+	return t
 }
 
 func (h *Hub) taskChanged(id string) {
@@ -521,7 +540,7 @@ func (h *Hub) v1Task(w http.ResponseWriter, q *request) {
 		errJSON(w, 404, "not found")
 		return
 	}
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1Inbox: what waits for this person: tasks for their agents to confirm, decisions and results to look at, questions
@@ -538,7 +557,11 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
 			AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?))))
 		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me))
-	out := obj{"tasks": h.withOutputs(ts)}
+	ts = h.withOutputs(ts)
+	for i := range ts {
+		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
+	}
+	out := obj{"tasks": ts}
 	if h.isAdmin(me) { // people asking to join wait for an admin
 		out["signups"] = h.pendingSignups()
 	}
@@ -546,7 +569,8 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 }
 
 // taskFor: the task in the path, if this person may act on it as `who` ("owner": the agent's owner; "party": its
-// creator, the person it names to take it, or the agent's owner; admins count as both).
+// creator, the person it names to take it, or the agent's owner; admins count as both, but not in a private channel
+// they are not in). Someone else who cannot read its channel is told it does not exist.
 func (h *Hub) taskFor(w http.ResponseWriter, q *request, who string, states ...string) (taskView, agentView, bool) {
 	t, ok := h.task(q.r.PathValue("id"))
 	if !ok {
@@ -555,7 +579,12 @@ func (h *Hub) taskFor(w http.ResponseWriter, q *request, who string, states ...s
 	}
 	a, _ := h.agent(t.AgentID)
 	me := q.who.userID
-	allowed := me == a.OwnerID || h.isAdmin(me) || (who == "party" && (me == t.CreatedBy || me == t.Handler))
+	reads := h.userCanRead(me, t.ChannelID)
+	allowed := me == a.OwnerID || (h.isAdmin(me) && reads) || (who == "party" && (me == t.CreatedBy || me == t.Handler))
+	if !allowed && !reads {
+		errJSON(w, 404, "not found")
+		return t, a, false
+	}
 	if !allowed {
 		if who == "owner" {
 			errJSON(w, 403, "只有 Agent 的主人能做这个决定")
@@ -581,7 +610,7 @@ func (h *Hub) v1TaskConfirm(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"state": taskQueued, "confirmed_by": q.who.userID})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
@@ -598,7 +627,7 @@ func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "summary": summary})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
@@ -609,7 +638,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1TaskPatch: the creator or the agent's owner writes down what "done" means, or (before it ever ran) where it runs.
@@ -655,7 +684,7 @@ func (h *Hub) v1TaskPatch(w http.ResponseWriter, q *request) {
 		h.taskChanged(t.ID)
 	}
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1TaskAccept: done. From review, or (as people may judge it themselves) from a run that stopped for them.
@@ -667,7 +696,7 @@ func (h *Hub) v1TaskAccept(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"state": taskDone})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1TaskTrack: "convert to task": a conversation turn becomes a task people track.
@@ -685,7 +714,7 @@ func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, cols)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1TaskReopen: a done or closed task goes back to work (in progress): its agent picks it up again with what the
@@ -705,7 +734,7 @@ func (h *Hub) v1TaskReopen(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"state": taskQueued, "step": ""})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1TaskDecide: one of the decision card's options (or words of one's own). It is said in the thread, which sends
@@ -728,7 +757,7 @@ func (h *Hub) v1TaskDecide(w http.ResponseWriter, q *request) {
 	h.onPosted(m, false)
 	t, _ = h.task(t.ID)
 	h.taskChanged(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // ---------------------------------------------------------------- machines
@@ -1021,7 +1050,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		h.taskChanged(t.ID)
 	}
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // callHandler: when a task the request named someone to take stops for them (to accept, to decide), its message
