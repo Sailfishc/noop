@@ -81,28 +81,53 @@ function TaskRow(props: { team: Team; task: Task; showStatus?: boolean; showChan
   );
 }
 
+/** A task and, indented under it, what its agent delegated (they follow it rather than standing alone). */
+function TaskWithChildren(props: { team: Team; task: Task; showStatus?: boolean; showChannel?: boolean; onOpen: (t: Task) => void }) {
+  const kids = () => childrenOf(props.team, props.task);
+  return (
+    <View style={{ gap: 6 }}>
+      <TaskRow team={props.team} task={props.task} showStatus={props.showStatus} showChannel={props.showChannel} onOpen={props.onOpen} />
+      <If when={kids().length}>
+        <View testID={`taskrow-${props.task.id}-children`} style={{ gap: 6, paddingLeft: 16 }}>
+          <Each of={kids()} key={(x) => x.id}>
+            {(x) => <TaskRow team={props.team} task={x()} showStatus onOpen={props.onOpen} />}
+          </Each>
+        </View>
+      </If>
+    </View>
+  );
+}
+
+/** The tasks a task's agent delegated, oldest first. */
+export const childrenOf = (t: Team, task: Task) =>
+  Object.values(t.tasks()).filter((x) => x.mandate?.delegated && x.mandate.parent === task.id).sort((a, b) => a.created - b.created);
+
 /** Tasks as a board (a column per status, what waits for me first; done and closed folded until opened) or a list
- * (newest first). */
+ * (newest first). A delegated task whose parent is shown goes under it. */
 export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout; showChannel?: boolean; onOpen: (t: Task) => void; empty?: string }) {
   const t = props.team;
+  const top = () => {
+    const ids = new Set(props.tasks.map((x) => x.id));
+    return props.tasks.filter((x) => !(x.mandate?.delegated && x.mandate.parent && ids.has(x.mandate.parent)));
+  };
   // phones: five columns don't fit, so always the list
   const layout = () => (windowSize().width < WIDE ? "list" : props.layout);
   const unfolded = signal<Record<string, boolean>>({});
   const folded = (s: Status) => (s === "done" || s === "closed") && !unfolded()[s];
   const byStatus = computed(() => {
     const cols: Record<Status, Task[]> = { todo: [], in_progress: [], in_review: [], done: [], closed: [] };
-    for (const x of props.tasks) cols[statusOf(x.state).status].push(x);
+    for (const x of top()) cols[statusOf(x.state).status].push(x);
     const rank = (x: Task) => (needsMe(t, x) ? 2 : statusOf(x.state).needs ? 1 : 0);
     for (const k of STATUSES) cols[k].sort((a, b) => rank(b) - rank(a) || b.updated - a.updated);
     return cols;
   });
-  const sorted = () => [...props.tasks].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
+  const sorted = () => [...top()].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
   return (
     <If when={props.tasks.length} else={<Text testID="tasks-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{props.empty ?? L("No tasks yet.", "还没有任务。")}</Text>}>
       <If when={layout() === "board"} else={
         <Scroll testID="tasks-list" style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 8, maxWidth: 720 }}>
           <Each of={sorted()} key={(x) => x.id}>
-            {(x) => <TaskRow team={t} task={x()} showStatus showChannel={props.showChannel} onOpen={props.onOpen} />}
+            {(x) => <TaskWithChildren team={t} task={x()} showStatus showChannel={props.showChannel} onOpen={props.onOpen} />}
           </Each>
         </Scroll>
       }>
@@ -123,7 +148,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
                 </View>
                 <If when={!folded(s())}>
                   <Each of={byStatus()[s()]} key={(x) => x.id}>
-                    {(x) => <TaskRow team={t} task={x()} showChannel={props.showChannel} onOpen={props.onOpen} />}
+                    {(x) => <TaskWithChildren team={t} task={x()} showChannel={props.showChannel} onOpen={props.onOpen} />}
                   </Each>
                 </If>
               </View>

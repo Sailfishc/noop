@@ -28,7 +28,8 @@ const (
 )
 
 // holderView: who has the ball and why: confirm | handoff_card | answer | handoff | align | decide | accept | unblock | retry
-// (a person), work | wait (the agent).
+// (a person), work | wait | receipt (an agent: receipt, a delegated task that failed is back with the agent that
+// delegated it).
 type holderView struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -47,6 +48,8 @@ type handoffView struct {
 	DecidedBy string `json:"decided_by,omitempty"`
 	// Auto: no card: the requester may use the other agent without its owner's yes (teamreach.go), so it went at once
 	Auto bool `json:"auto,omitempty"`
+	// Kind: "" a handoff (the work is the other agent's now) | delegate (a part of it, back to this task: teamdelegate.go)
+	Kind string `json:"kind,omitempty"`
 }
 
 type submitView struct {
@@ -89,6 +92,14 @@ func (h *Hub) holderOf(t taskView) *holderView {
 	case taskBlocked:
 		return user(t.CreatedBy, "unblock")
 	case taskFailed:
+		if t.Mandate != nil && t.Mandate.Delegated && len(t.Mandate.Via) > 0 {
+			var ps string
+			h.db.QueryRow("SELECT state FROM tasks_v1 WHERE id = ?", t.Mandate.Parent).Scan(&ps)
+			if ps == taskDone || ps == taskClosed {
+				return nil // the task that delegated it is over: nobody owes it anything
+			}
+			return &holderView{"agent", t.Mandate.Via[len(t.Mandate.Via)-1], "receipt"} // back to the agent that delegated it
+		}
 		return user(t.CreatedBy, "retry")
 	case taskWaiting:
 		return &holderView{"agent", t.AgentID, "wait"}
@@ -163,7 +174,7 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 	}
 	if !r.Card { // the requester could @ it without anyone's yes: so can the agent working for them; no card
 		x := handoffView{ID: newID("ho_"), To: b.ID, What: what, At: h.nowMs(), State: "accepted", Auto: true}
-		m, id := h.handOn(t, b, r, x.What, "（@"+a.Handle+" 在 "+t.ID+" 里转交，免确认）", member{"agent", a.ID}, false)
+		m, id := h.handOn(t, b, r, x.What, "（@"+a.Handle+" 在 "+t.ID+" 里转交，免确认）", member{"agent", a.ID}, taskOrigin{})
 		x.Message, x.Task = m, id
 		h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(append(t.Handoffs, x)), "tracked": 1})
 		h.taskChanged(t.ID)
@@ -182,14 +193,15 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 
 // handOn: agent b gets a task in t's thread, in the name of t's requester and via t's chain: the request said as
 // `author` in the thread ("@B WHAT" and a note on where it came from), b brought into the channel when reach says so.
-// confirmed: b's owner already said yes. The message and the new task.
-func (h *Hub) handOn(t taskView, b agentView, r reachView, what, note string, author member, confirmed bool) (string, string) {
+// o: Confirmed (b's owner already said yes), Delegated and Acceptance (a delegated part). The message and the new task.
+func (h *Hub) handOn(t taskView, b agentView, r reachView, what, note string, author member, o taskOrigin) (string, string) {
 	if r.Join {
 		h.addMember(t.ChannelID, member{"agent", b.ID})
 		h.channelChanged(t.ChannelID)
 	}
 	m := h.insertMessage(t.ChannelID, &t.ThreadID, author, "@"+b.Handle+" "+what+"\n"+note)
-	id := h.createTaskWith(m, t.ThreadID, b.ID, r.Join, true, taskOrigin{By: t.CreatedBy, Via: chain(t), Parent: t.ID, Confirmed: confirmed})
+	o.By, o.Via, o.Parent = t.CreatedBy, chain(t), t.ID
+	id := h.createTaskWith(m, t.ThreadID, b.ID, r.Join, true, o)
 	return m.ID, id
 }
 
@@ -244,6 +256,7 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 		h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(t.Handoffs)})
 		h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, "不用交给 @"+to.Handle)
 		h.taskChanged(t.ID)
+		h.checkReceipt(t.ID) // a declined delegation is one thing less it waits for
 		t, _ = h.task(t.ID)
 		writeJSON(w, 200, h.taskOut(q, t))
 		return
@@ -262,7 +275,11 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 		return
 	}
 	// the request, as the person clicking says it, in the thread: "@B WHAT"
-	_, id := h.handOn(t, to, r, x.What, "（"+from.Name+" 在 "+t.ID+" 里建议的交接）", member{"user", me}, true)
+	o, note := taskOrigin{Confirmed: true}, "（"+from.Name+" 在 "+t.ID+" 里建议的交接）"
+	if x.Kind == "delegate" {
+		o.Delegated, o.Acceptance, note = true, x.What, "（"+from.Name+" 在 "+t.ID+" 里委派，结果交回给它）"
+	}
+	_, id := h.handOn(t, to, r, x.What, note, member{"user", me}, o)
 	x.State, x.Task = "accepted", id
 	t.Handoffs[i] = x
 	h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(t.Handoffs)})

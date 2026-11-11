@@ -36,7 +36,9 @@ export type TeamTask = {
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string;
   /** It came from another agent (a handoff) or a trigger, not from a person's own words. */
-  via?: string[] | null; parent?: string; trigger?: string };
+  via?: string[] | null; parent?: string; trigger?: string;
+  /** The agent of the parent task delegated a part to it (remi delegate): its result goes back to that agent. */
+  delegated?: boolean; redos?: number };
 export type Claim = {
   task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string };
   /** repo: the channel's usual repository, a hint (the agent declares a repository itself with `remi repo`). */
@@ -58,9 +60,9 @@ export type Claim = {
   /** The other agents it may turn to, a line each (\`remi who\`); "" or missing: none. */
   agents?: string;
 };
-export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message" | "quota"; note?: string; payload?: string; at: number };
+export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message" | "quota" | "delegates"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
-export type WaitSpec = { how: "callback" | "poll" | "timer"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
+export type WaitSpec = { how: "callback" | "poll" | "timer" | "answer" | "delegates"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
 export type TaskResult = {
   status: "review" | "needs_decision" | "blocked" | "failed" | "waiting" | "align";
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
@@ -117,7 +119,7 @@ export function parseTaskResult(text: string): TaskResult {
       if (STATUSES.has(r.status)) {
         const options = Array.isArray(r.options) ? r.options.map(String).filter(Boolean) : undefined;
         if (r.status === "needs_decision" && !String(r.question ?? "").trim()) return { ...r, status: "blocked", summary: String(r.summary ?? "") };
-        if (r.status === "waiting" && !["callback", "poll", "timer", "answer"].includes(r.wait?.how)) return { ...r, status: "review", result: "unconfirmed", summary: String(r.summary ?? "") };
+        if (r.status === "waiting" && !["callback", "poll", "timer", "answer", "delegates"].includes(r.wait?.how)) return { ...r, status: "review", result: "unconfirmed", summary: String(r.summary ?? "") };
         if (r.status === "waiting" && r.wait.how === "poll" && !String(r.wait.check ?? "").trim()) return { ...r, wait: { ...r.wait, how: "timer" }, summary: String(r.summary ?? "") };
         return { ...r, summary: String(r.summary ?? ""), options };
       }
@@ -140,7 +142,7 @@ const RESULT_SPEC = `When you stop, end your final message with EXACTLY one fenc
 {
   "status": "review" | "needs_decision" | "blocked" | "failed" | "waiting",
   "result": "review only, when the work depends on an outcome outside your work directory: confirmed (you saw it) | unconfirmed (you could not; say in the summary where and when it will appear)",
-  "wait": {"how": "poll" | "callback" | "timer" | "answer", "check": "poll: a shell command run in your work directory that prints one JSON line {\"state\": \"pending\" | \"done\" | \"failed\", \"note\": \"progress\"}", "every": "5m", "expect": "2h", "deadline": "6h", "cancel": "optional: a command that cancels the outside job", "what": "what you wait for"},
+  "wait": {"how": "poll" | "callback" | "timer" | "answer" | "delegates", "check": "poll: a shell command run in your work directory that prints one JSON line {\"state\": \"pending\" | \"done\" | \"failed\", \"note\": \"progress\"}", "every": "5m", "expect": "2h", "deadline": "6h", "cancel": "optional: a command that cancels the outside job", "what": "what you wait for"},
   "summary": "1-3 sentences for the thread: what you did or found, with file paths, commands and links",
   "question": "needs_decision only: one short question",
   "options": ["A: <recommended> — consequence", "B: ... — consequence"],
@@ -156,7 +158,8 @@ waiting = you started something outside (a cloud job, a render, a deployment) wh
 done, and you found a way to see the result (a status API to poll, the callback address below, or where it will appear
 at a known time): you stop now and are woken when it is time, in the same session. waiting with how "answer" = you
 asked someone with \`remi ask\` and nothing else is left to do before their answer: their reply wakes you (or after a
-day you are woken to decide). Do not wait in place for more than
+day you are woken to decide). waiting with how "delegates" = you delegated parts with \`remi delegate\` and have
+nothing else to do before they are back: you are woken once, with the receipt, when all of them are. Do not wait in place for more than
 about 10 minutes. If the person's goal does not depend on the result, or you cannot find any way to see it, do not wait:
 report review with result unconfirmed. At most 3 submissions to outside services per task: run \`remi submit WHAT\` right
 before each one (the server counts them; failures and timeouts count too). When it refuses, do not submit: stop with
@@ -278,8 +281,12 @@ ${RESULT_SPEC}`;
 const AGENTS = (list: string) => `# Other agents you may turn to
 ${list.trim()}
 Do the work yourself unless another agent is clearly the right one for a part (its repository or computer, its
-speciality). Hand a part over with \`remi handoff @AGENT WHAT\` when it is theirs from then on. "no card": it starts at
-once; "needs a card": its owner says yes first.`;
+speciality). Two ways, both in this thread:
+- \`remi delegate @AGENT WHAT\`: it does a part and its result comes back to you; the task stays yours. Write WHAT as
+  results it can check. Delegate several parts if they are independent, then end with status waiting, wait
+  {"how": "delegates"}: you are woken once with all their results, check them, and deliver the whole yourself.
+- \`remi handoff @AGENT WHAT\`: the work is theirs from then on and its result goes to a person, not to you.
+"no card": it starts at once; "needs a card": its owner says yes first.`;
 
 /** The first thing the agent says: one emoji on the request, showing how it read it (the way a teammate reacts in chat). */
 const REACT = `Before anything else (before any tool call), send one short message whose first line is exactly
@@ -302,11 +309,23 @@ const WAKE: Record<Wake["reason"], string> = {
   deadline: "the deadline of your wait passed without a result: check once more; if you still cannot confirm it, report review with result unconfirmed (or blocked if it clearly went wrong)",
   message: "a person said something in the thread",
   quota: "the usage limit of your runtime that stopped your last turn has reset",
+  delegates: "everything you delegated is back",
 };
 
 /** A woken turn: why it woke, what was posted, what people said meanwhile. */
 export function wakePrompt(c: Claim): string {
   const w = c.wake!;
+  if (w.reason === "delegates") return `You were waiting for the parts you delegated; all of them are back. What came back:
+
+${(w.payload ?? "").slice(0, 20000)}
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+Check each against what you asked (look at their branches, PRs and outputs; run what you can). If one is not right, send
+it back with \`remi delegate @AGENT WHAT TO CHANGE\` (each at most twice) and end with status waiting, wait
+{"how": "delegates"}. A part that failed: do it yourself, delegate it to another agent, or stop with needs_decision.
+When the whole is right, put it together and report review: your summary and evidence may cite their PRs and outputs.
+A person accepts only your result.
+
+${RESULT_SPEC}`;
   if (w.reason === "quota") return `Your last turn was cut off by the usage limit of your runtime; it has reset now. Continue from where you got to; do not redo steps that already took effect.
 ${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
 ${RESULT_SPEC}`;
@@ -616,12 +635,13 @@ export const REMI_CLI = `#!/bin/sh
 #   remi ask @WHO QUESTION                                 ask someone in the thread and go on; their answer reaches you
 #   remi repo OWNER/NAME                                   you will change this repository: it is checked out for you
 #   remi handoff @WHO WHAT                                 pass the ball: to a person now; to an agent now or once its owner agrees
+#   remi delegate @AGENT WHAT                              have another agent do a part; its result comes back to you
 #   remi submit WHAT                                       count a submission to an outside service (at most 3 per task)
 #   remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT    remind @WHO (default: you, in this thread) at WHEN:
 #                                                          20m, 2h, 1d, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,19p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -633,6 +653,7 @@ case "$1" in
   remind) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   ask) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/ask" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   handoff) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/handoff" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  delegate) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/delegate" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   submit) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/submit" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   repo) [ -n "$2" ] || usage; exec curl -sS "$api/repo" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary "$2" ;;
   upload) [ -f "$2" ] || usage; exec curl -sS "$api/upload" -H "$auth" -H "content-type:" --url-query "name=$(basename "$2")" --data-binary @"$2" ;;

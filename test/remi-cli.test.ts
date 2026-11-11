@@ -39,6 +39,7 @@ test("remi turns each command into the right request", async () => {
   await remi("ask", "@liuli", "版本号？");
   await remi("submit", "render", "job-1");
   await remi("who");
+  await remi("delegate", "@bei", "写文档");
   const usage = await remi("bogus");
   server.stop(true);
   rmSync(W, { recursive: true, force: true });
@@ -48,7 +49,7 @@ test("remi turns each command into the right request", async () => {
     "GET /api/v1/agent/read", "GET /api/v1/agent/search", "GET /api/v1/agent/tasks/T-0001", "GET /api/v1/agent/channel",
     "GET /api/v1/agent/who", "GET /api/v1/agent/file", "GET /api/v1/agent/memory", "POST /api/v1/agent/say", "POST /api/v1/agent/upload",
     "POST /api/v1/agent/remind", "POST /api/v1/agent/handoff", "POST /api/v1/agent/ask", "POST /api/v1/agent/submit",
-    "GET /api/v1/agent/who",
+    "GET /api/v1/agent/who", "POST /api/v1/agent/delegate",
   ]);
   expect(seen[10]).toMatchObject({ type: "text/plain; charset=utf-8", body: "@bei 写发布说明" });
   expect(seen[11]).toMatchObject({ body: "@liuli 版本号？" }); // a leading @ is text, not curl's @file
@@ -62,9 +63,12 @@ test("remi turns each command into the right request", async () => {
   expect(seen[8]).toMatchObject({ query: { name: "报告 1.md" }, type: "", body: "# 结果" });
   expect(seen[9]).toMatchObject({ type: "text/plain; charset=utf-8", body: "每天 9:00 @acha 汇总告警" });
   expect(seen[13].query).toEqual({ handle: "" }); // alone: the agents it may turn to
+  expect(seen[14]).toMatchObject({ type: "text/plain; charset=utf-8", body: "@bei 写文档" });
   expect(usage.exitCode).toBe(2);
   expect(usage.stdout).toContain("remi say TEXT");
   expect(usage.stdout).toContain("tomorrow 9:00");
   expect(usage.stdout).toContain("remi handoff @WHO WHAT");
+  expect(usage.stdout).toContain("remi delegate @AGENT WHAT");
+  expect(usage.stdout).toContain("2026-12-01 10:00"); // the last line of the usage too
   expect(usage.stdout).not.toContain("api=");
 });

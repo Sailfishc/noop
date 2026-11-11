@@ -47,6 +47,16 @@ func (h *Hub) wakes(t taskView, m messageView) bool {
 	}
 	me := m.Author.ID
 	a, _ := h.agent(t.AgentID)
+	// waiting for what it delegated: people's words (a child's decision among them) wait for its receipt run, unless
+	// they @ it; a delegated task that came back is the delegating agent's to reopen, unless they @ it
+	if (t.State == taskWaiting && t.Wait != nil && t.Wait.How == "delegates") || (t.Mandate != nil && t.Mandate.Delegated && returnedStates[t.State]) {
+		for _, mm := range m.Mentions {
+			if mm.Kind == "agent" && mm.ID == t.AgentID {
+				return true
+			}
+		}
+		return false
+	}
 	if me == t.CreatedBy || me == t.Handler || me == a.OwnerID || openQuestion(t, me) >= 0 {
 		return true
 	}

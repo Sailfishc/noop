@@ -15,6 +15,8 @@
 //   [quota?]    the same, but the limit names no time (the server tries again after 5 minutes, 15, an hour, …)
 //   [handoff:x] first runs `remi who`, then `remi handoff @x …` (to another agent), then reports review with what
 //               the server said (no @ in the tag: a person's @x would call that agent itself)
+//   [delegate:x,y] runs `remi delegate @x …` for each, then waits for them (wait how "delegates"); woken with the
+//               receipt, it reports review with how many came back
 // FAKE_CODEX_DELAY_MS: the pause between its steps (default 1200).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -54,13 +56,29 @@ if ((has("quota") || has("quota?")) && !resume) {
   process.exit(1);
 }
 
-const handoff = request.match(/\[handoff:([a-z][a-z0-9_-]*)\]/)?.[1];
+// a tag names other agents: the one it names (handed or delegated to, it reads the same thread) just does the work
+const me = prompt.match(/^You are .* \(@([a-z0-9_-]+)\)/m)?.[1] ?? "";
+const named = (xs: string[]) => xs.includes(me) ? [] : xs;
+const handoff = named([request.match(/\[handoff:([a-z][a-z0-9_-]*)\]/)?.[1] ?? ""].filter(Boolean))[0];
 const remi = (...args: string[]) => {
   const r = Bun.spawnSync(["remi", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   return (r.stdout.toString() + r.stderr.toString()).trim();
 };
 
-if (handoff && !resume) {
+const delegates = named(request.match(/\[delegate:([a-z0-9_,-]+)\]/)?.[1]?.split(",").filter(Boolean) ?? []);
+const receipt = prompt.includes("all of them are back. What came back:");
+
+if (receipt) {
+  const back = (prompt.match(/^## T-\d+ @\S+: \w+/gm) ?? []).join("；");
+  finish({ status: "review", summary: `（假 Codex）委派的都交回了，汇总好了：${back}` });
+} else if (delegates.length && !resume) {
+  const said: string[] = [];
+  for (const d of delegates) {
+    await step(`remi delegate @${d}`);
+    said.push(`@${d}：${remi("delegate", `@${d}`, `（假 Codex）这一块交给你：整理 ${d} 的部分`).split("\n")[0]}`);
+  }
+  finish({ status: "waiting", summary: `（假 Codex）分出去了，等它们交回。${said.join("；")}`, wait: { how: "delegates", what: "委派出去的部分" } });
+} else if (handoff && !resume) {
   await step("remi who");
   const who = remi("who");
   await step(`remi handoff @${handoff}`);
