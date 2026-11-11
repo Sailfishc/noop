@@ -621,7 +621,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <AgentRepo team={t} agent={a()} />
       </Panel>
 
-      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}>
+      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads all of this at the start of every task, whoever asked and wherever, and rewrites it when it learns something that will matter later. Only you (for a team agent, the admins too) can see it here, but the agent may repeat it in its replies: keep private matters out.", "它每次开工前都会读全部内容（不管是谁、在哪个频道派的活），学到以后用得上的东西时会自己改写。这里只有你能看到（团队 Agent 还有管理员），但 Agent 干活时可能在回复里说出来，私事别让它记。")}>
         <AgentMemory team={t} agent={a()} />
       </Panel>
 
