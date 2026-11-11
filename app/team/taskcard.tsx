@@ -1,7 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, type IconName, Spinner, StateDot } from "../ui";
+import { alpha, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Spinner } from "../ui";
 import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -271,7 +271,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={needs()}>
         {(n) => (
           <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
-            <StateDot tone={n().tone} />
+            <Dot tone={n().tone} />
             <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label}</Text>
           </View>
         )}

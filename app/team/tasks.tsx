@@ -5,7 +5,7 @@
 // only answered stays in the conversation.
 import { computed, effect, type JSX, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, hovered, Icon, MenuRow, PopMenu, StateDot } from "../ui";
+import { alpha, Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu } from "../ui";
 import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
@@ -34,7 +34,7 @@ export function rememberedLayout(place: string) {
 export function WaitsChip(props: { label: string; tone: Tone; testID?: string }) {
   return (
     <View testID={props.testID} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneColor(props.tone), 0.13) }}>
-      <StateDot tone={props.tone} />
+      <Dot tone={props.tone} />
       <Text style={{ fontSize: 12, fontWeight: "600", color: toneColor(props.tone) }}>{props.label}</Text>
     </View>
   );
@@ -114,7 +114,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
                 <View role={s() === "done" || s() === "closed" ? "button" : undefined} testID={`tasks-col-${s()}-head`}
                   onPress={s() === "done" || s() === "closed" ? () => unfolded.update((u) => ({ ...u, [s()]: !u[s()] })) : undefined}
                   style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
-                  <StateDot tone={STATUS[s()].tone} />
+                  <Dot tone={STATUS[s()].tone} />
                   <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{STATUS[s()].label()}</Text>
                   <Text testID={`tasks-col-${s()}-count`} style={{ flex: 1, fontSize: 12, color: colors.faint }}>{String(byStatus()[s()].length)}</Text>
                   <If when={s() === "done" || s() === "closed"}>

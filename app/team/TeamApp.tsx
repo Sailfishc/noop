@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, StateDot } from "../ui";
+import { alpha, Avatar, colors, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner } from "../ui";
 import { reminderUp, createTeam, isMember, runtimeLabel, TEAM_KEYS, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -307,7 +307,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
                   <View style={{ flex: 1, gap: 1 }}>
                     <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                      <StateDot tone={st().tone} />
+                      <Dot tone={st().tone} />
                       <Text testID={`side-agent-${a().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{`${runtimeLabel(a().runtime)} · ${st().label}`}</Text>
                     </View>
                   </View>

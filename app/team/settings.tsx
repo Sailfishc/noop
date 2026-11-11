@@ -10,7 +10,7 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, StateDot, Tag, TextArea, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, radius, Spinner, Tag, TextArea, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
@@ -446,7 +446,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
                   <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                  <StateDot tone={st().tone} />
+                  <Dot tone={st().tone} />
                   <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
                 </View>
               </View>
@@ -521,7 +521,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
             <RuntimeBadge runtime={a().runtime} />
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <StateDot tone={st().tone} />
+            <Dot tone={st().tone} />
             <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.muted }}>{st().label}</Text>
           </View>
         </View>
@@ -1090,7 +1090,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
               <Text style={{ fontSize: 14, color: colors.text }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
               <RuntimeBadge runtime={a().runtime} />
               <View style={{ flex: 1 }} />
-              <StateDot tone={st().tone} />
+              <Dot tone={st().tone} />
               <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
             </View>
           );

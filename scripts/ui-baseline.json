@@ -10,10 +10,10 @@
   },
   "app/team/channel.tsx": {
     "nsh-base": 1,
-    "font-size": 33,
+    "font-size": 31,
     "radius": 14,
-    "spacing": 17,
-    "pressable": 8
+    "spacing": 15,
+    "pressable": 7
   },
   "app/team/composer.tsx": {
     "font-size": 12,

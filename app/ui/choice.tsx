@@ -1,28 +1,33 @@
-import { Text, View } from "nsh";
-import { colors, hovered, tints } from "./theme";
+import { Text } from "nsh";
+import { Toggle, ToggleGroup } from "nsh/base";
+import { colors, focusRing, hovered, scale, tints } from "./theme";
 
-/** A row of choices, one picked. */
+/**
+ * A row of choices, one picked (a segmented choice: nsh/base's `ToggleGroup` of `Toggle`s, so the arrow keys move
+ * along it and screen readers hear which is pressed). For more options than fit in a row, use `Dropdown`.
+ * Test ids: `<testID>-<value>`.
+ */
 export function Choice<T extends string>(props: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void; testID?: string }) {
   return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+    <ToggleGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
       <Each of={props.options}>
         {(o) => (
-          <View
-            role="button"
+          <Toggle
             testID={props.testID ? `${props.testID}-${o().value}` : undefined}
-            accessibilityState={{ selected: props.value === o().value }}
-            onPress={() => props.onChange(o().value)}
+            pressed={props.value === o().value}
+            onChange={() => props.onChange(o().value)}
             hoverStyle={hovered()}
+            focusStyle={focusRing(1)}
             style={{
-              height: 30, paddingHorizontal: 10, justifyContent: "center", borderRadius: 8, borderWidth: 1,
+              height: scale.control.sm, paddingHorizontal: 12, justifyContent: "center", borderRadius: scale.radius.md, borderWidth: 1,
               borderColor: props.value === o().value ? colors.accentFill : colors.fieldBorder,
               backgroundColor: props.value === o().value ? tints.accent : "transparent",
             }}
           >
-            <Text style={{ fontSize: 13.5, color: colors.text }}>{o().label}</Text>
-          </View>
+            <Text style={{ fontSize: scale.text.body, color: colors.text }}>{o().label}</Text>
+          </Toggle>
         )}
       </Each>
-    </View>
+    </ToggleGroup>
   );
 }

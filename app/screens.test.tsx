@@ -52,13 +52,13 @@ const start = () => open("./App.tsx", { storage: SESSION, ...SIZE, network: net(
 describe("showcase", () => {
   for (const scheme of ["light", "dark"] as const) {
     test(`showcase-${scheme}`, async () => {
-      const app = await open("./Showcase.tsx", { width: 1280, height: 1400, colorScheme: scheme });
+      const app = await open("./Showcase.tsx", { width: 1280, height: 1700, colorScheme: scheme });
       await app.waitFor("id:showcase");
       await shot(app, `showcase-${scheme}`);
     });
   }
   test("showcase-overlays", async () => {
-    const app = await open("./Showcase.tsx", { width: 1280, height: 1400 });
+    const app = await open("./Showcase.tsx", { width: 1280, height: 1700 });
     await app.waitFor("id:showcase");
     await app.press("id:showcase-label-info");
     await app.waitFor("id:showcase-label-note");

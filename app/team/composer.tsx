@@ -2,7 +2,7 @@
 import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, untracked, View } from "nsh";
 import fs from "fs/promises";
 import { L, lang } from "../i18n";
-import { alpha, Avatar, Btn, colors, ErrorNote, hovered, Icon, type IconName, StateDot, TextArea } from "../ui";
+import { alpha, Avatar, Btn, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
@@ -72,7 +72,7 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
                     {(a) => (
                       <>
                         <RuntimeBadge runtime={a().runtime} />
-                        <StateDot tone={st()!.tone} />
+                        <Dot tone={st()!.tone} />
                         <Text style={{ maxWidth: 160, fontSize: 12, color: st()!.blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st()!.label}</Text>
                       </>
                     )}

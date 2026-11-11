@@ -6,12 +6,15 @@ import { Scroll, signal, Text, View, type JSX } from "nsh";
 import { Avatar } from "./avatar";
 import { Btn, IconBtn } from "./button";
 import { Choice } from "./choice";
-import { Dot, StateDot } from "./dot";
+import { Dot } from "./dot";
+import { Empty } from "./empty";
+import { ListRow } from "./list-row";
+import { Tabs } from "./tabs";
 import { ErrorNote } from "./error-note";
 import { Field, TextArea } from "./field";
 import { Icon, type IconName } from "./icons";
 import { Label, Noted } from "./noted";
-import { Panel } from "./panel";
+import { Card, Panel } from "./panel";
 import { PickCard } from "./pick-card";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
@@ -43,6 +46,7 @@ export function Showcase() {
   const on = signal(true);
   const card = signal("one");
   const dialog = signal(false);
+  const tab = signal<"chat" | "tasks">("chat");
   const pickOne = signal<string | null>("codex");
   return (
     <Scroll testID="showcase" style={{ flex: 1, backgroundColor: colors.background }} contentStyle={{ padding: 24, gap: 24 }}>
@@ -170,7 +174,7 @@ export function Showcase() {
         </Modal>
       </Section>
 
-      <Section title="Tag tones, Dot, StateDot, Spinner">
+      <Section title="Tag tones, Dot (on / off / tones), Spinner, Empty">
         <Row>
           <Tag label="muted" />
           <Tag label="accent" tone="accent" />
@@ -179,12 +183,30 @@ export function Showcase() {
           <Tag label="danger" tone="danger" />
           <Dot on />
           <Dot on={false} />
-          <StateDot tone="up" />
-          <StateDot tone="warn" />
-          <StateDot tone="danger" />
-          <StateDot tone="muted" />
+          <Dot tone="up" />
+          <Dot tone="warn" />
+          <Dot tone="danger" />
+          <Dot tone="muted" />
           <Spinner size={14} tint={colors.muted} />
+          <Empty />
         </Row>
+      </Section>
+
+      <Section title="Tabs, ListRow (plain, subtitle, selected), Card">
+        <View style={{ flexDirection: "row", gap: 16, alignItems: "flex-start" }}>
+          <View style={{ flex: 1, gap: 8 }}>
+            <Tabs testID="showcase-tab" value={tab()} onChange={tab.set} tabs={[{ value: "chat", label: "Conversation" }, { value: "tasks", label: "Tasks", count: 4 }]} />
+            <ListRow title="A row" left={<Icon name="chat" size={16} tint={colors.muted} />} right={<Tag label="3" />} onPress={() => {}} />
+            <ListRow title="With a subtitle" subtitle="Codex · Ready" left={<Avatar name="acha" agent size={28} />} right={<Dot tone="up" />} onPress={() => {}} />
+            <ListRow title="Selected" selected left={<Icon name="chat" size={16} tint={colors.muted} />} onPress={() => {}} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Card>
+              <Txt>A Card: a bordered group without a title.</Txt>
+              <Row><Btn small kind="primary" label="Save" onPress={() => {}} /></Row>
+            </Card>
+          </View>
+        </View>
       </Section>
 
       <Section title="Avatar: person, agent, sizes">
