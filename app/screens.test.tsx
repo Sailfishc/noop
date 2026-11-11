@@ -211,6 +211,22 @@ describe("screens", () => {
     await shot(app, "settings-machines");
   });
 
+  test("settings-login-code", async () => {
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, ...SIZE,
+      network: { ...net(),
+        [`POST ${URL}/api/v1/login-codes`]: { body: { code: "METE-8YG3", path: "/login/METE-8YG3", expires: Date.now() + 900_000 } },
+        [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [{ id: "aaaaaaaaaaaaaaaa", ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Remi", created: T0, last_seen: T0, current: true }] } } },
+    });
+    await app.waitFor("id:open-tasks");
+    await app.press("id:user-menu");
+    await app.press("id:menu-login-code");
+    await app.press("id:login-code-create");
+    await app.waitFor("id:login-code-qr");
+    await app.scroll("id:login-code-qr", 300);
+    await shot(app, "settings-login-code");
+  });
+
   test("signin-ask", async () => {
     const app = await open("./App.tsx", { ...SIZE, storage: { "hub.lang": "zh" }, network: net() });
     await app.press("id:signin-mode-ask");

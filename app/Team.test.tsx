@@ -64,6 +64,41 @@ describe("team sign in", () => {
     await linked.press("id:team-login");
     await linked.waitFor("id:team-composer");
     expect(linked.storage()["team.url"]).toBe(URL);
+
+    // the whole link pasted into the server box (the bad case): it still signs in, with the link's code
+    const misplaced = await open("./App.tsx", { width: 1200, height: 800, network: net });
+    await misplaced.type("id:team-url", `${URL}/login/ABCD-EFGH`);
+    await misplaced.press("id:team-login");
+    await misplaced.waitFor("id:team-composer");
+    expect(misplaced.storage()["team.url"]).toBe(URL);
+    expect(logins.at(-1)).toEqual({ code: "ABCD-EFGH" });
+  });
+
+  test("a scanned login QR opens the app and signs in; signed in already, it is dropped with a word", async () => {
+    const logins: any[] = [];
+    const net = {
+      ...server(newLog()),
+      [`POST ${URL}/api/v1/login`]: (r: { body?: string | null }) => {
+        logins.push(JSON.parse(r.body!));
+        return { body: { session: "sess", user: zw } };
+      },
+    };
+    const qr = `remi://login?server=${encodeURIComponent(URL)}&code=ABCD-EFGH`;
+    const app = await open("./App.tsx", { width: 390, height: 844, network: net, urlScheme: qr });
+    await app.waitUntil(() => app.storage()["team.session"] === "sess");
+    await app.waitFor("text:支付后端");
+    expect(logins).toEqual([{ code: "ABCD-EFGH" }]);
+    expect(app.storage()["team.url"]).toBe(URL);
+
+    await app.openWithUrl(`remi://login?server=${encodeURIComponent(URL)}&code=WXYZ-2345`);
+    await app.waitFor("text:This device is already signed in. Sign out first to switch accounts.");
+    expect(logins.length).toBe(1);
+
+    // a link that isn't a login (or names no http server) is ignored
+    const other = await open("./App.tsx", { width: 390, height: 844, network: net, urlScheme: "remi://login?server=javascript%3Aalert(1)&code=ABCD-EFGH" });
+    await other.waitFor("id:team-signin");
+    await other.wait(50);
+    expect(logins.length).toBe(1);
   });
 
   test("asking to join: the request waits for an admin; once approved this device signs in, even after a restart", async () => {
@@ -626,7 +661,14 @@ describe("settings", () => {
     await app.press("id:login-code-create");
     await app.waitFor("id:login-code");
     expect(app.shows("text:ABCD-EFGH")).toBe(true);
-    expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(true);
+    expect(app.shows("id:login-code-qr")).toBe(true);
+    expect(app.shows("id:login-code-server")).toBe(true);
+    // the link with the code in it is not on screen (people typed it into the server box); it's behind 复制链接
+    expect(app.shows(`text:${URL}/login/ABCD-EFGH`)).toBe(false);
+    await app.press("id:login-code-copy-link");
+    expect(app.clipboard()).toBe(`${URL}/login/ABCD-EFGH`);
+    await app.press("id:login-code-copy");
+    expect(app.clipboard()).toBe("ABCD-EFGH");
     expect(app.shows("text:This device")).toBe(true);
     expect(app.shows("id:device-remove-aaaaaaaaaaaaaaaa")).toBe(false);
     await app.press("id:device-remove-bbbbbbbbbbbbbbbb");
@@ -656,7 +698,9 @@ describe("settings", () => {
     expect(app.shows("id:server-connected")).toBe(true);
     expect(app.shows("id:server-loopback")).toBe(false);
     await app.press("id:login-code-create");
-    await app.waitFor(`text:${PUB}/login/ABCD-EFGH`);
+    await app.waitFor("id:login-code-qr");
+    await app.press("id:login-code-copy-link");
+    expect(app.clipboard()).toBe(`${PUB}/login/ABCD-EFGH`);
     await app.press("id:settings-nav-machines");
     await app.press("id:machine-add");
     await app.waitFor(`text:curl -fsSL ${PUB}/api/v1/install.sh | bash -s -- ${PUB} te_first`);

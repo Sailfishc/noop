@@ -2,11 +2,11 @@
 // sign in, then the workspace (sidebar, the page in the middle, a thread or the members beside it). Wide windows show
 // them side by side; narrow ones one pane at a time. The screens live next to it: signin, channel (with taskfacts),
 // composer, messages, taskcard, inbox, tasks, search, reminders, settings.
-import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
+import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, Txt } from "../ui";
-import { reminderUp, createTeam, isMember, mayBringAgent, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
+import { alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
+import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
@@ -417,6 +417,29 @@ export function TeamApp() {
     if (u && s) session.set({ url: u, session: s });
     ready.set(true);
   });
+  // A login link opened the app: the QR of 设置 › 账号 › 在其他设备登录 that a phone's camera scanned
+  // (remi://login?…), or, on the web, the page …/login/CODE. Signed out, the sign-in screen uses it; signed in, it
+  // is dropped with a word (switching accounts is signing out first).
+  const loginLink = signal<{ server: string; code: string } | null>(null);
+  const opened = (u: string) => {
+    const l = parseLoginLink(u);
+    if (l) loginLink.set(l);
+  };
+  cleanup(UrlScheme.on("open", ({ url: u }) => opened(u)));
+  if (platform.os === "web") {
+    const here = UrlScheme.url() ?? "";
+    if (/\/login\/[A-Za-z0-9-]+\/?$/.test(here)) {
+      opened(here);
+      UrlScheme.setUrl(here.replace(/\/login\/[A-Za-z0-9-]+\/?$/, "/")); // a reload doesn't use the code again
+    }
+  }
+  effect(() => {
+    if (!ready() || !session() || !loginLink()) return;
+    untracked(() => {
+      loginLink.set(null);
+      toast(L("This device is already signed in. Sign out first to switch accounts.", "这台设备已经登录了，要换账号请先退出登录"), "info");
+    });
+  });
   async function signedIn(s: Session, e: string) {
     await Storage.setItem(TEAM_KEYS.url, s.url);
     await Storage.setItem(TEAM_KEYS.session, s.session);
@@ -434,7 +457,7 @@ export function TeamApp() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.background }}>
       <If when={ready()}>
-        <If when={session()} else={<SignIn url={url()} email={email()} notice={notice()} onSession={signedIn} />}>
+        <If when={session()} else={<SignIn url={url()} email={email()} notice={notice()} link={loginLink()} onLinkUsed={() => loginLink.set(null)} onSession={signedIn} />}>
           {(s) => {
             const team = createTeam(s());
             cleanup(team.dispose);
