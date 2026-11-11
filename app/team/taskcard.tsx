@@ -1,7 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { alpha, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Spinner } from "../ui";
+import { alpha, Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, Txt } from "../ui";
 import { blockedReason, errorOf, isParty, machinesOf, taskMachine, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -314,20 +314,27 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <Each of={openHandoffs(task())} key={(x) => x.id}>
         {(x) => {
           const to = () => t.agents().find((a) => a.id === x().to);
-          const mayDecide = () => party() || (!!me() && me()!.id === to()?.owner_id);
+          const toOwner = () => t.users().find((u) => u.id === to()?.owner_id);
+          // the card is there because @B's owner says yes first: only they hand it over; the task's people may say no
+          const mayAccept = () => !!me() && me()!.id === to()?.owner_id;
+          const mayDecline = () => mayAccept() || party();
           return (
-            <View testID={`task-${task().id}-handoff-${x().id}`} style={{ gap: 6, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
-              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
-                {L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}
-              </Text>
-              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{x().what}</Text>
-              <If when={mayDecide()} else={<Text style={{ fontSize: 12, color: colors.faint }}>{L("Its asker, the person taking it, or an owner of the two agents decides.", "由发起人、处理人或两个 Agent 的主人决定。")}</Text>}>
+            <Card tight testID={`task-${task().id}-handoff-${x().id}`}>
+              <Noted
+                testID={`task-${task().id}-handoff-${x().id}-who`}
+                note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
+                label={<Txt variant="caption" weight="semibold" tone="accent">{L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
+              />
+              <Txt lines={3}>{x().what}</Txt>
+              <If when={mayDecline()}>
                 <View style={{ flexDirection: "row", gap: 6 }}>
-                  <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  <If when={mayAccept()}>
+                    <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
+                  </If>
                   <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
                 </View>
               </If>
-            </View>
+            </Card>
           );
         }}
       </Each>

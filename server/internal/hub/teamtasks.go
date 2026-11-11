@@ -500,7 +500,7 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	state, summary := taskQueued, ""
 	switch {
 	case by == a.OwnerID:
-	case a.Dispatch == "owner":
+	case a.Dispatch == "owner" && !o.Confirmed: // its owner said yes to this one (a handoff card): it takes it
 		state, summary = taskClosed, "@"+a.Handle+" 只接主人派的活"
 	case a.Confirm && !o.Confirmed:
 		state = taskPending
@@ -615,8 +615,8 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
 			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
-			AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?))))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me, me))
+			AND json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?)))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me))
 	ts = h.withOutputs(ts)
 	for i := range ts {
 		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
@@ -977,8 +977,12 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo, "conventions": c.Conventions},
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
 		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
-		"requester_preferences": h.preferences(t.CreatedBy), "memory_writable": h.memoryWritable(t, a)})
+		"requester_preferences": h.preferences(t.CreatedBy), "memory_writable": h.memoryWritable(t, a),
+		"agents": h.agentList(t, promptAgents)})
 }
+
+// promptAgents: at most this many lines of `remi who` in the claim, for the start prompt's "who you can turn to".
+const promptAgents = 10
 
 // v1TaskReport: the machine says how the run goes. {step, session, branch} while it runs; {state, summary, decision}
 // when the run ends; {pr} whenever the change request changes. The summary goes to the thread as the agent.
@@ -1154,7 +1158,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			}
 			cols["evidence"] = jsonOrNil(fillEvidence(criteria, b.Evidence))
 		}
-		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" {
+		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) {
 			state = taskDone
 		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
@@ -1172,6 +1176,16 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, h.taskOut(q, t))
+}
+
+// proposedHandoff: a handoff card on the task still waits for its click (the task is not over before that).
+func proposedHandoff(t taskView) bool {
+	for _, x := range t.Handoffs {
+		if x.State == "proposed" {
+			return true
+		}
+	}
+	return false
 }
 
 // callHandler: when a task the request named someone to take stops for them (to accept, to decide), its message

@@ -14,11 +14,11 @@ import (
 //
 // An agent passes the ball with `remi handoff @x WHAT`:
 //   - to a person: the ball is theirs (on their 待你处理) until they reply in the thread; the reply reaches the agent;
-//   - to another agent: a card in the thread that a person clicks (the requester, the person who takes the task, or
-//     the other agent's owner). Only then does the other agent get a task, in the same thread, in the name of the
-//     person who asked in the first place ("@who via @A"). A chain is at most maxHops agents long and never comes
-//     back to an agent already in it; an agent's reminder can't @ another agent (that would be a handoff without the
-//     card).
+//   - to another agent: as if the person who asked in the first place @-ed it (teamreach.go). Where they may use it
+//     without its owner's yes, it gets a task in the same thread at once, in their name ("@who via @A"); else a card
+//     in the thread that only its owner clicks, and only then. A chain is at most maxHops agents long and never comes
+//     back to an agent already in it (structural); an agent's reminder can't @ another agent (that would be a
+//     handoff past the rule).
 //
 // `remi submit WHAT` counts the agent's submissions to outside services on the server: at most maxSubmits per task.
 
@@ -45,6 +45,8 @@ type handoffView struct {
 	State     string `json:"state"` // proposed | accepted | declined
 	Task      string `json:"task,omitempty"`
 	DecidedBy string `json:"decided_by,omitempty"`
+	// Auto: no card: the requester may use the other agent without its owner's yes (teamreach.go), so it went at once
+	Auto bool `json:"auto,omitempty"`
 }
 
 type submitView struct {
@@ -63,7 +65,9 @@ func (h *Hub) holderOf(t taskView) *holderView {
 	}
 	for _, x := range t.Handoffs {
 		if x.State == "proposed" {
-			return user(takerOf(t), "handoff_card")
+			if b, ok := h.agent(x.To); ok {
+				return user(b.OwnerID, "handoff_card") // only the other agent's owner says yes
+			}
 		}
 	}
 	for _, q := range t.Asked {
@@ -133,34 +137,60 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 			"If your part is done, end your turn (status review, and say what you handed over); if you need their result to go on, end with status waiting and wait {\"how\": \"answer\", \"what\": \"@"+target.Handle+"\"}.\n")
 		return
 	}
-	if target.ID == a.ID {
-		errJSON(w, 400, "不能交给自己")
+	b, _ := h.agent(target.ID)
+	if why := structural(t, b); why != "" {
+		code := 400
+		if strings.Contains(why, "最多") {
+			code = 429
+		}
+		errJSON(w, code, why)
 		return
 	}
-	c := chain(t)
-	for _, id := range c {
-		if id == target.ID {
-			errJSON(w, 400, "@"+target.Handle+" 已经在这条交接链里了，不能交回去；需要的话请人来决定")
-			return
-		}
-	}
-	if len(c) >= maxHops {
-		errJSON(w, 429, fmt.Sprintf("这条交接链已经有 %d 个 Agent 了（最多 %d 个）：停下来，用 needs_decision 请人决定", len(c), maxHops))
+	r := h.reach(t, b)
+	if r.Refuse != "" {
+		errJSON(w, 403, r.Refuse)
 		return
 	}
 	for _, x := range t.Handoffs {
-		if x.To == target.ID && x.State == "proposed" {
-			writeText(w, "already proposed to @"+target.Handle+"\n")
+		if x.To == b.ID && x.State == "proposed" {
+			writeText(w, "already proposed to @"+b.Handle+"\n")
 			return
 		}
 	}
-	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "建议交给 @"+target.Handle+"："+what)
-	x := handoffView{ID: newID("ho_"), To: target.ID, What: what, Message: m.ID, At: h.nowMs(), State: "proposed"}
+	if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? AND state NOT IN ('done', 'closed')", t.ThreadID, b.ID) > 0 {
+		errJSON(w, 409, "@"+b.Handle+" 在这个线程里已经有任务了，不能再交给它")
+		return
+	}
+	if !r.Card { // the requester could @ it without anyone's yes: so can the agent working for them; no card
+		x := handoffView{ID: newID("ho_"), To: b.ID, What: what, At: h.nowMs(), State: "accepted", Auto: true}
+		m, id := h.handOn(t, b, r, x.What, "（@"+a.Handle+" 在 "+t.ID+" 里转交，免确认）", member{"agent", a.ID}, false)
+		x.Message, x.Task = m, id
+		h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(append(t.Handoffs, x)), "tracked": 1})
+		h.taskChanged(t.ID)
+		writeText(w, "handed to @"+b.Handle+": it has "+id+" in this thread and starts now (no card: the requester may use it directly).\n"+
+			"Finish your own part; when it is done, end your turn with status review and say what you handed over.\n")
+		return
+	}
+	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, "建议交给 @"+b.Handle+"："+what)
+	x := handoffView{ID: newID("ho_"), To: b.ID, What: what, Message: m.ID, At: h.nowMs(), State: "proposed"}
 	h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(append(t.Handoffs, x)), "tracked": 1})
-	h.noteCall(t, "handoff_card", "")
+	h.noteCall(t, "handoff_card", b.OwnerID)
 	h.taskChanged(t.ID)
-	writeText(w, "proposed: a person clicks the card in the thread to hand it to @"+target.Handle+" (id "+x.ID+").\n"+
+	writeText(w, "proposed: @"+b.Handle+"'s owner clicks the card in the thread to hand it over (id "+x.ID+").\n"+
 		"Finish your own part; when it is done, end your turn with status review and say what you handed over.\n")
+}
+
+// handOn: agent b gets a task in t's thread, in the name of t's requester and via t's chain: the request said as
+// `author` in the thread ("@B WHAT" and a note on where it came from), b brought into the channel when reach says so.
+// confirmed: b's owner already said yes. The message and the new task.
+func (h *Hub) handOn(t taskView, b agentView, r reachView, what, note string, author member, confirmed bool) (string, string) {
+	if r.Join {
+		h.addMember(t.ChannelID, member{"agent", b.ID})
+		h.channelChanged(t.ChannelID)
+	}
+	m := h.insertMessage(t.ChannelID, &t.ThreadID, author, "@"+b.Handle+" "+what+"\n"+note)
+	id := h.createTaskWith(m, t.ThreadID, b.ID, r.Join, true, taskOrigin{By: t.CreatedBy, Via: chain(t), Parent: t.ID, Confirmed: confirmed})
+	return m.ID, id
 }
 
 // v1TaskHandoff: a person decides a handoff card: {id, accept}. Accepted, the other agent gets a task in the thread,
@@ -218,24 +248,21 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 		writeJSON(w, 200, h.taskOut(q, t))
 		return
 	}
+	if me != to.OwnerID { // a card is there because @B's owner says yes first: only they hand it over
+		errJSON(w, 403, "只有 @"+to.Handle+" 的主人能把这件事交给它")
+		return
+	}
 	if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? AND state NOT IN ('done', 'closed')", t.ThreadID, to.ID) > 0 {
 		errJSON(w, 409, "@"+to.Handle+" 在这个线程里已经有任务了：直接在线程里跟它说")
 		return
 	}
-	joined := false
-	if !h.isMember(t.ChannelID, "agent", to.ID) {
-		if to.Dispatch != "team" {
-			errJSON(w, 403, "@"+to.Handle+" 不在这个频道，也不接整个团队的活：请它的主人先把它加进来")
-			return
-		}
-		h.addMember(t.ChannelID, member{"agent", to.ID})
-		h.channelChanged(t.ChannelID)
-		joined = true
+	r := h.reach(t, to)
+	if r.Refuse != "" {
+		errJSON(w, 403, r.Refuse)
+		return
 	}
 	// the request, as the person clicking says it, in the thread: "@B WHAT"
-	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, "@"+to.Handle+" "+x.What+"\n（"+from.Name+" 在 "+t.ID+" 里建议的交接）")
-	id := h.createTaskWith(m, t.ThreadID, to.ID, joined, true, taskOrigin{By: t.CreatedBy, Via: chain(t), Parent: t.ID,
-		Confirmed: me == to.OwnerID})
+	_, id := h.handOn(t, to, r, x.What, "（"+from.Name+" 在 "+t.ID+" 里建议的交接）", member{"user", me}, true)
 	x.State, x.Task = "accepted", id
 	t.Handoffs[i] = x
 	h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(t.Handoffs)})

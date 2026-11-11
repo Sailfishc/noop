@@ -76,13 +76,18 @@ func (h *Hub) whoLine(kind, id string) string {
 	return fmt.Sprintf("%s (@%s), agent on %s%s%s", ag.Name, ag.Handle, ag.Runtime, owner, desc)
 }
 
-// v1AgentWho: `remi who @HANDLE`: who a person or an agent is, and (an agent) what it works on now.
+// v1AgentWho: `remi who @HANDLE`: who a person or an agent is, and (an agent) what it works on now. `remi who` alone:
+// the agents this task's agent may turn to (teamreach.go).
 func (h *Hub) v1AgentWho(w http.ResponseWriter, q *request) {
 	t, _, ok := h.reader(w, q)
 	if !ok {
 		return
 	}
 	handle := strings.TrimPrefix(strings.TrimSpace(q.query("handle")), "@")
+	if handle == "" {
+		h.v1AgentWhoList(w, t)
+		return
+	}
 	var id string
 	if h.db.QueryRow("SELECT id FROM users WHERE handle = ? AND disabled = 0", handle).Scan(&id) == nil {
 		writeText(w, h.whoLine("user", id)+"\n")
