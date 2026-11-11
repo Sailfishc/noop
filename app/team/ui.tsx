@@ -1,9 +1,9 @@
 // Remi's page-level helpers: the layout constants that line the columns up, the header, who wrote a message, an
 // agent's state. Components that only draw (buttons, fields, tags...) are in app/ui.
-import { Text, View, type JSX } from "nsh";
+import { type JSX, Text, View } from "nsh";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
-import { colors, hovered, Icon, type IconName, Tag } from "../ui";
+import { colors, Icon, IconBtn, type IconName, Tag } from "../ui";
 import { blockedReason, insecureRefused, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
@@ -40,9 +40,7 @@ export function Header(props: { title: string; subtitle?: string; back?: boolean
   return (
     <View desktop={{ windowDrag: true }} style={{ height: HEADER, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
       <If when={props.back}>
-        <View role="button" testID="back" accessibilityLabel={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} hoverStyle={hovered()} style={{ width: 32, height: 32, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="back" size={18} tint={colors.text} />
-        </View>
+        <IconBtn icon="back" testID="back" label={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} />
       </If>
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>

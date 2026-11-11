@@ -1,8 +1,8 @@
 // A channel: its conversation, the members panel, the default repository, a thread with its task's facts, and a new channel.
-import { effect, List, Scroll, signal, Text, untracked, View, type JSX } from "nsh";
+import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Avatar, Btn, Choice, colors, ErrorNote, Field, growing, hovered, Icon, Noted, radius, Spinner, StateDot, Tag, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, StateDot, Tag, TextArea, Toggle } from "../ui";
 import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
@@ -178,7 +178,6 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   const draft = signal("");
   const busy = signal(false);
   const error = signal("");
-  const grow = growing({ min: 64, max: 200, pad: 18, line: 19 });
   const box = { padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field } as const;
   function edit() {
     draft.set(untracked(now));
@@ -216,16 +215,14 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
       </If>
       <If when={editing()}>
         <View style={{ gap: 6 }}>
-          <Input
+          <TextArea
             testID="channel-conventions-input"
             value={draft()}
-            multiline
+            min={64}
+            max={200}
             autoFocus
             placeholder={L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
-            class="placeholder:text-faint"
-            onChange={({ value: v }) => draft.set(v)}
-            onContentSizeChange={grow.onContentSizeChange}
-            style={{ ...box, height: grow.height(), fontSize: 13, lineHeight: 19, color: colors.text }}
+            onChange={draft.set}
           />
           <ErrorNote text={error()} />
           <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>

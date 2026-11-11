@@ -1,8 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
-import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Btn, colors, ErrorNote, hovered, Icon, type IconName, radius, Spinner, StateDot } from "../ui";
+import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, type IconName, Spinner, StateDot } from "../ui";
 import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -246,13 +245,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         }>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <Input
+            <Field
+              small
+              grow
               testID={`task-${task().id}-title-input`}
               value={draft()}
               autoFocus
-              onChange={({ value }) => draft.set(value)}
+              onChange={draft.set}
               onSubmit={() => void rename()}
-              style={{ flex: 1, height: 34, paddingHorizontal: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 14.5, color: colors.text }}
             />
             <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => renaming.set(false)} />
             <Btn small kind="primary" testID={`task-${task().id}-title-save`} label={L("Save", "保存")} busy={busy() === "rename"} disabled={!draft().trim()} onPress={() => void rename()} />

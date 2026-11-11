@@ -6,12 +6,12 @@
 // Admins also look after the team machines and the agents on them (teamowned.go), beside their own.
 // An agent = one machine + one runtime on it + who can hand it work + its memory. A machine hosts many agents; the
 // repository follows the task (a channel's default, or one named in the message), not the agent.
-import { Clipboard, computed, effect, Scroll, signal, Storage, Text, untracked, View, windowSize, type JSX } from "nsh";
-import { Dialog, Input } from "nsh/base";
+import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
+import { Dialog } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, growing, hovered, Icon, type IconName, Label, Panel, PickCard, radius, Spinner, StateDot, Tag, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Panel, PickCard, radius, Spinner, StateDot, Tag, TextArea, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
@@ -625,7 +625,6 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   const busy = signal(false);
   const saved = signal(false);
   const changed = () => value().trim() !== (props.agent.memory ?? "");
-  const grow = growing({ min: 96, max: 260, pad: 22, line: 20 });
   // the agent rewrote it while it was open here and nothing was typed: show the new text
   effect(() => {
     const m = props.agent.memory ?? "";
@@ -639,15 +638,13 @@ function AgentMemory(props: { team: Team; agent: Agent }) {
   }
   return (
     <View style={{ gap: 6 }}>
-      <Input
+      <TextArea
         testID={`agent-memory-${props.agent.handle}`}
         value={value()}
-        multiline
+        min={96}
+        max={260}
         placeholder={L("- The pay service is Go 1.24; run make test\n- Ask Wang Lei before touching the orders table", "- 支付服务是 Go 1.24，测试用 make test\n- 动 orders 表前先问王磊")}
-        class="placeholder:text-faint"
-        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
-        onContentSizeChange={grow.onContentSizeChange}
-        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+        onChange={(v) => { value.set(v); saved.set(false); }}
       />
       <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
         <Btn small testID={`agent-memory-save-${props.agent.handle}`} label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />

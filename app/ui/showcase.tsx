@@ -4,11 +4,11 @@
 // When you add a component or a variant to app/ui, add it here too.
 import { Scroll, signal, Text, View, type JSX } from "nsh";
 import { Avatar } from "./avatar";
-import { Btn } from "./button";
+import { Btn, IconBtn } from "./button";
 import { Choice } from "./choice";
 import { Dot, StateDot } from "./dot";
 import { ErrorNote } from "./error-note";
-import { Field } from "./field";
+import { Field, TextArea } from "./field";
 import { Icon, type IconName } from "./icons";
 import { Label, Noted } from "./noted";
 import { Panel } from "./panel";
@@ -16,6 +16,7 @@ import { PickCard } from "./pick-card";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
 import { Tag } from "./tag";
+import { Txt } from "./text";
 import { colors, scale } from "./theme";
 
 function Section(props: { title: string; children: JSX.Element }) {
@@ -33,6 +34,7 @@ const ICONS: IconName[] = ["plus", "check", "back", "chevron-down", "reply", "ch
 
 export function Showcase() {
   const text = signal("");
+  const area = signal("");
   const pick = signal<"a" | "b" | "c">("a");
   const on = signal(true);
   const card = signal("one");
@@ -40,14 +42,25 @@ export function Showcase() {
     <Scroll testID="showcase" style={{ flex: 1, backgroundColor: colors.background }} contentStyle={{ padding: 24, gap: 24 }}>
       <Text style={{ fontSize: scale.text.display, fontWeight: "700", color: colors.text }}>Remi components</Text>
 
-      <Section title="Text scale: caption 12 · body 13 · message 14 · title 16 · display 22">
+      <Section title="Txt: variant (caption 12 · body 13 · message 14 · title 16 · display 22) and tone">
         <View style={{ gap: 4 }}>
-          <Text style={{ fontSize: scale.text.caption, color: colors.muted }}>Caption: a note, a time, meta</Text>
-          <Text style={{ fontSize: scale.text.body, color: colors.text }}>Body: most text on a page</Text>
-          <Text style={{ fontSize: scale.text.message, color: colors.text }}>Message: messages and what people type</Text>
-          <Text style={{ fontSize: scale.text.title, fontWeight: "600", color: colors.text }}>Title: a section or a panel</Text>
-          <Text style={{ fontSize: scale.text.display, fontWeight: "700", color: colors.text }}>Display: a page</Text>
+          <Txt variant="caption" tone="muted">Caption: a note, a time, meta</Txt>
+          <Txt>Body: most text on a page</Txt>
+          <Txt variant="message">Message: messages and what people type</Txt>
+          <Txt variant="title">Title: a section or a panel</Txt>
+          <Txt variant="display">Display: a page</Txt>
         </View>
+        <Row>
+          <Txt>default</Txt>
+          <Txt tone="muted">muted</Txt>
+          <Txt tone="faint">faint</Txt>
+          <Txt tone="accent">accent</Txt>
+          <Txt tone="up">up</Txt>
+          <Txt tone="warn">warn</Txt>
+          <Txt tone="danger">danger</Txt>
+          <Txt weight="semibold">semibold</Txt>
+          <Txt tabular mono>T-0042 12:30</Txt>
+        </Row>
       </Section>
 
       <Section title="Btn: kind × size, icon, busy, disabled">
@@ -70,13 +83,34 @@ export function Showcase() {
         </Row>
       </Section>
 
-      <Section title="Field: label, hint, big (a code)">
+      <Section title="IconBtn: md, sm, selected, tones, disabled (hover shows its label)">
+        <Row>
+          <IconBtn icon="plus" label="Add" onPress={() => {}} />
+          <IconBtn icon="copy" label="Copy" onPress={() => {}} />
+          <IconBtn icon="bell" label="Notifications" selected onPress={() => {}} />
+          <IconBtn icon="close" label="Close" size="sm" tone="muted" onPress={() => {}} />
+          <IconBtn icon="trash" label="Delete" tone="danger" onPress={() => {}} />
+          <IconBtn icon="settings" label="Settings" disabled onPress={() => {}} />
+        </Row>
+      </Section>
+
+      <Section title="Field: label, hint, big (a code), small; TextArea (grows with its text)">
         <View style={{ flexDirection: "row", gap: 16 }}>
           <View style={{ flex: 1 }}>
             <Field label="Name" value={text()} onChange={text.set} placeholder="Placeholder" hint="One line of hint at most." />
           </View>
           <View style={{ flex: 1 }}>
             <Field value="12345678" onChange={() => {}} big />
+          </View>
+        </View>
+        <View style={{ flexDirection: "row", gap: 16, alignItems: "flex-start" }}>
+          <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 6 }}>
+            <Field small grow value="A small inline field" onChange={() => {}} />
+            <Btn small kind="ghost" label="Cancel" onPress={() => {}} />
+            <Btn small kind="primary" label="Save" onPress={() => {}} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <TextArea value={area()} onChange={area.set} min={64} max={160} placeholder={"- One per line\n- It grows"} />
           </View>
         </View>
       </Section>

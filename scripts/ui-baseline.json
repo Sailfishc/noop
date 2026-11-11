@@ -5,29 +5,28 @@
   "app/team/TeamApp.tsx": {
     "nsh-base": 1,
     "font-size": 18,
-    "pressable": 7,
-    "spacing": 19,
     "radius": 11,
-    "color": 1
+    "color": 1,
+    "spacing": 19,
+    "pressable": 7
   },
   "app/team/channel.tsx": {
     "nsh-base": 1,
-    "pressable": 8,
+    "font-size": 33,
+    "radius": 14,
     "spacing": 17,
-    "font-size": 34,
-    "radius": 14
+    "pressable": 8
   },
   "app/team/composer.tsx": {
-    "nsh-base": 1,
-    "font-size": 13,
-    "spacing": 10,
+    "font-size": 12,
     "radius": 9,
     "color": 1,
+    "spacing": 9,
     "pressable": 3
   },
   "app/team/inbox.tsx": {
-    "spacing": 2,
-    "font-size": 2
+    "font-size": 2,
+    "spacing": 2
   },
   "app/team/logo.ts": {
     "color": 7
@@ -36,72 +35,68 @@
     "nsh-base": 1,
     "font-size": 15,
     "radius": 6,
-    "pressable": 6,
-    "spacing": 9
+    "spacing": 9,
+    "pressable": 6
   },
   "app/team/reminders.tsx": {
     "nsh-base": 1,
+    "font-size": 6,
     "radius": 4,
-    "spacing": 5,
     "color": 1,
-    "pressable": 2,
-    "font-size": 6
+    "spacing": 5,
+    "pressable": 2
   },
   "app/team/search.tsx": {
-    "spacing": 6,
     "font-size": 8,
-    "pressable": 2,
-    "radius": 2
+    "radius": 2,
+    "spacing": 6,
+    "pressable": 2
   },
   "app/team/settings.tsx": {
     "nsh-base": 1,
-    "font-size": 107,
-    "spacing": 52,
-    "pressable": 7,
-    "radius": 21
+    "font-size": 106,
+    "radius": 20,
+    "spacing": 51,
+    "pressable": 7
   },
   "app/team/signin.tsx": {
-    "spacing": 4,
     "font-size": 4,
-    "radius": 1
+    "radius": 1,
+    "spacing": 4
   },
   "app/team/signups.tsx": {
+    "font-size": 4,
     "radius": 1,
-    "spacing": 3,
-    "font-size": 4
+    "spacing": 3
   },
   "app/team/taskcard.tsx": {
-    "nsh-base": 1,
-    "pressable": 2,
-    "radius": 11,
-    "spacing": 11,
-    "font-size": 27
+    "font-size": 26,
+    "radius": 10,
+    "spacing": 10,
+    "pressable": 2
   },
   "app/team/taskfacts.tsx": {
-    "nsh-base": 1,
-    "spacing": 6,
-    "font-size": 24,
-    "pressable": 4,
-    "radius": 6
+    "font-size": 22,
+    "radius": 4,
+    "spacing": 4,
+    "pressable": 4
   },
   "app/team/tasks.tsx": {
     "nsh-base": 1,
-    "radius": 9,
-    "spacing": 14,
     "font-size": 16,
-    "pressable": 4,
-    "color": 1
+    "radius": 9,
+    "color": 1,
+    "spacing": 14,
+    "pressable": 4
   },
   "app/team/ui.tsx": {
-    "spacing": 1,
-    "radius": 1,
-    "pressable": 1,
-    "font-size": 2
+    "font-size": 2,
+    "spacing": 1
   },
   "app/team/updates.tsx": {
-    "spacing": 2,
     "font-size": 3,
-    "pressable": 1,
-    "radius": 1
+    "radius": 1,
+    "spacing": 2,
+    "pressable": 1
   }
 }

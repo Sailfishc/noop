@@ -1,9 +1,8 @@
 // The box people write in: @ picker, files, "as task", /remind, and the line on where the work goes.
-import { computed, effect, Image, keymap, Picker, signal, Text, untracked, View, type InputRef } from "nsh";
+import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, untracked, View } from "nsh";
 import fs from "fs/promises";
-import { Input } from "nsh/base";
 import { L, lang } from "../i18n";
-import { alpha, Avatar, Btn, colors, ErrorNote, growing, hovered, Icon, type IconName, StateDot } from "../ui";
+import { alpha, Avatar, Btn, colors, ErrorNote, hovered, Icon, type IconName, StateDot, TextArea } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
@@ -138,7 +137,6 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
   const t = props.team;
   const text = signal("");
   // two lines at least, then it grows with the text (a line to spare) up to about ten and scrolls
-  const grow = growing({ min: COMPOSER_TEXT, max: 240, pad: 14, line: 21 });
   /** "As task": track what this message hands an agent as a task from the start (only top-level, only with an @agent). */
   const asTask = signal(false);
   const error = signal("");
@@ -280,23 +278,21 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
       <View testID={`${props.testID}-box`} style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
-        <Input
+        <TextArea
+          bare
           testID={props.testID}
           ref={(r) => (input = r)}
           value={text()}
-          multiline
-          submitBehavior="submit"
+          min={COMPOSER_TEXT}
+          max={240}
           placeholder={props.placeholder}
-          class="placeholder:text-faint"
-          onChange={({ value }) => text.set(value)}
-          onSelectionChange={({ start, end }) => (caret = { start, end })}
+          onChange={text.set}
+          onSelectionChange={(c) => (caret = c)}
           onPaste={({ files: pasted, uris }) => {
             for (const f of pasted) attach(f, f.name);
             if (uris.length) void attachUris(uris);
           }}
           onSubmit={send}
-          onContentSizeChange={grow.onContentSizeChange}
-          style={{ height: grow.height(), paddingHorizontal: 12, paddingTop: 10, paddingBottom: 4, fontSize: 15, lineHeight: 21, color: colors.text, backgroundColor: "transparent", borderWidth: 0 }}
         />
         <If when={files().length}>
           <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>
