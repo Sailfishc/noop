@@ -28,8 +28,10 @@ func TestCheckpoints(t *testing.T) {
 	r = e.do("POST", "/api/v1/tasks/"+id+"/checkpoint", e.otherToken, map[string]any{"repos": []any{}})
 	check(t, "another machine records none", r.status == 403, r)
 
+	updated := num(e.task(id)["updated"])
 	e.advance(10 * time.Minute)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/checkpoint", e.token, map[string]any{"unchanged": true})
+	check(t, "a checkpoint does not touch the task's updated time", num(e.task(id)["updated"]) == updated)
 	c2 := e.task(id)["checkpoint"].(map[string]any)
 	check(t, "still current: checked moves, at stays", r.status == 200 && num(c2["checked"]) > num(c2["at"]) && num(c2["at"]) == num(c["at"]), r)
 
@@ -80,6 +82,11 @@ func TestCheckpoints(t *testing.T) {
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "好了"})
 	e.do("POST", "/api/v1/tasks/"+id+"/accept", e.wl.session, nil)
 	check(t, "accepted", e.task(id)["state"] == "done")
+	e.advance(time.Hour)
+	f4 := up("fourth") // the last checkpoint after it ended: the task stays where it was in lists, the week stays
+	done := num(e.task(id)["updated"])
+	e.do("POST", "/api/v1/tasks/"+id+"/checkpoint", e.token, map[string]any{"files": map[string]any{"id": f4, "size": 6}})
+	check(t, "an ended task's updated time stays", num(e.task(id)["updated"]) == done)
 	e.h.Tick()
 	check(t, "kept for now", e.h.count("SELECT COUNT(*) FROM checkpoint_blobs WHERE task_id = ?", id) == 1)
 	r = e.do("GET", "/api/v1/machine/tasks?ended="+id+"&age=0", e.token, nil)

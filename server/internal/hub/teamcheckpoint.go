@@ -107,7 +107,7 @@ func (h *Hub) v1Checkpoint(w http.ResponseWriter, q *request) {
 		}
 		c := *t.Checkpoint
 		c.Checked = now
-		h.setTask(t.ID, map[string]any{"checkpoint": jsonOrNil(c)})
+		h.setCheckpoint(t.ID, c)
 		writeJSON(w, 200, obj{"ok": true})
 		return
 	}
@@ -136,9 +136,15 @@ func (h *Hub) v1Checkpoint(w http.ResponseWriter, q *request) {
 		keep = c.Files.ID
 	}
 	h.must(h.db.Exec("DELETE FROM checkpoint_blobs WHERE task_id = ? AND id != ?", t.ID, keep))
-	h.setTask(t.ID, map[string]any{"checkpoint": jsonOrNil(c)})
+	h.setCheckpoint(t.ID, c)
 	h.taskChanged(t.ID)
 	writeJSON(w, 200, obj{"ok": true})
+}
+
+// setCheckpoint: the task's latest checkpoint, without touching its updated time (lists sort by it, and the week
+// after it ended counts from it: a checkpoint is not a change people see as one).
+func (h *Hub) setCheckpoint(id string, c checkpointView) {
+	h.must(h.db.Exec("UPDATE tasks_v1 SET checkpoint = ? WHERE id = ?", jsonOrNil(c), id))
 }
 
 // checkpointFilesAllowed: whether the machine keeps general tasks' directories here (its owner's switch: on for a

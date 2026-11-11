@@ -66,13 +66,18 @@ export async function snapshotTree(x: Workdir, indexFile: string, taskId: string
     if (!read.ok) return { error: `准备暂存区失败：${lastLine(read.err)}` };
     const add = await git(x.cwd, ["add", "-A", "--", "."], env);
     if (!add.ok) return { error: `读取工作区失败：${lastLine(add.err)}` };
-    // big new files (a build output, a data dump that is not ignored) stay out: hosts refuse them, and they are not work
-    const added = await git(x.cwd, ["diff", "--cached", "--name-only", "-z", "--diff-filter=AM", "HEAD"], env);
-    for (const name of added.out.split("\0").filter(Boolean)) {
+    // new files that look like keys (not ignored, not tracked: .env, *.pem, id_rsa…) never leave the machine, and big
+    // ones (a build output, a data dump) stay out too: hosts refuse them, and they are not work. Tracked files stay.
+    const added = await git(x.cwd, ["diff", "--cached", "--name-only", "-z", "--diff-filter=A", "HEAD"], env);
+    const big = await git(x.cwd, ["diff", "--cached", "--name-only", "-z", "--diff-filter=M", "HEAD"], env);
+    const drop: string[] = [];
+    for (const name of added.out.split("\0").filter(Boolean)) if (SKIP_FILE.test(basename(name))) drop.push(name);
+    for (const name of [...added.out.split("\0"), ...big.out.split("\0")].filter(Boolean)) {
       let size = 0;
       try { size = lstatSync(join(x.cwd, name)).size; } catch {}
-      if (size > MAX_GIT_FILE) await git(x.cwd, ["rm", "--cached", "--quiet", "--", name], env);
+      if (size > MAX_GIT_FILE && !drop.includes(name)) drop.push(name);
     }
+    for (let i = 0; i < drop.length; i += 100) await git(x.cwd, ["rm", "--cached", "--quiet", "--", ...drop.slice(i, i + 100)], env);
     const tree = await git(x.cwd, ["write-tree"], env);
     if (!tree.ok) return { error: `生成检查点失败：${lastLine(tree.err)}` };
     if (last?.head === head.out && last?.tree === tree.out) return { same: true };

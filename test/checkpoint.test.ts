@@ -43,6 +43,9 @@ test("a repository task: committed and uncommitted work on agent/T-xxxx-wip, ign
   writeFileSync(join(wd.cwd, "d.txt"), "untracked\n");
   writeFileSync(join(wd.cwd, "a.txt"), "changed, not staged\n");
   writeFileSync(join(wd.cwd, "secret.env"), "KEY=1\n");
+  writeFileSync(join(wd.cwd, ".env"), "TOKEN=2\n"); // not ignored, not tracked, looks like a key
+  mkdirSync(join(wd.cwd, "certs"));
+  writeFileSync(join(wd.cwd, "certs", "server.pem"), "-----\n");
   const before = { status: sh(wd.cwd, "git", "status", "--porcelain"), head: sh(wd.cwd, "git", "rev-parse", "HEAD"), branch: sh(wd.cwd, "git", "branch", "--show-current"), staged: sh(wd.cwd, "git", "diff", "--cached", "--name-only") };
 
   const sent: any[] = [];
@@ -59,7 +62,7 @@ test("a repository task: committed and uncommitted work on agent/T-xxxx-wip, ign
   expect(sh(wd.cwd, "git", "branch", "--show-current")).toBe(before.branch);
   expect(sh(wd.cwd, "git", "rev-parse", "HEAD")).toBe(before.head);
 
-  // the remote: everything but the ignored file, the task branch's HEAD as first parent, [skip ci]
+  // the remote: everything but the ignored file and the new key-looking ones, the task branch's HEAD as first parent, [skip ci]
   expect(sh(r.origin, "git", "rev-parse", "refs/heads/agent/T-0007-wip")).toBe(point.commit);
   const files = sh(r.origin, "git", "ls-tree", "-r", "--name-only", point.commit).split("\n");
   expect(files.sort()).toEqual([".gitignore", "a.txt", "b.txt", "c.txt", "d.txt"]);
