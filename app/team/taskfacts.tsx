@@ -1,9 +1,9 @@
 // A task's facts beside its thread: who does it, who asked, time spent; folded: acceptance criteria, repository, mandate, run log.
 import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, TextArea, Txt } from "../ui";
+import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, Noted, TextArea, Txt } from "../ui";
 import { taskCalls } from "./calls";
-import { isParty, EXTERNAL_TRIES, taskMachine, repoLabel, type Repo, type Task, type Team } from "./api";
+import { isParty, EXTERNAL_TRIES, taskMachine, repoLabel, type Checkpoint, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
 import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
@@ -71,6 +71,10 @@ export function TaskFacts(props: { team: Team; task: Task }) {
           </If>
         </>)}
       </If>
+      <If when={task().checkpoint}>
+        {(c) => fact(L("Saved", "检查点"), <Noted testID={`task-${task().id}-checkpoint`} note={checkpointNote(t, c())}
+          label={<Txt tone={checkpointSaved(c()) ? "default" : "faint"} testID={`task-${task().id}-checkpoint-at`}>{checkpointSaved(c()) ? time(c().at) : L("No checkpoint", "没有检查点")}</Txt>} />)}
+      </If>
       <If when={task().state === "waiting" && task().wait}>
         {fact(L("Waiting", "等待"), <View testID={`task-${task().id}-wait`} style={{ flex: 1, gap: 2 }}>
           <Each of={waitLines(task())} key="index">{(l) => <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>{l()}</Text>}</Each>
@@ -119,6 +123,24 @@ export function TaskFacts(props: { team: Team; task: Task }) {
       </If>
     </View>
   );
+}
+
+/** Whether anything of the task was kept (a wip commit, its directory). */
+const checkpointSaved = (c: Checkpoint) => !!c.files || c.repos.some((r) => r.commit);
+
+/** What a checkpoint holds, behind its ⓘ: where it is kept, what failed, and what it is for. */
+export function checkpointNote(t: Team, c: Checkpoint): string {
+  const machine = t.machines().find((m) => m.id === c.machine)?.name ?? L("its computer", "它的电脑");
+  const lines: string[] = [];
+  for (const r of c.repos) {
+    const name = r.repo ? repoLabel(r.repo) : L("repository", "仓库");
+    lines.push(r.error ? `${name}：${r.error}` : L(`${name}: branch ${r.branch}`, `${name}：分支 ${r.branch}`));
+  }
+  if (c.files) lines.push(L(`Its directory, ${Math.max(1, Math.round(c.files.size / 1024))} KB, on the server`, `工作目录（${Math.max(1, Math.round(c.files.size / 1024))} KB）存在服务端`));
+  if (c.error) lines.push(c.error);
+  if (c.checked > c.at) lines.push(L(`Still current at ${time(c.checked)}`, `${time(c.checked)} 时仍是最新`));
+  lines.push(L(`Saved from ${machine} when a run stops and every 10 minutes while it runs, so another computer could go on from here.`, `从 ${machine} 存出，运行停下时和运行中每 10 分钟存一次，换一台电脑时从这里接着做。`));
+  return lines.join("\n");
 }
 
 /** Who handed the task over, under which rule, who confirmed it, and how far the agent may go. */

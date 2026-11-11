@@ -25,6 +25,7 @@ const tasks = [
   task({ id: "T-0001", state: "running", tracked: true, title: "看下慢查询", step: "在读 slow log", created_by: "u_1",
     holder: { kind: "user", id: "u_2", why: "handoff_card" }, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" },
     handoffs: [{ id: "ho_1", to: "a_2", what: "加完索引后跑一遍压测，把 P99 贴回线程", message: "msg_5", at: Date.now(), state: "proposed" }],
+    checkpoint: { at: T0, checked: T0 + 600_000, machine: "m_1", repos: [{ repo: "github.com/acme/pay", branch: "agent/T-0001-wip", commit: "a".repeat(40), head: "b".repeat(40) }] },
     calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }] }),
   task({ id: "T-0002", thread_id: "msg_t2", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
   task({ id: "T-0003", thread_id: "msg_t3", state: "review", tracked: true, title: "写周报", created_by: "u_1",
@@ -134,6 +135,7 @@ describe("screens", () => {
     await app.press("id:thread-msg_1");
     await app.waitFor("id:close-thread");
     await app.waitFor("text:收到，在看"); // the reply, not the spinner
+    expect(app.shows("id:task-T-0001-checkpoint-at")).toBe(true); // where it got to, a line with its ⓘ
     await shot(app, "thread");
   });
 
@@ -240,6 +242,7 @@ describe("screens", () => {
     await shot(app, "settings-teamconfig");
     await app.press("id:settings-nav-machines");
     await app.waitFor("id:machine-m_1-git");
+    expect(app.shows("id:machine-m_1-checkpoint-files")).toBe(true); // the team machine's switch, for an admin
     await shot(app, "settings-machines");
   });
 
