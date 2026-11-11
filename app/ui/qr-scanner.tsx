@@ -32,12 +32,13 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
     missed: L("No QR code in that photo. Try again closer.", "照片里没认出二维码，靠近一点再试"),
     stalled: L("The camera opened but shows nothing. Take a photo instead.", "摄像头打开了但没有画面，可以拍照识别"),
   };
-  /** Why the page isn't up ("" while it may still come, or once it said it's there). */
-  const problem = signal("");
+  /** What the web view reported failing (stays), and whether 3 s passed with no word from the page (clears when one comes late). */
+  const failed = signal("");
   const heard = signal(false);
-  const wait = setTimeout(() => {
-    if (!heard() && !problem()) problem.set(L("The scanner page didn't load (no answer in 3 s). Install a full build of the app (NSH 0.5).", "扫码页面没有加载出来（3 秒无响应）。请安装完整重新打包的 App（NSH 0.5）"));
-  }, 3000);
+  const late = signal(false);
+  const problem = () =>
+    failed() || (late() && !heard() ? L("The scanner page didn't load (no answer in 3 s). Install a full build of the app (NSH 0.5).", "扫码页面没有加载出来（3 秒无响应）。请安装完整重新打包的 App（NSH 0.5）") : "");
+  const wait = setTimeout(() => late.set(true), 3000);
   cleanup(() => clearTimeout(wait));
   return (
     <View style={{ height: props.height ?? 320, borderRadius: scale.radius.md, overflow: "hidden", backgroundColor: "#000000" }}>
@@ -48,7 +49,7 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
         scrollable={false}
         incognito
         style={{ flex: 1 }}
-        onError={(e) => problem.set(L(`The scanner page didn't load: ${e.message}`, `扫码页面没有加载出来：${e.message}`) + (e.code ? ` (${e.code})` : ""))}
+        onError={(e) => failed.set(L(`The scanner page didn't load: ${e.message}`, `扫码页面没有加载出来：${e.message}`) + (e.code ? ` (${e.code})` : ""))}
         onMessage={({ data }) => {
           heard.set(true);
           try {
