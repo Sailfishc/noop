@@ -21,6 +21,16 @@
   (`/api/v1/asks`), answers in one read-only run in a throwaway directory, and the answer reaches the asking run like a
   person's reply. Whether an agent may use another is one rule: what the task's requester could do (`teamreach.go`,
   `teamdelegate.go`, `teamask.go`).
+- Work survives a computer or a runtime going away, but never moves on its own. The machine saves a checkpoint
+  (`src/checkpoint.ts`, `teamcheckpoint.go`) every 10 minutes while a run changes things and whenever it stops: for a
+  repository, one commit of the whole worktree made with a temporary index and pushed to `agent/T-xxxx-wip` (the
+  agent's own index and branch untouched); otherwise the packed directory, stored on the server. The server keeps
+  only the latest. When the task's computer has been offline 10 minutes, or its runtime is held back there (a usage
+  limit far off, no credit, logged out) while another can take it, the agent's owner gets a card (`teammove.go`,
+  `teamengine.go`). A move gives the task to the other computer and bumps `tasks_v1.moves`: every run-scoped call
+  carries `?moves=`, so a run on the old computer that comes back is refused and pushes nothing. The new computer
+  restores the checkpoint and starts a fresh session from the thread. A runtime switch sets `tasks_v1.runtime` for
+  that task only: same computer, same directory, fresh session, that runtime's default model.
 
 ## Daemon layout (`src/`)
 
@@ -29,7 +39,8 @@
 | `cli.ts` | `noop join / install / daemon / doctor / update` |
 | `config.ts` | where things live (`$NOOP_HOME`, else `~/.noop`; data in `$HUB_DATA`, else `<home>/data`) and the config |
 | `teamagent.ts` | the connection to the server: the machine report, the message stream, runtime and Git detection |
-| `teamwork.ts` | the worker: claim, prepare the workdir, run, report (with an outbox), the `remi` command agents use |
+| `teamwork.ts` | the worker: claim, prepare the workdir (restoring a checkpoint after a move), run, report (with an outbox), the `remi` command agents use |
+| `checkpoint.ts` | checkpoints: the wip commit or the packed directory, saved while a run goes and when it stops |
 | `runtimes.ts` | Codex, Claude Code and Pi: their commands and JSONL events; the watchdog and process groups |
 | `runfail.ts` | what a failed run means and what to do next (retry, fresh session, continue, block) |
 | `gitflow.ts`, `repos.ts` | branches, PRs and CI on GitHub and GitLab-based platforms; finding and cloning repositories |

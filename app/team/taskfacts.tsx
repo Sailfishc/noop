@@ -3,7 +3,7 @@ import { type JSX, openUrl, signal, Text, View } from "nsh";
 import { L } from "../i18n";
 import { alpha, Btn, colors, ErrorNote, Field, hovered, Icon, Noted, TextArea, Txt } from "../ui";
 import { taskCalls } from "./calls";
-import { isParty, EXTERNAL_TRIES, taskMachine, repoLabel, type Checkpoint, type Repo, type Task, type Team } from "./api";
+import { isParty, EXTERNAL_TRIES, taskMachine, taskRuntime, runtimeLabel, repoLabel, type Checkpoint, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
 import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
@@ -48,8 +48,14 @@ export function TaskFacts(props: { team: Team; task: Task }) {
     <View testID={`task-${task().id}-facts`} style={{ gap: 6, paddingTop: 2 }}>
       {fact(L("Done by", "执行"), <>
         {plain(`@${agent()?.handle ?? "?"}${owner() ? L(` (${owner()!.name}’s agent)`, `（${owner()!.name}的 Agent）`) : ""}`)}
-        <RuntimeBadge runtime={agent()?.runtime ?? "codex"} />
-        <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
+        <RuntimeBadge runtime={taskRuntime(task(), agent())} />
+        <If when={task().runtime && task().engine?.state === "switched" ? task().engine : null}>
+          {(en) => <Noted testID={`task-${task().id}-switched`}
+            note={L(`This task only: its owner switched it from ${runtimeLabel(en().from)} when that was held back, in a fresh session with ${runtimeLabel(task().runtime!)}’s default model. The agent still uses ${runtimeLabel(agent()?.runtime ?? "codex")}.`,
+              `只对这个任务：${runtimeLabel(en().from)} 被拦住时由 Agent 的主人换过来，新开会话，用 ${runtimeLabel(task().runtime!)} 的默认模型。Agent 平时仍用 ${runtimeLabel(agent()?.runtime ?? "codex")}。`)}
+            label={<Txt variant="caption" tone="muted">{L(`switched from ${runtimeLabel(en().from)}`, `从 ${runtimeLabel(en().from)} 换来`)}</Txt>} />}
+        </If>
+        <Text testID={`task-${task().id}-machine`} style={{ fontSize: 12.5, color: colors.muted }}>{[task().runtime ? "" : agent()?.model, machine()?.name ?? L("no machine", "没有机器")].filter(Boolean).join(" · ")}</Text>
       </>)}
       {fact(L("Asked by", "发起人"), plain(`${creator()?.name ?? "?"} · ${time(task().created)}`))}
       <If when={handler()}>

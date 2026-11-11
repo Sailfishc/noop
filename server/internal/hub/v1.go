@@ -126,6 +126,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("POST /api/v1/tasks/{id}/checkpoint", machine, h.v1Checkpoint)
 	r("GET /api/v1/tasks/{id}/checkpoint/files", machine, h.v1CheckpointGet)
 	r("POST /api/v1/tasks/{id}/move", person, h.v1TaskMove)
+	r("POST /api/v1/tasks/{id}/engine", person, h.v1TaskEngine)
 	m.HandleFunc("POST /api/v1/tasks/{id}/checkpoint/files", h.v1Handler(machine, h.v1CheckpointFiles, maxCheckpointFiles+1))
 	r("POST /api/v1/asks/{id}/claim", machine, h.v1AskClaim)
 	r("POST /api/v1/asks/{id}/answer", machine, h.v1AskAnswer)

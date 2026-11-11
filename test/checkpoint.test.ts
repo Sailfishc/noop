@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dropCheckpoint, keptCheckpoints, pack, packList, saveCheckpoint } from "../src/checkpoint";
-import { createWorker, movedPrompt, prepareWorkdir, type Claim, type TeamTask } from "../src/teamwork";
+import { createWorker, movedPrompt, switchedPrompt, prepareWorkdir, type Claim, type TeamTask } from "../src/teamwork";
 import type { Runtime } from "../src/runtimes";
 
 const ENV = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -298,4 +298,14 @@ test("a run's reports name the move count it was claimed with", async () => {
   await w.idle();
   expect(sends).toEqual(["/api/v1/tasks/T-0016/report?moves=2"]);
   w.stop();
+});
+
+test("a fresh session after its owner switched the task to another runtime is told so", () => {
+  const c = { agent: { runtime: "claude" }, task: { id: "T-0017", runtime: "claude", engine: { from: "codex", to: "claude", reason: "quota", state: "switched" } } } as any;
+  const p = switchedPrompt(c);
+  expect(p).toContain("# Going on with another runtime");
+  expect(p).toContain("This task ran with Codex on this computer until Codex hit its usage limit");
+  expect(p).toContain("switched\nthis task to you (Claude Code)");
+  expect(switchedPrompt({ ...c, task: { ...c.task, engine: { ...c.task.engine, state: "kept" } } })).toBe(""); // still Codex's
+  expect(switchedPrompt({ agent: { runtime: "codex" }, task: { id: "T-0018" } } as any)).toBe("");
 });

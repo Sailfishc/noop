@@ -70,6 +70,10 @@ func (h *Hub) holderOf(t taskView) *holderView {
 		a, _ := h.agent(t.AgentID)
 		return user(a.OwnerID, "move")
 	}
+	if t.Engine != nil && t.Engine.State == "proposed" { // its runtime is held back: the agent's owner says whether another goes on
+		a, _ := h.agent(t.AgentID)
+		return user(a.OwnerID, "engine")
+	}
 	for _, x := range t.Handoffs {
 		if x.State == "proposed" {
 			if b, ok := h.agent(x.To); ok {

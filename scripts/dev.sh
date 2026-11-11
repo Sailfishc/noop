@@ -44,5 +44,7 @@ echo "dev: server on $URL (log: .dev/server.log)"
 # fake-codex as this machine's `codex`; the machine's own home (repos it clones, its config) stays in .dev too
 mkdir -p "$DIR/bin"
 printf '#!/bin/sh\nexec bun "%s" "$@"\n' "$ROOT/scripts/fake-codex.ts" > "$DIR/bin/codex"
-chmod +x "$DIR/bin/codex"
+# and as its `claude` (a second runtime there, never out of quota: to try 换引擎继续 with [quota])
+printf '#!/bin/sh\nFAKE_AS=claude exec bun "%s" "$@"\n' "$ROOT/scripts/fake-codex.ts" > "$DIR/bin/claude"
+chmod +x "$DIR/bin/codex" "$DIR/bin/claude"
 PATH="$DIR/bin:$PATH" NOOP_HOME="$DIR/machine" bun "$ROOT/scripts/dev.ts" "$URL" "$DIR" $INVITE

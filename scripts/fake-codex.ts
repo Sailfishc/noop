@@ -21,21 +21,36 @@
 //               and it does the work. [ask!:x]: the same, and x's read-only run writes a file anyway (it is thrown away)
 //   Asked by another agent (its prompt says "read-only run"), it answers in one plain message.
 // FAKE_CODEX_DELAY_MS: the pause between its steps (default 1200).
+// FAKE_AS=claude: it is this machine's `claude` instead (scripts/dev.sh installs both): Claude Code's flags and its
+// stream-json, the same work; it never hits a limit (to try 换引擎继续 with [quota]).
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const a = process.argv.slice(2);
+const claude = process.env.FAKE_AS === "claude";
+if (claude && a[0] === "--version") { console.log("2.1.0 (Claude Code, fake)"); process.exit(0); }
+if (claude && a[0] === "auth") { console.log('{"loggedIn": true}'); process.exit(0); }
 // what the daemon asks to see which runtimes this machine has (teamagent.ts detectRuntimes)
 if (a[0] === "--version") { console.log("codex-cli 0.0.0 (fake-codex)"); process.exit(0); }
 if (a[0] === "login") { console.log("Logged in (fake-codex)"); process.exit(0); }
 const cwd = a.includes("--cd") ? a[a.indexOf("--cd") + 1]! : process.cwd();
-const resume = a.includes("resume") ? a[a.indexOf("resume") + 1]! : "";
+const resume = claude ? (a.includes("--resume") ? a[a.indexOf("--resume") + 1]! : "") : a.includes("resume") ? a[a.indexOf("resume") + 1]! : "";
 const prompt = await new Response(Bun.stdin.stream()).text();
 // only the request and its thread count: the prompt also quotes the channel's latest messages
 const request = prompt.match(/\n# Request [\s\S]*?(?=\n# Acceptance criteria|$)/)?.[0] ?? prompt;
 const has = (tag: string) => request.includes(`[${tag}]`);
 const delay = (Number(process.env.FAKE_CODEX_DELAY_MS) || 1200) * (has("slow") ? 10 : 1);
-const out = (o: unknown) => console.log(JSON.stringify(o));
+let said = "";
+// Codex's --json events, or the same in Claude Code's stream-json
+const out = (o: any) => {
+  if (!claude) return console.log(JSON.stringify(o));
+  const line = (x: unknown) => console.log(JSON.stringify(x));
+  if (o.type === "thread.started") line({ type: "system", subtype: "init", session_id: o.thread_id });
+  else if (o.type === "item.started") line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: o.item.command } }] } });
+  else if (o.type === "item.completed") said = o.item.text.replaceAll("假 Codex", "假 Claude Code");
+  else if (o.type === "turn.completed") line({ type: "result", subtype: "success", session_id: session, result: said,
+    usage: { input_tokens: o.usage.input_tokens, cache_read_input_tokens: o.usage.cached_input_tokens, output_tokens: o.usage.output_tokens } });
+};
 const step = async (command: string) => {
   out({ type: "item.started", item: { type: "command_execution", command } });
   await Bun.sleep(delay);
@@ -45,11 +60,11 @@ const finish = (report: Record<string, unknown>, text = "好了。") => {
   out({ type: "turn.completed", usage: { input_tokens: 1200, cached_input_tokens: 800, output_tokens: 150 } });
 };
 
-const session = resume || `thr_fake_${Date.now().toString(36)}`;
+const session = resume || (claude ? crypto.randomUUID() : `thr_fake_${Date.now().toString(36)}`);
 out({ type: "thread.started", thread_id: session });
 await step("rg -n TODO .");
 
-if ((has("quota") || has("quota?")) && !resume) {
+if ((has("quota") || has("quota?")) && !resume && !claude) {
   // Codex's own words (codex-rs/protocol/src/error.rs; test/runfail-samples.test.ts)
   const at = new Date(Date.now() + (Number(process.env.FAKE_CODEX_QUOTA_MIN) || 10) * 60_000), h = at.getHours();
   const msg = has("quota?") ? "You\u2019ve hit your usage limit. To get more access now, send a request to your admin or try again later."

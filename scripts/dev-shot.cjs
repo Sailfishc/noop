@@ -4,6 +4,7 @@
 //
 //   node scripts/dev-shot.cjs out.png                     张伟, 1280×800
 //   node scripts/dev-shot.cjs --as wl --size 390x844 out.png
+//   node scripts/dev-shot.cjs --lang zh out.png            in Chinese
 //   node scripts/dev-shot.cjs --click 70,105 out.png      click points (x,y) first, 1.5 s apart
 //
 // DEV_PORT as for dev.sh. The session comes from .dev/state.json, put where the web app keeps it.
@@ -17,6 +18,7 @@ const opt = (name, d) => { const i = args.indexOf(name); if (i < 0) return d; co
 const who = opt("--as", "zw");
 const [width, height] = opt("--size", "1280x800").split("x").map(Number);
 const wait = Number(opt("--wait", "5000"));
+const lang = opt("--lang", ""); // zh | en: the app's language (default: the browser's)
 const clicks = [];
 for (let c; (c = opt("--click", null));) clicks.push(c.split(",").map(Number));
 const out = args[0] || "dev-shot.png";
@@ -28,10 +30,11 @@ const id = JSON.parse(readFileSync(join(__dirname, "..", "app", "nsh.json"), "ut
 (async () => {
   const browser = await playwright.chromium.launch();
   const page = await browser.newPage({ viewport: { width, height } });
-  await page.addInitScript(([id, url, session]) => {
+  await page.addInitScript(([id, url, session, lang]) => {
     localStorage.setItem(`nsh:${id}:team.url`, url);
     localStorage.setItem(`nsh:${id}:team.session`, session);
-  }, [id, url, state[who]]);
+    if (lang) localStorage.setItem(`nsh:${id}:hub.lang`, lang);
+  }, [id, url, state[who], lang]);
   await page.goto(url);
   await page.waitForTimeout(wait);
   for (const [x, y] of clicks) { await page.mouse.click(x, y); await page.waitForTimeout(1500); }

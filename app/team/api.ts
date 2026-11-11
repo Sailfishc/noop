@@ -78,6 +78,9 @@ export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: b
 /** since: when the computer it ran on was last seen; proposed: the agent's owner decides; waited: they wait for it;
  * moved; withdrawn: the computer came back, or it no longer needs to run. */
 export type Move = { from: string; to: string; at: number; since: number; state: "proposed" | "waited" | "moved" | "withdrawn"; decided_by?: string };
+/** from is held back on machine (reason: quota | billing | auth | not_installed) since since; proposed: the agent's
+ * owner decides; kept: they wait for it; switched: this task runs with to; withdrawn: from came back, or it went on. */
+export type Engine = { from: string; to: string; machine: string; at: number; since: number; reason: string; state: "proposed" | "kept" | "switched" | "withdrawn"; decided_by?: string };
 /** A task's latest checkpoint: when it was saved, when it was last found still current, and why one was not. */
 export type Checkpoint = {
   at: number; checked: number; machine: string;
@@ -120,6 +123,10 @@ export type Task = {
   moves?: number;
   /** The 换电脑继续 card: its computer has been gone a while and another of the agent's can take it. */
   move?: Move | null;
+  /** The runtime this task runs with when its agent's owner switched it ("" or absent: the agent's, with its model). */
+  runtime?: string;
+  /** The 换引擎继续 card: its runtime is held back on its computer and another runtime there can take it. */
+  engine?: Engine | null;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
@@ -150,7 +157,7 @@ export type Handoff = { id: string; to: string; what: string; message: string; a
   /** delegate: a part of the work that comes back to this task (remi delegate); else the work moves on. */
   kind?: "delegate" };
 /** Whose move it is, and why. */
-export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" | "move" };
+export type Holder = { kind: "user" | "agent"; id: string; why: "confirm" | "handoff_card" | "answer" | "handoff" | "align" | "decide" | "accept" | "unblock" | "retry" | "work" | "wait" | "receipt" | "move" | "engine" };
 /** Work that starts by itself: on a schedule, a new PR, a push. Confirmed once by the agent's owner. */
 export type Trigger = { id: string; channel_id: string; agent_id: string; created_by: string; kind: "schedule" | "pr" | "push"; text: string;
   repeat?: string; due?: number; repo?: string; branch?: string; confirmed_by: string | null; enabled: boolean; fired: number | null; fires: number; created: number;
@@ -358,6 +365,9 @@ export function machineNow(t: { machines: () => Machine[] }, a: Agent): Machine 
   return ms.find((m) => !blockedReason(a, m, false)) ?? ms.find((m) => m.online) ?? ms[0];
 }
 /** The computer a task runs on: the one that took it, else the one its agent's new work goes to. */
+/** The runtime a task runs with: its own when its agent's owner switched it, else the agent's. */
+export const taskRuntime = (task: Task, a: Agent | undefined) => task.runtime || a?.runtime || "codex";
+
 export function taskMachine(t: { machines: () => Machine[] }, task: Task, a: Agent | undefined): Machine | undefined {
   return t.machines().find((m) => m.id === task.claimed_by) ?? (a ? machineNow(t, a) : undefined);
 }
@@ -866,8 +876,8 @@ export function createTeam(s: Session) {
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
-  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now) | move ({to} goes on there, {wait} waits for its computer; the agent's owner). */
-  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry" | "move", body: unknown = {}) {
+  /** confirm | decline | cancel | accept (done) | decide ({choice}) | reopen ({note}) | track (convert to a task) | takeover (it goes on in my name; {approve} for the agent's owner on a pending one) | retry (one waiting for its runtime's quota tries now) | move ({to} goes on there, {wait} waits for its computer; the agent's owner) | engine ({to} goes on with that runtime, {keep} waits for this one; the agent's owner). */
+  async function act(id: string, action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "track" | "takeover" | "handoff" | "retry" | "move" | "engine", body: unknown = {}) {
     const r = await api("POST", `/api/v1/tasks/${id}/${action}`, body);
     if (r.ok) {
       putTasks([r.data as Task]);
