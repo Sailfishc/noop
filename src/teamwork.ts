@@ -42,6 +42,9 @@ export type TeamTask = {
   engine?: { from: string; to: string; reason: string; state: string } | null;
   /** Where it got to, kept off its computer (checkpoint.ts): what a computer it moved to restores. */
   checkpoint?: TaskCheckpoint | null;
+  /** A read-only run, a patrol a trigger started (server teamduties.go): it changes nothing (what it changes in a
+   * repository is thrown away), opens no PR, and may end with "nothing" when nobody needs to hear of it. */
+  readonly?: boolean;
 };
 export type TaskCheckpoint = { at: number; checked?: number; machine?: string; repos: { repo: string; branch: string; commit?: string; head?: string; error?: string }[]; files?: { id: string; size: number } | null; error?: string };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
@@ -77,7 +80,7 @@ export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer"
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
 export type WaitSpec = { how: "callback" | "poll" | "timer" | "answer" | "delegates"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
 export type TaskResult = {
-  status: "review" | "needs_decision" | "blocked" | "failed" | "waiting" | "align";
+  status: "review" | "needs_decision" | "blocked" | "failed" | "waiting" | "align" | "nothing";
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
   /** The criteria the agent worked to, when people gave none (align: the criteria it proposes, one per item). */
   acceptance?: string | string[];
@@ -123,7 +126,7 @@ export function reactionOf(text: string): string {
   return e.length <= 16 && /^\p{Extended_Pictographic}/u.test(e) && !/[\p{L}\p{N}]/u.test(e) ? e : "";
 }
 
-const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting", "align"]);
+const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting", "align", "nothing"]);
 
 /** The result block at the end of the agent's last message. Without one, the message itself is the summary. */
 export function parseTaskResult(text: string): TaskResult {
@@ -208,7 +211,11 @@ const DECLARE = (c?: Claim) => `\n- If the request needs changes in a repository
 // stopped everyone's headless Chrome (upstream noop #145).
 const PROCESSES = `\n- Stop only processes you started, by the PID you noted when you started them. Never stop processes by name or command line (pkill -f, killall, taskkill /IM): this machine is shared with its owner and other agents.`;
 
-const RULES = (wd: Workdir, c?: Claim) => wd.repo
+const RULES = (wd: Workdir, c?: Claim) => c?.task.readonly
+  ? `# Rules
+- Work in ${wd.cwd}${wd.repo ? `, a git worktree of ${wd.repo}: read it, do not change it` : " (this task's own directory)"}.${FILES(wd)}
+- Never push, merge, or publish anything.${PROCESSES}`
+  : wd.repo
   ? `# Rules (enforced: breaking them fails)
 - Work in ${wd.cwd}, a git worktree of ${wd.repo} on branch ${wd.branch}. Commit your changes on this branch with clear messages.${SETUP(wd)}${EXTRA(wd)}
 - Never push, force-push, merge, delete branches, or change other branches: the machine pushes ${wd.branch} and opens the pull request after you stop. Never run gh/glab commands that change anything.
@@ -259,6 +266,22 @@ work to the acceptance criteria you have (or the person's latest words in the th
 
 ${RESULT_SPEC}`;
 
+/** A read-only run a trigger started (a patrol): what it may do, and how to end when there is nothing to tell. */
+export const PATROL = `# This run is a read-only patrol
+A trigger of your team started this run to look at something regularly. Look and report; do not act:
+- Read, search and run commands that only look (status, logs, tests that write nothing outside your directory).
+- Do not change, commit or delete files in any repository: whatever you change there is thrown away when you stop,
+  and nothing is pushed. You may write a report into out/ (it is handed over) and say things in the thread.
+- You cannot open pull requests, hand work on (remi handoff) or delegate (remi delegate). When something should be
+  done, say what and why in your summary; a person decides.
+- Do not add a "task:" line to your first message.
+When nothing you found is worth a person's attention (all is as it should be), end with exactly:
+\`\`\`json
+{"status": "nothing", "summary": "one sentence: what you checked"}
+\`\`\`
+Then nothing is posted: no message, nobody is told; the summary only goes into the trigger's history. Otherwise end
+with the usual result block (review when you have something to tell).`;
+
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): string {
   const a = c.agent, t = c.task;
@@ -286,7 +309,7 @@ ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
-${mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.agents?.trim() ? `\n${AGENTS(c.agents)}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${t.readonly ? `\n${PATROL}\n` : mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.agents?.trim() ? `\n${AGENTS(c.agents)}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
 ${REACT}
 
 ${RESULT_SPEC}`;
@@ -637,6 +660,20 @@ async function touched(wd: Workdir): Promise<boolean> {
   if (!wd.repo) return false;
   if ((await git(wd.cwd, "status", "--porcelain")).out) return true;
   return wd.base ? Number((await git(wd.cwd, "rev-list", "--count", `${wd.base}..HEAD`)).out) > 0 : false;
+}
+
+/** A patrol's changes to its worktrees go: back to where they started, files not committed removed. Says whether
+ * there was anything to throw away. */
+export async function discard(wd: Workdir): Promise<boolean> {
+  let any = false;
+  for (const x of [wd, ...Object.values(wd.extra ?? {})]) {
+    if (!x.repo || !(await touched({ ...x, extra: {} }))) continue;
+    any = true;
+    if (x.base) await git(x.cwd, "reset", "--hard", "--quiet", x.base);
+    else await git(x.cwd, "reset", "--hard", "--quiet");
+    await git(x.cwd, "clean", "-fdq");
+  }
+  return any;
 }
 
 /** The files under out/ (relative paths), at most `max`, skipping hidden ones. */
@@ -1009,7 +1046,7 @@ export function createWorker(o: WorkerOptions) {
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
     let cancelled = false;
-    if (o.checkpoints) { // while it runs, every 10 minutes; once more when it stops (unless it was cancelled)
+    if (o.checkpoints && !t.readonly) { // while it runs, every 10 minutes; once more when it stops (unless it was cancelled); a patrol keeps nothing
       const ckWd = wd, files = c.checkpoint_files === true;
       const timer = setInterval(() => void checkpoint(t.id, ckWd, files), o.checkpointEveryMs ?? CHECKPOINT_EVERY);
       afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
@@ -1184,7 +1221,16 @@ export function createWorker(o: WorkerOptions) {
     if (await moved(t.id)) { log(`${t.id} 已经换到另一台电脑，这次运行作废：不推送、不开 PR`); return; }
     let extra: { pr?: PR; note?: string } | null = null;
     const morePRs: PR[] = [], moreNotes: string[] = [];
-    if (o.afterRun && result.status === "review") {
+    if (t.readonly) { // a patrol: what it changed in a repository is thrown away, nothing is pushed
+      if (await discard(wd)) { moreNotes.push("这是只读巡视，对仓库的改动已丢弃"); if (result.status === "nothing") result = { ...result, status: "review" }; }
+      if (result.status === "nothing" && wd.files && outFiles(join(wd.files, "out")).length) result = { ...result, status: "review" }; // it made a report: that is something to hand over
+    } else if (result.status === "nothing") result = { ...result, status: "review" }; // only a patrol may stay silent
+    if (result.status === "nothing") {
+      await finish(t, { state: "nothing", summary: result.summary, session: r.session, ...(usage ? { usage } : {}) });
+      log(`${t.id} → nothing（巡视没有发现，不发消息）`);
+      return;
+    }
+    if (o.afterRun && result.status === "review" && !t.readonly) {
       try { extra = await o.afterRun(c, result, wd); } catch (e) { extra = { note: `推送或开 PR 失败：${e instanceof Error ? e.message : e}` }; }
       for (const [remote, x] of Object.entries(wd.extra ?? {})) { // the repositories it declared: a PR each
         try {

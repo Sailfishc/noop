@@ -85,6 +85,10 @@ func (h *Hub) v1AgentDelegate(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
+	if t.Readonly {
+		errJSON(w, 403, readonlyRefusal)
+		return
+	}
 	text := strings.TrimSpace(textBody(q))
 	ms := h.mentions(text)
 	if len(ms) == 0 || !strings.HasPrefix(text, "@"+ms[0].Handle) {

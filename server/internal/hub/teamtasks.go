@@ -165,27 +165,31 @@ type taskView struct {
 	ClaimedBy   *string         `json:"claimed_by"`
 	ConfirmedBy *string         `json:"confirmed_by"`
 	Runs        int64           `json:"runs"`
-	Tracked     bool            `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
-	Titled      bool            `json:"titled"`       // its title was given (by the agent or a person), not cut from the request
-	Events      []taskEvent     `json:"events"`       // its status as it changed, oldest first: shown between the thread's replies
-	Failures    int64           `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
-	LastFailure string          `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
-	Usage       *usageView      `json:"usage"`        // tokens its runs used, added up
-	News        bool            `json:"news"`         // something new for its running agent: the machine resumes it with that (teamsteer.go)
-	Asked       []askedView     `json:"asked"`        // questions its agent put to people while it worked (remi ask)
-	Repos       []string        `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
-	Handoffs    []handoffView   `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
-	Submits     []submitView    `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
-	Evidence    []evidenceView  `json:"evidence"`     // per acceptance criterion, how the agent verified it at its last delivery (teamevidence.go)
-	Aligned     bool            `json:"aligned"`      // its agent aligned with people once (teamalign.go): it may not again
-	Holder      *holderView     `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
-	Delegates   []delegateView  `json:"delegates"`    // the tasks its agent delegated (teamdelegate.go), oldest first
-	Calls       []callView      `json:"calls"`        // each time it needed a person, and why (calls.go)
-	Checkpoint  *checkpointView `json:"checkpoint"`   // where it got to, kept off its computer (teamcheckpoint.go); nil: none yet
-	Moves       int64           `json:"moves"`        // times it moved to another computer (teammove.go)
-	Move        *moveView       `json:"move"`         // the 换电脑继续 card, its last one
-	Runtime     string          `json:"runtime"`      // the runtime it runs with when not its agent's ("": the agent's; teamengine.go)
-	Engine      *engineView     `json:"engine"`       // the 换引擎继续 card, its last one
+	Tracked     bool            `json:"tracked"`            // a task people track (on the board); false: a conversation turn (an answer)
+	Titled      bool            `json:"titled"`             // its title was given (by the agent or a person), not cut from the request
+	Events      []taskEvent     `json:"events"`             // its status as it changed, oldest first: shown between the thread's replies
+	Failures    int64           `json:"failures"`           // runs in a row that failed or died (teamhealth.go)
+	LastFailure string          `json:"last_failure"`       // why the last one did: auth, rate_limited, restart, …
+	Usage       *usageView      `json:"usage"`              // tokens its runs used, added up
+	News        bool            `json:"news"`               // something new for its running agent: the machine resumes it with that (teamsteer.go)
+	Asked       []askedView     `json:"asked"`              // questions its agent put to people while it worked (remi ask)
+	Repos       []string        `json:"repos"`              // repositories its agent declared it changes (remi repo), besides repo
+	Handoffs    []handoffView   `json:"handoffs"`           // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
+	Submits     []submitView    `json:"submits"`            // its agent's submissions to outside services (remi submit), at most maxSubmits
+	Evidence    []evidenceView  `json:"evidence"`           // per acceptance criterion, how the agent verified it at its last delivery (teamevidence.go)
+	Aligned     bool            `json:"aligned"`            // its agent aligned with people once (teamalign.go): it may not again
+	Holder      *holderView     `json:"holder"`             // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
+	Delegates   []delegateView  `json:"delegates"`          // the tasks its agent delegated (teamdelegate.go), oldest first
+	Calls       []callView      `json:"calls"`              // each time it needed a person, and why (calls.go)
+	Checkpoint  *checkpointView `json:"checkpoint"`         // where it got to, kept off its computer (teamcheckpoint.go); nil: none yet
+	Moves       int64           `json:"moves"`              // times it moved to another computer (teammove.go)
+	Move        *moveView       `json:"move"`               // the 换电脑继续 card, its last one
+	Runtime     string          `json:"runtime"`            // the runtime it runs with when not its agent's ("": the agent's; teamengine.go)
+	Engine      *engineView     `json:"engine"`             // the 换引擎继续 card, its last one
+	Readonly    bool            `json:"readonly,omitempty"` // a read-only run, a patrol (teamduties.go): no PR, handoff or delegation; it may end with nothing
+	// Quiet: its thread's first message (the ⚡ of the trigger) is not posted yet: it is, when the agent first speaks
+	Quiet bool `json:"quiet,omitempty"`
+	held  string
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -196,7 +200,8 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, ''), moves, COALESCE(move, ''), runtime, COALESCE(engine, '')`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, ''), moves, COALESCE(move, ''), runtime, COALESCE(engine, ''),
+	readonly, COALESCE(held, '')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -209,10 +214,11 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint, move, engine string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine, &t.Readonly, &t.held); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
+		t.Quiet = t.held != ""
 		t.Asked, t.Repos = []askedView{}, []string{}
 		_ = json.Unmarshal([]byte(asked), &t.Asked)
 		_ = json.Unmarshal([]byte(repos), &t.Repos)
@@ -525,6 +531,9 @@ type taskOrigin struct {
 	// Delegated: a part the parent's agent delegated (teamdelegate.go); Acceptance: what it asked for, its criteria
 	Delegated  bool
 	Acceptance string
+	// Readonly: a patrol's run (teamduties.go); Held: its first message, posted only when the agent first speaks
+	Readonly bool
+	Held     string
 }
 
 func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracked bool, o taskOrigin) string {
@@ -562,8 +571,9 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	mandate := mandateView{By: by, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
 		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Delegated: o.Delegated}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, tracked, handler, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
-		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now))
+		branch, repo, tracked, handler, created, updated, readonly, held) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now,
+		boolInt(o.Readonly), nilIfEmpty(o.Held)))
 	h.noteStatus(id, state)
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
@@ -995,6 +1005,9 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	}
 	fresh := h.unseen(t)
 	thread := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.id = ? OR m.thread_id = ? ORDER BY m.seq", t.ThreadID, t.ThreadID))
+	if t.held != "" { // a patrol whose first message is not posted yet: the run still reads it (teamduties.go)
+		thread = append([]messageView{h.heldMessage(t)}, thread...)
+	}
 	var seen int64
 	for _, m := range thread {
 		seen = max(seen, m.Seq)
@@ -1039,7 +1052,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
 		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
 		"requester_preferences": h.preferences(t.CreatedBy), "memory_writable": h.memoryWritable(t, a),
-		"agents": h.agentList(t, promptAgents), "checkpoint_files": h.checkpointFilesAllowed(q.who.machineID)})
+		"agents": h.agentList(t, promptAgents, t.Readonly), "checkpoint_files": h.checkpointFilesAllowed(q.who.machineID)})
 }
 
 // promptAgents: at most this many lines of `remi who` in the claim, for the start prompt's "who you can turn to".
@@ -1099,6 +1112,10 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "bad json")
 		return
 	}
+	if b.PR != nil && t.Readonly {
+		errJSON(w, 403, "只读巡视不开 PR")
+		return
+	}
 	if b.Memory != nil && h.memoryWritable(t, a) { // otherwise dropped: the run was told not to (teammemory.go)
 		if m := clip(strings.TrimSpace(*b.Memory), memoryChars); m != a.Memory {
 			h.must(h.db.Exec("UPDATE agents SET memory = ? WHERE id = ?", m, a.ID))
@@ -1150,6 +1167,23 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if b.Step != nil {
 		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
+	}
+	if b.State == "nothing" { // a patrol found nothing a person needs to know: it ends without a word (teamduties.go)
+		if !t.Readonly {
+			errJSON(w, 400, "只有只读巡视能报 nothing")
+			return
+		}
+		h.runEnded(t, a, q.who.machineID, taskDone, "", 0, "", cols)
+		cols["summary"], cols["step"], cols["state"] = trimmed(b.Summary, 8000), "", taskDone
+		if t.News {
+			cols["state"] = taskQueued
+		}
+		h.setTask(t.ID, cols)
+		h.taskChanged(t.ID)
+		h.dutyRunEnded(t, "nothing", b.Summary)
+		t, _ = h.task(t.ID)
+		writeJSON(w, 200, h.taskOut(q, t))
+		return
 	}
 	if b.State != "" {
 		if b.State == "align" {
@@ -1237,6 +1271,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	if len(cols) > 0 || len(b.Outputs) > 0 {
 		h.taskChanged(t.ID)
 	}
+	if b.State != "" {
+		h.dutyRunEnded(t, b.State, b.Summary)
+	}
 	if cols["state"] == taskReview || cols["state"] == taskDone {
 		h.delegatesDropped(t.ID) // delivered: what it delegated and is not back yet is not wanted any more
 	}
@@ -1287,6 +1324,7 @@ func (h *Hub) insertMessage(channelID string, thread *string, author member, tex
 	var th any
 	if thread != nil {
 		th = *thread
+		h.postHeld(*thread) // a patrol's first message goes up before anything is said under it (teamduties.go)
 	}
 	mentions, _ := json.Marshal(h.mentions(text))
 	id := newID("msg_")
@@ -1437,6 +1475,9 @@ func (h *Hub) agentReacts(t taskView, agentID, emoji string) {
 		ids = append(ids, id)
 	}
 	rows.Close()
+	if len(ids) == 0 && t.held != "" { // the first message is not posted yet: the emoji is there when it is
+		ids = append(ids, t.ThreadID)
+	}
 	if len(ids) == 0 {
 		var id string
 		if h.db.QueryRow(`SELECT id FROM messages WHERE (id = ? OR thread_id = ?) AND author_kind = 'user' ORDER BY seq DESC LIMIT 1`,

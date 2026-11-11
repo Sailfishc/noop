@@ -63,13 +63,17 @@ type triggerView struct {
 	LastTask    *string `json:"last_task,omitempty"`   // the task it opened last
 	SkippedRun  int64   `json:"skipped_run"`           // skipped in a row since it last fired, so people see it is stuck
 	SkipReason  string  `json:"skip_reason,omitempty"` // busy (last_task is not over) | limit (the day's)
-	day         string
-	dayFires    int64
-	stuckNoted  string
+	Duty        string  `json:"duty"`                  // the duty it belongs to ("" none): one name, agent and channel are seen and paused together (teamduties.go)
+	Readonly    bool    `json:"readonly"`              // its runs are patrols: read-only, and silent when they find nothing
+	// Recent: how its last seven days went, by outcome (nochange, nothing, spoke, proposed, failed, skipped, running)
+	Recent     map[string]int64 `json:"recent,omitempty"`
+	day        string
+	dayFires   int64
+	stuckNoted string
 }
 
 const triggerCols = "id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, enabled, fired, fires, created, " +
-	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason, stuck_noted"
+	"max_per_day, skipped, last_task, day, day_fires, skipped_run, skip_reason, stuck_noted, duty, readonly"
 
 func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	if err != nil {
@@ -80,7 +84,7 @@ func scanTriggers(rows *sql.Rows, err error) []triggerView {
 	for rows.Next() {
 		var t triggerView
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.AgentID, &t.CreatedBy, &t.Kind, &t.Text, &t.Repeat, &t.Due, &t.Repo, &t.Branch,
-			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason, &t.stuckNoted); err != nil {
+			&t.ConfirmedBy, &t.Enabled, &t.Fired, &t.Fires, &t.Created, &t.MaxPerDay, &t.Skipped, &t.LastTask, &t.day, &t.dayFires, &t.SkippedRun, &t.SkipReason, &t.stuckNoted, &t.Duty, &t.Readonly); err != nil {
 			panic(err)
 		}
 		out = append(out, t)
@@ -102,6 +106,7 @@ func (h *Hub) triggerChanged(t triggerView, removed bool) {
 		return
 	}
 	t, _ = h.trigger(t.ID)
+	t.Recent = h.triggerRecent(t.ID)
 	h.broadcastChannel(t.ChannelID, obj{"type": "trigger", "trigger": t})
 }
 
@@ -116,10 +121,11 @@ func (h *Hub) v1Triggers(w http.ResponseWriter, q *request) {
 		errJSON(w, 403, "先加入这个频道")
 		return
 	}
-	writeJSON(w, 200, obj{"triggers": scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE channel_id = ? ORDER BY created", c.ID))})
+	writeJSON(w, 200, obj{"triggers": h.withRecent(scanTriggers(h.db.Query("SELECT "+triggerCols+" FROM triggers WHERE channel_id = ? ORDER BY created", c.ID)))})
 }
 
-// v1TriggerCreate: {channel_id, agent (handle or id), kind, text, when + repeat (schedule), repo + branch (pr, push)}.
+// v1TriggerCreate: {channel_id, agent (handle or id), kind, text, when + repeat (schedule), repo + branch (pr, push),
+// duty (a name, optional), readonly (default true: a new trigger's runs only look and speak)}.
 func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	var b struct {
 		ChannelID string `json:"channel_id"`
@@ -131,9 +137,12 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		Repo      string `json:"repo"`
 		Branch    string `json:"branch"`
 		MaxPerDay *int64 `json:"max_per_day"`
+		Duty      string `json:"duty"`
+		Readonly  *bool  `json:"readonly"`
 	}
 	_ = q.json(&b)
 	me := q.who.userID
+	readonly := b.Readonly == nil || *b.Readonly
 	perDay := int64(defaultMaxPerDay)
 	if b.MaxPerDay != nil {
 		if *b.MaxPerDay < 1 || *b.MaxPerDay > ceilingMaxPerDay {
@@ -208,8 +217,8 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		return
 	}
 	id := newID("trg_")
-	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs(), perDay))
+	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day, duty, readonly) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, c.ID, a.ID, me, b.Kind, text, repeat, due, repo, branch, confirmed, h.nowMs(), perDay, dutyName(b.Duty), boolInt(readonly)))
 	t, _ := h.trigger(id)
 	if confirmed == nil {
 		if o, ok := h.user(a.OwnerID); ok {
@@ -271,15 +280,17 @@ func (h *Hub) v1TriggerConfirm(w http.ResponseWriter, q *request) {
 	writeJSON(w, 200, t)
 }
 
-// v1TriggerPatch: {enabled?, max_per_day?}.
+// v1TriggerPatch: {enabled?, max_per_day?, duty?, readonly?}.
 func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 	t, _, ok := h.mayManageTrigger(w, q)
 	if !ok {
 		return
 	}
 	var b struct {
-		Enabled   *bool  `json:"enabled"`
-		MaxPerDay *int64 `json:"max_per_day"`
+		Enabled   *bool   `json:"enabled"`
+		MaxPerDay *int64  `json:"max_per_day"`
+		Duty      *string `json:"duty"`
+		Readonly  *bool   `json:"readonly"`
 	}
 	_ = q.json(&b)
 	if b.MaxPerDay != nil {
@@ -292,6 +303,12 @@ func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 	if b.Enabled != nil {
 		h.must(h.db.Exec("UPDATE triggers SET enabled = ? WHERE id = ?", boolInt(*b.Enabled), t.ID))
 	}
+	if b.Duty != nil {
+		h.must(h.db.Exec("UPDATE triggers SET duty = ? WHERE id = ?", dutyName(*b.Duty), t.ID))
+	}
+	if b.Readonly != nil {
+		h.must(h.db.Exec("UPDATE triggers SET readonly = ? WHERE id = ?", boolInt(*b.Readonly), t.ID))
+	}
 	h.triggerChanged(t, false)
 	t, _ = h.trigger(t.ID)
 	writeJSON(w, 200, t)
@@ -303,6 +320,7 @@ func (h *Hub) v1TriggerDelete(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM triggers WHERE id = ?", t.ID))
+	h.must(h.db.Exec("DELETE FROM trigger_runs WHERE trigger_id = ?", t.ID))
 	h.triggerChanged(t, true)
 	writeJSON(w, 200, obj{"ok": true})
 }
@@ -337,14 +355,22 @@ func (h *Hub) fire(t triggerView, extra string) string {
 	}
 	if reason != "" {
 		h.must(h.db.Exec("UPDATE triggers SET skipped = skipped + 1, skipped_run = skipped_run + 1, skip_reason = ? WHERE id = ?", reason, t.ID))
+		h.noteTriggerRun(t.ID, runSkipped, map[string]string{"busy": "上一个任务还没结束", "limit": "今天的次数到上限了"}[reason], "")
 		return "skipped"
 	}
 	text := "⚡ @" + a.Handle + " " + t.Text
 	if extra != "" {
 		text += "\n\n" + extra
 	}
-	m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
-	id := h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	var id string
+	if t.Readonly { // a patrol: its message goes up only when the agent first speaks; untracked until it delivers something
+		m := messageView{ID: newID("msg_"), ChannelID: c.ID, Author: member{"user", t.CreatedBy}, Text: text}
+		id = h.createTaskWith(m, m.ID, a.ID, false, false, taskOrigin{Trigger: t.ID, Confirmed: true, Readonly: true, Held: text})
+	} else {
+		m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
+		id = h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
+	}
+	h.noteTriggerRun(t.ID, runRunning, "", id)
 	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
 		h.nowMs(), id, today, fires+1, t.ID))
 	return "fired"

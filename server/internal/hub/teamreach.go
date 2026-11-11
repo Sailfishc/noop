@@ -140,7 +140,10 @@ func (h *Hub) agentLine(x teamAgent) string {
 }
 
 // agentList: the agents this task's agent may turn to, one line each, at most n ("" when there are none).
-func (h *Hub) agentList(t taskView, n int) string {
+func (h *Hub) agentList(t taskView, n int, readonly bool) string {
+	if readonly { // a patrol hands nothing on (teamduties.go)
+		return ""
+	}
 	xs := h.teamAgents(t)
 	var b strings.Builder
 	for i, x := range xs {
@@ -155,7 +158,7 @@ func (h *Hub) agentList(t taskView, n int) string {
 
 // v1AgentWhoList: `remi who` with no handle: the agents this task's agent may turn to.
 func (h *Hub) v1AgentWhoList(w http.ResponseWriter, t taskView) {
-	s := h.agentList(t, 50)
+	s := h.agentList(t, 50, false)
 	if s == "" {
 		writeText(w, "(no other agent you may turn to in this task)\n")
 		return

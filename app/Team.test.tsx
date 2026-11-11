@@ -1357,7 +1357,9 @@ describe("passing the ball", () => {
     await app.waitFor("id:trigger-trg_1");
     expect(app.shows("text:等 @zhangwei 确认一次")).toBe(true);
     expect(app.shows("text:已连续跳过 3 次，因为 T-0007 还在排队或运行")).toBe(true);
-    expect(app.shows("text:/每天最多 10 次；上一个任务还在排队或运行时跳过/")).toBe(true);
+    expect(app.shows("text:/每天最多 10 次/")).toBe(false); // its limits wait behind the ⓘ
+    await app.press("id:trigger-limits-trg_9-info");
+    await app.waitFor("text:/每天最多 10 次；上一个任务还在排队或运行时跳过/");
     await app.press("id:trigger-confirm-trg_1");
     await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
     await app.waitFor("text:还没触发过");
@@ -1369,9 +1371,39 @@ describe("passing the ball", () => {
     await app.type("id:trigger-max", "3");
     await app.press("id:trigger-save");
     await app.waitUntil(() => log.created.length === 1);
-    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3, readonly: true } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
-    expect(app.shows("text:每天最多 3 次")).toBe(true); // a PR is never skipped for an open task
+    expect(app.shows("id:trigger-readonly-trg_3")).toBe(true); // read-only unless switched off
+    await app.press("id:trigger-limits-trg_3-info");
+    await app.waitFor("text:每天最多 3 次"); // a PR is never skipped for an open task
+  });
+
+  test("a duty: its triggers in one group with how the week went, one switch pauses them all, its history", async () => {
+    const log = newLog();
+    const base = { channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", repeat: "daily", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 9, created: T0, max_per_day: 10, skipped: 0, duty: "看住主干", readonly: true };
+    const ci = { ...base, id: "trg_1", text: "看主干的 CI", recent: { nochange: 31, nothing: 9 } };
+    const deps = { ...base, id: "trg_2", text: "看过期的依赖", recent: { proposed: 2 } };
+    const runs = [{ trigger_id: "trg_1", at: T0, outcome: "nothing", note: "主干是绿的", task_id: "T-0009" }, { trigger_id: "trg_2", at: T0 - 3600_000, outcome: "failed", note: "仓库打不开" }];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log, { __triggers: [ci, deps] }),
+      [`GET ${URL}/api/v1/triggers/runs?*`]: (r: { url: string }) => { log.acts.push(decodeURIComponent(r.url.split("?")[1]!)); return { body: { runs } }; },
+      [`POST ${URL}/api/v1/triggers/duty`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); log.patches.push({ duty: b }); ci.enabled = deps.enabled = b.enabled; return { body: { triggers: [ci, deps] } }; },
+    } });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("id:duty-trg_1");
+    expect(app.shows("text:看住主干")).toBe(true);
+    expect(app.shows("text:近 7 天：31 次没变化，9 次没发现，2 次提了案")).toBe(true);
+    expect(app.shows("id:trigger-toggle-trg_1")).toBe(false); // paused as a duty, not one by one
+    await app.press("id:duty-trg_1-history");
+    await app.waitFor("id:duty-trg_1-runs");
+    expect(log.acts).toContain("channel=c_1&agent=a_1&duty=看住主干");
+    expect(app.shows("text:/没发现 · 主干是绿的 · T-0009/")).toBe(true);
+    expect(app.shows("text:/失败 · 仓库打不开/")).toBe(true);
+    await app.press("id:duty-trg_1-toggle");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ duty: { channel_id: "c_1", agent_id: "a_1", duty: "看住主干", enabled: false } });
+    await app.waitFor("text:已暂停");
   });
 });
 
