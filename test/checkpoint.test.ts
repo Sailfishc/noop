@@ -254,7 +254,7 @@ test("a run whose task moved away stops: nothing pushed, no report, no checkpoin
     afterRun: async () => { pushed.push("pr"); return null; }, send: async (p) => { calls.push(`SEND ${p}`); return "ok"; } });
   const mine = () => true;
   w.onTask({ id: "T-0014", state: "queued", agent_id: "a" } as TeamTask, mine);
-  await Bun.sleep(100);
+  await Bun.sleep(1); // the move can come before the run starts (a slow worktree) as well as during it // the move may come before the run starts (slow worktree), or during it
   // the owner moved it while it ran (the socket says so): the run here stops
   moves = 1;
   w.onTask({ id: "T-0014", state: "queued", agent_id: "a", moves: 1 } as TeamTask, mine);

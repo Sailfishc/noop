@@ -1037,6 +1037,7 @@ export function createWorker(o: WorkerOptions) {
       });
       handle = h;
       kills.set(t.id, () => { cancelled = true; h.kill(); });
+      if (movedAway.has(t.id)) kills.get(t.id)!(); // it moved while the folder was being made: stop before it works
       const res = await h.done;
       handle = undefined;
       if (res.usage) usage = addUsage(usage, res.usage);
