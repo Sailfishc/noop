@@ -24,6 +24,7 @@ export { toast, Toaster } from "./toast";
 export { Dropdown } from "./select";
 export { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
 export { ListRow } from "./list-row";
+export { AccountRow } from "./account-row";
 export { Tabs } from "./tabs";
 export { Empty } from "./empty";
 export { Count } from "./count";
