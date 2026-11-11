@@ -111,6 +111,8 @@ describe("screens", () => {
     await app.waitFor("id:open-tasks");
     await app.keyboard.press("mod+,");
     await app.waitFor("id:settings");
+    await app.waitFor("id:preferences-input");
+    await shot(app, "settings-account");
     await app.press("id:settings-nav-agents");
     await shot(app, "settings-agents");
     await app.press("id:settings-nav-general");

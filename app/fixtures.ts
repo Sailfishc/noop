@@ -90,7 +90,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/tasks/*/reopen`]: act("reopen", (t) => { t.state = "queued"; }),
     [`POST ${URL}/api/v1/tasks/*/decide`]: act("decide", (t, b) => { t.state = "queued"; t.decision = { ...t.decision, answer: b.choice }; }),
-    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha] } },
+    [`GET ${URL}/api/v1/me`]: { body: { user: zw, machines: [mac], agents: [acha], preferences: "回复用中文；PR 描述先写改了什么再写为什么。" } },
     [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl] } },
     [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
     [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac] } },

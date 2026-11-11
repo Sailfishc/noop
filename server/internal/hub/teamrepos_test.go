@@ -86,6 +86,6 @@ func TestAgentMemory(t *testing.T) {
 	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 	check(t, "the run gets it", r.body["agent"].(map[string]any)["memory"] == "- 支付服务用 Go 1.24", r)
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "ok", "memory": "- 支付服务用 Go 1.24\n- orders 表很大，加索引要在夜里"})
-	a := e.do("GET", "/api/v1/agents", e.zw.session, nil).body["agents"].([]any)[0].(map[string]any)
+	a := e.do("GET", "/api/v1/agents", e.wl.session, nil).body["agents"].([]any)[0].(map[string]any)
 	check(t, "the agent rewrote it", a["memory"] == "- 支付服务用 Go 1.24\n- orders 表很大，加索引要在夜里")
 }
