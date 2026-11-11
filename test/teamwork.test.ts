@@ -669,3 +669,17 @@ test("align: the run reports its criteria and whether it changed files; a second
   expect(last("T-0002").state).toBe("review");
   rmSync(W, { recursive: true, force: true });
 });
+
+test("evidence: the review result carries how each criterion was checked; the prompt asks for it", async () => {
+  expect(taskPrompt(claim({ acceptance: "P99 < 200ms" }), { cwd: "/w", writable: [] })).toContain('"evidence"');
+  const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+  const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+  const rt = fakeRuntime([{ text: '```json\n{"status":"review","summary":"好了","evidence":[{"criterion":1,"how":"ran","proof":"p99 180ms","file":"out/a.png"},{"criterion":"x","how":"saw"}]}\n```' }], seen);
+  const w = createWorker({ api: fakeApi({ "T-0001": claim({ acceptance: "P99 < 200ms" }) }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+  w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+  await Bun.sleep(1);
+  await w.idle();
+  const body = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report").at(-1)!.body;
+  expect(body.evidence).toEqual([{ criterion: 1, how: "ran", proof: "p99 180ms", file: "out/a.png" }]);
+  rmSync(W, { recursive: true, force: true });
+});

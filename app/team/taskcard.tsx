@@ -8,6 +8,7 @@ import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 import { AlignCard } from "./aligncard";
+import { EvidenceLine, EvidenceList } from "./evidence";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -375,6 +376,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
             </If>
           </View>
         )}
+      </If>
+      <If when={task().state === "review" && task().evidence?.length}>
+        <EvidenceLine task={task()} />
+        <If when={props.detail}><EvidenceList team={t} task={task()} /></If>
       </If>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <If when={task().state === "pending" && isOwner()}>

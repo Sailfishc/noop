@@ -135,46 +135,47 @@ type mandateView struct {
 }
 
 type taskView struct {
-	ID          string        `json:"id"`
-	ChannelID   string        `json:"channel_id"`
-	ThreadID    string        `json:"thread_id"`
-	AgentID     string        `json:"agent_id"`
-	CreatedBy   string        `json:"created_by"`
-	Handler     string        `json:"handler"` // the person named to take it ("由 @x 验收"): accept, decide; "" = its creator
-	Title       string        `json:"title"`
-	Body        string        `json:"body"`
-	Acceptance  string        `json:"acceptance"` // what "done" means; people write it, the agent may propose it
-	Repo        string        `json:"repo"`       // where it runs: host/owner/name ("" = a general task); see teamrepos.go
-	Mandate     *mandateView  `json:"mandate"`
-	State       string        `json:"state"`  // the run's state (machines go by it)
-	Status      string        `json:"status"` // todo | in_progress | in_review | done | closed (people go by it)
-	Needs       string        `json:"needs"`  // what a person must do: confirm | decide | unblock | retry | ""
-	Step        string        `json:"step"`
-	Summary     string        `json:"summary"`
-	Decision    *decisionView `json:"decision"`
-	PR          *prView       `json:"pr"`
-	Outputs     []outputView  `json:"outputs"` // what came out: the PR, files, external results (teamoutputs.go)
-	Wait        *waitView     `json:"wait"`    // what it waits for while waiting
-	Result      string        `json:"result"`  // confirmed | unconfirmed: whether the agent saw the result ("" = not said)
-	Branch      string        `json:"branch"`
-	Session     string        `json:"session"`
-	ClaimedBy   *string       `json:"claimed_by"`
-	ConfirmedBy *string       `json:"confirmed_by"`
-	Runs        int64         `json:"runs"`
-	Tracked     bool          `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
-	Titled      bool          `json:"titled"`       // its title was given (by the agent or a person), not cut from the request
-	Events      []taskEvent   `json:"events"`       // its status as it changed, oldest first: shown between the thread's replies
-	Failures    int64         `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
-	LastFailure string        `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
-	Usage       *usageView    `json:"usage"`        // tokens its runs used, added up
-	News        bool          `json:"news"`         // something new for its running agent: the machine resumes it with that (teamsteer.go)
-	Asked       []askedView   `json:"asked"`        // questions its agent put to people while it worked (remi ask)
-	Repos       []string      `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
-	Handoffs    []handoffView `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
-	Submits     []submitView  `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
-	Aligned     bool          `json:"aligned"`      // its agent aligned with people once (teamalign.go): it may not again
-	Holder      *holderView   `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
-	Calls       []callView    `json:"calls"`        // each time it needed a person, and why (calls.go)
+	ID          string         `json:"id"`
+	ChannelID   string         `json:"channel_id"`
+	ThreadID    string         `json:"thread_id"`
+	AgentID     string         `json:"agent_id"`
+	CreatedBy   string         `json:"created_by"`
+	Handler     string         `json:"handler"` // the person named to take it ("由 @x 验收"): accept, decide; "" = its creator
+	Title       string         `json:"title"`
+	Body        string         `json:"body"`
+	Acceptance  string         `json:"acceptance"` // what "done" means; people write it, the agent may propose it
+	Repo        string         `json:"repo"`       // where it runs: host/owner/name ("" = a general task); see teamrepos.go
+	Mandate     *mandateView   `json:"mandate"`
+	State       string         `json:"state"`  // the run's state (machines go by it)
+	Status      string         `json:"status"` // todo | in_progress | in_review | done | closed (people go by it)
+	Needs       string         `json:"needs"`  // what a person must do: confirm | decide | unblock | retry | ""
+	Step        string         `json:"step"`
+	Summary     string         `json:"summary"`
+	Decision    *decisionView  `json:"decision"`
+	PR          *prView        `json:"pr"`
+	Outputs     []outputView   `json:"outputs"` // what came out: the PR, files, external results (teamoutputs.go)
+	Wait        *waitView      `json:"wait"`    // what it waits for while waiting
+	Result      string         `json:"result"`  // confirmed | unconfirmed: whether the agent saw the result ("" = not said)
+	Branch      string         `json:"branch"`
+	Session     string         `json:"session"`
+	ClaimedBy   *string        `json:"claimed_by"`
+	ConfirmedBy *string        `json:"confirmed_by"`
+	Runs        int64          `json:"runs"`
+	Tracked     bool           `json:"tracked"`      // a task people track (on the board); false: a conversation turn (an answer)
+	Titled      bool           `json:"titled"`       // its title was given (by the agent or a person), not cut from the request
+	Events      []taskEvent    `json:"events"`       // its status as it changed, oldest first: shown between the thread's replies
+	Failures    int64          `json:"failures"`     // runs in a row that failed or died (teamhealth.go)
+	LastFailure string         `json:"last_failure"` // why the last one did: auth, rate_limited, restart, …
+	Usage       *usageView     `json:"usage"`        // tokens its runs used, added up
+	News        bool           `json:"news"`         // something new for its running agent: the machine resumes it with that (teamsteer.go)
+	Asked       []askedView    `json:"asked"`        // questions its agent put to people while it worked (remi ask)
+	Repos       []string       `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
+	Handoffs    []handoffView  `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
+	Submits     []submitView   `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
+	Evidence    []evidenceView `json:"evidence"`     // per acceptance criterion, how the agent verified it at its last delivery (teamevidence.go)
+	Aligned     bool           `json:"aligned"`      // its agent aligned with people once (teamalign.go): it may not again
+	Holder      *holderView    `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
+	Calls       []callView     `json:"calls"`        // each time it needed a person, and why (calls.go)
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -185,7 +186,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -195,10 +196,10 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits string
+		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -208,6 +209,8 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		t.Handoffs, t.Submits = []handoffView{}, []submitView{}
 		_ = json.Unmarshal([]byte(handoffs), &t.Handoffs)
 		_ = json.Unmarshal([]byte(submits), &t.Submits)
+		t.Evidence = []evidenceView{}
+		_ = json.Unmarshal([]byte(evidence), &t.Evidence)
 		if wait != "" {
 			t.Wait = &waitView{}
 			_ = json.Unmarshal([]byte(wait), t.Wait)
@@ -255,7 +258,7 @@ func taskNum(id string) int64 {
 func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
-		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}}
+		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{}}
 	return r
 }
 
@@ -977,6 +980,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Failure string `json:"failure"`
 		// Usage: tokens this run used
 		Usage *usageView `json:"usage"`
+		// Evidence: with state review, how each acceptance criterion was verified (teamevidence.go)
+		Evidence []evidenceView `json:"evidence"`
 		// Align: with state align, what "done" will mean (teamalign.go)
 		Align *alignReport `json:"align"`
 	}
@@ -1092,6 +1097,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		text = h.callHandler(t, state, text)
 		if text != "" {
 			h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, text)
+		}
+		if state == taskReview {
+			criteria := t.Acceptance
+			if c, ok := cols["acceptance"].(string); ok {
+				criteria = c
+			}
+			cols["evidence"] = jsonOrNil(fillEvidence(criteria, b.Evidence))
 		}
 		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" {
 			state = taskDone

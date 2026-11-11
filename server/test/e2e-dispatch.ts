@@ -44,14 +44,14 @@ const resume = a.includes("resume") ? a[a.indexOf("resume") + 1] : "";
 const prompt = await new Response(Bun.stdin.stream()).text();
 const out = (o) => console.log(JSON.stringify(o));
 out({ type: "thread.started", thread_id: resume || "thr_fake_1" });
-const done = (summary) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
+const done = (summary, evidence) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary, evidence }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
 if (prompt.includes("paused you between two steps")) done("插话后：" + (prompt.includes("改主意") ? "按新的要求做了" : "没收到新要求"));
 if (prompt.includes("ALIGN-TEST") && !resume && prompt.includes("# Align first")) { // aligns before it works
   out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "align", summary: "先对一下", acceptance: ["对账一致", "10 分钟内跑完"], approach: "按天分批" }) + "\\n\`\`\`" } });
   out({ type: "turn.completed" });
   process.exit(0);
 }
-if (resume && (prompt.includes("按这个做") || prompt.includes("回滚"))) done("对齐后开工：" + (prompt.includes("5 分钟内跑完") ? "按改过的标准" : prompt.includes("回滚") ? "按回复改了标准" : "?"));
+if (resume && (prompt.includes("按这个做") || prompt.includes("回滚"))) done("对齐后开工：" + (prompt.includes("5 分钟内跑完") ? "按改过的标准" : prompt.includes("回滚") ? "按回复改了标准" : "?"), [{ criterion: 1, how: "ran", proof: "diff 对账结果：0 行不同" }]);
 if (prompt.includes("STEER-TEST")) { // a long tool call, then it would go on for a long time
   out({ type: "item.started", item: { type: "command_execution", command: "sleep 1" } });
   await Bun.sleep(1500);
@@ -140,6 +140,7 @@ await api("POST", "/api/v1/tasks/T-0002/decide", zw.session, { acceptance: "对�
 await until("按这个做: it goes on in the same session and delivers", async () => ["review", "done"].includes((await get("T-0002")).state)); // it changed nothing: done as an answer
 a = await get("T-0002");
 check("with the criteria as edited", a.acceptance === "对账一致\n5 分钟内跑完" && a.summary.startsWith("对齐后开工：按改过的标准"), a.summary);
+check("evidence for the first criterion; the second, never mentioned, is unstated", a.evidence?.length === 2 && a.evidence[0].how === "ran" && a.evidence[1].how === "unstated", JSON.stringify(a.evidence));
 const root3 = await alignAsk("@acha ALIGN-TEST 整理发布流程", "T-0003");
 await until("the second one stops to align", async () => (await get("T-0003")).state === "needs_decision");
 await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "再加一条：要有回滚步骤", thread_id: root3 });
