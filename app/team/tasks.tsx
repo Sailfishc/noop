@@ -7,7 +7,7 @@ import { computed, effect, Scroll, signal, Storage, Text, View, windowSize, type
 import { Menu, MenuItem } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, colors, hovered, Icon } from "../ui";
-import type { Task, Team } from "./api";
+import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
 import { Avatar, Header, StateDot, time, WIDE } from "./ui";
@@ -22,7 +22,7 @@ const VIEWS: TaskView[] = ["related", "needs", "mine", "agents", "all"];
 
 export const toneColor = (t: Tone | string) => (t === "accent" ? colors.accent : t === "warn" ? colors.warn : t === "danger" ? colors.danger : t === "up" ? colors.up : colors.muted);
 
-export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false);
+export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false && !x.redacted);
 
 /** A layout remembered on this device (per place: the page, or channels). */
 export function rememberedLayout(place: string) {
@@ -234,7 +234,7 @@ export function TasksPage(props: { team: Team; back: boolean; onBack: () => void
     </View>
   );
   const me = () => t.me();
-  const channelOptions = () => t.channels().map((c) => ({ id: c.id, label: `#${c.name}` }));
+  const channelOptions = () => t.channels().map((c) => ({ id: c.id, label: channelLabel(c) }));
   const creatorOptions = () => {
     const ids = new Set(trackedTasks(t).map((x) => x.created_by));
     return t.users().filter((u) => ids.has(u.id)).sort((a, b) => Number(b.id === me()?.id) - Number(a.id === me()?.id))

@@ -22,7 +22,7 @@ export function Inbox(props: { team: Team; back: boolean; onBack: () => void; on
         <SignupSection team={t} />
         <If when={items().length || up() || t.signups().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
           <Each of={items()} key={(x) => x.id}>
-            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={() => props.onOpen(x().channel_id, x().thread_id)} />}
+            {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={x().redacted ? undefined : () => props.onOpen(x().channel_id, x().thread_id)} />}
           </Each>
         </If>
         <ReminderSections team={t} onOpen={(r) => props.onOpen(r.channel_id, r.thread_id)} />

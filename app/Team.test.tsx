@@ -902,7 +902,7 @@ describe("channel v2", () => {
     await app.waitFor("id:channel-members");
     await app.press("id:channel-members");
     await app.waitFor("id:channel-repo");
-    expect(app.shows("text:/^None: agents pick a repository/")).toBe(true);
+    expect(app.shows("id:channel-repo-label") && app.shows("text:None")).toBe(true);
     await app.press("id:channel-repo-edit");
     await app.type("id:channel-repo-picker-input", "https://github.com/acme/web");
     await app.press("id:channel-repo-picker-save");
@@ -1260,5 +1260,96 @@ describe("passing the ball", () => {
     expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "pr", text: "review 这个 PR", repo: "https://github.com/acme/pay", branch: "", max_per_day: 3 } });
     await app.waitFor("text:/acme\\/pay 有新 PR/");
     expect(app.shows("text:每天最多 3 次")).toBe(true); // a PR is never skipped for an open task
+  });
+});
+
+describe("private channels", () => {
+  // 张伟's own project: him and @acha; 王磊 owns @bei (his channels' work only) and @helper (the whole team's)
+  const home = { id: "c_3", slug: "p-1a2b3c4d", name: "私房菜", topic: "", archived: false, created: T0, private: true, created_by: "u_1",
+    members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 0 };
+  const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, dispatch: "channel" };
+  const helper = { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", dispatch: "team" };
+  const wlMac = { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" };
+  const net = (log: Log, over: Record<string, unknown> = {}, tasks: any[] = []) => ({
+    ...server(log, {}, tasks),
+    [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home] } },
+    [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, bei, helper] } },
+    [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac, wlMac] } },
+    [`GET ${URL}/api/v1/channels/c_3/messages?*`]: { body: { messages: [], more: false } },
+    ...over,
+  });
+
+  test("a new channel can be private: only one's own or team-wide agents are offered, and others' say where they run", async () => {
+    const log = newLog();
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); log.created.push(b); return { body: { ...home, id: "c_9", name: b.name } }; },
+    }) });
+    await app.waitFor("id:new-channel");
+    await app.press("id:new-channel");
+    await app.waitFor("id:channel-private-toggle");
+    expect(app.shows("id:pick-a_2")).toBe(true);
+    await app.press("id:channel-private-toggle");
+    await app.waitUntil(() => !app.shows("id:pick-a_2"));
+    expect(app.shows("id:channel-private-note")).toBe(false); // the explanation waits behind its ⓘ
+    await app.press("id:channel-private-info");
+    await app.waitFor("id:channel-private-note");
+    expect(app.shows("text:/服务器管理员仍能接触数据库文件/")).toBe(true);
+    expect(app.shows("id:pick-a_2")).toBe(false); // 王磊's, for his channels only
+    expect(app.shows("id:pick-a_3")).toBe(true);
+    expect(app.shows("text:/运行在王磊的电脑上/")).toBe(true);
+    await app.type("id:channel-name", "私房菜");
+    await app.press("id:pick-a_1");
+    await app.press("id:channel-create");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ name: "私房菜", topic: "", members: [{ kind: "agent", id: "a_1" }], private: true });
+  });
+
+  test("a private channel: a lock, no joining; its members panel keeps others' agents out or says where they run; its creator makes it public", async () => {
+    const log = newLog();
+    const added: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels/c_3/members`]: (r: { body?: string | null }) => { added.push(JSON.parse(r.body!)); return { body: { ...home, members: [...home.members, JSON.parse(r.body!)] } }; },
+      [`PATCH ${URL}/api/v1/channels/c_3`]: (r: { body?: string | null }) => { log.patches.push(JSON.parse(r.body!)); return { body: { ...home, private: false } }; },
+    }) });
+    await app.waitFor("id:channel-p-1a2b3c4d");
+    await app.press("id:channel-p-1a2b3c4d");
+    await app.waitFor("id:header-icon");
+    expect(app.shows("id:join")).toBe(false);
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-publish");
+    await app.press("id:members-add");
+    await app.waitFor("id:members-add-bei-why-info");
+    expect(app.enabled("id:members-add-bei")).toBe(false);
+    expect(app.shows("id:members-add-bei-why-note")).toBe(false);
+    await app.press("id:members-add-bei-why-info");
+    await app.waitFor("text:/只有它的主人能拉进私有频道/");
+    await app.press("id:members-add-helper");
+    await app.waitFor("id:members-host-warning");
+    expect(app.shows("text:/@helper 运行在王磊的电脑上，频道内容会发到那里/")).toBe(true);
+    expect(added.length).toBe(0);
+    await app.press("id:members-host-ok");
+    await app.waitUntil(() => added.length === 1);
+    expect(added[0]).toEqual({ kind: "agent", id: "a_3" });
+    await app.press("id:channel-publish-start");
+    await app.waitFor("id:channel-publish-warning");
+    expect(app.shows("text:/所有历史消息都会对全队可见/")).toBe(true);
+    await app.press("id:channel-publish-ok");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ private: false });
+  });
+
+  test("an agent's owner not in the private channel gets a row without what it is about, and still confirms it", async () => {
+    const log = newLog();
+    const hidden = task({ id: "T-0007", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "pending", tracked: true, redacted: true });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {}, [hidden]) });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:task-T-0007");
+    expect(app.shows("text:私有频道里的任务")).toBe(true);
+    expect(app.shows("text:/@acha · 在一个私有频道里 · 发起人 王磊/")).toBe(true);
+    expect(app.shows("id:task-T-0007-open")).toBe(false);
+    await app.press("id:task-T-0007-confirm");
+    await app.waitUntil(() => log.acts.length === 1);
+    expect(log.acts[0]).toBe("T-0007 confirm");
   });
 });

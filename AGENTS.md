@@ -52,6 +52,20 @@ After changing `app/`, `scripts/check.sh` runs these; what each one is for:
 
 In the PR, say which screens changed, attach or describe the screenshots you looked at, and list anything you could not run.
 
+### Explanations go behind an ⓘ, not under the label
+
+Bad case, repeated (settings pages before #63's fix, then the private channel screens in #69): a label or control
+with a sentence or two of explanation printed under it. A few of those and the screen reads as paragraphs.
+
+- A label or control keeps one short line. Why it exists, what it means, what happens later: put it in the `note`
+  of `Noted` (or `Label` / `Panel`, which take a `note`) in `app/team/ui.tsx`. It shows a small ⓘ that opens the
+  note on press, the same on a phone.
+- An empty state is a word ("没有"), with the explanation in the section label's ⓘ.
+- A disabled row says why in its ⓘ, not in a second line.
+- Text stays on screen only where the person must read it before acting: a confirm step before something that can't
+  be undone or that sends data elsewhere. Keep that to one sentence.
+- When you look at screenshots, count the lines of grey text: more than one under any label is this bad case.
+
 ## Changing the client without running it
 
 Only if `nsh` really can't be installed (`scripts/install-nsh.sh` failed, or a platform it has no build for), client changes are unverified until someone opens the app. Then:

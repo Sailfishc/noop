@@ -69,6 +69,9 @@ export type Task = {
   runs: number; created: number; updated: number; acceptance?: string; mandate?: Mandate | null;
   /** Where it runs: host/owner/name; "" = a general task (or the agent's own repo path). */
   repo?: string;
+  /** A task in a private channel this person is not in (they own its agent and still confirm it): no title, words,
+   * channel or outputs, only who asked, which agent and where it stands. */
+  redacted?: boolean;
   /** What came out of it: its PR first, files from out/, results kept by outside services. */
   outputs?: Output[] | null;
   /** What it waits for while "waiting" (and why it woke, until its next run). */
@@ -136,6 +139,9 @@ export const installCommand = (server: string, code: string) => {
 export const isLoopback = (server: string) => /^https?:\/\/(localhost|127\.|\[::1\]|0\.0\.0\.0)/i.test(server);
 
 export type Channel = { id: string; slug: string; name: string; topic: string; archived: boolean; created: number; members: Member[]; last_seq: number;
+  /** Only its members see it, or that it exists (admins too); its creator may make it public, never the other way. */
+  private?: boolean;
+  created_by?: string;
   /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
   repo?: string;
   /** How the channel works, written by its members; every agent working here reads it. */
@@ -376,6 +382,9 @@ export function createTeam(s: Session) {
       case "channel":
         if (f.channel) channels.update((cs) => upsert(cs, f.channel as Channel));
         break;
+      case "channel_removed": // a private channel this person is no longer in
+        forget(String(f.id));
+        break;
       case "user":
         if (f.user) users.update((us) => upsert(us, f.user as User));
         break;
@@ -404,6 +413,14 @@ export function createTeam(s: Session) {
         }
         break;
     }
+  }
+
+  /** A private channel gone for this person: its messages and tasks too. */
+  function forget(channelId: string) {
+    channels.update((cs) => cs.filter((c) => c.id !== channelId));
+    top.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
+    tasks.update((x) => Object.fromEntries(Object.entries(x).filter(([, v]) => v.channel_id !== channelId)));
+    unread.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
   }
 
   function putTasks(ts: Task[]) {
@@ -605,8 +622,8 @@ export function createTeam(s: Session) {
     return null;
   }
 
-  async function createChannel(name: string, topic: string, members: Member[]): Promise<Reply> {
-    const r = await api("POST", "/api/v1/channels", { name, topic, members });
+  async function createChannel(name: string, topic: string, members: Member[], priv = false): Promise<Reply> {
+    const r = await api("POST", "/api/v1/channels", { name, topic, members, ...(priv ? { private: true } : {}) });
     if (r.ok) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
@@ -620,8 +637,8 @@ export function createTeam(s: Session) {
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
-  /** name, topic, or the default repository (an address; "" clears it). */
-  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string }) {
+  /** name, topic, or the default repository (an address; "" clears it); private: false makes a private channel public. */
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string; private?: false }) {
     const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
@@ -633,7 +650,11 @@ export function createTeam(s: Session) {
   };
   async function removeMember(channelId: string, m: Member) {
     const r = await api("DELETE", `/api/v1/channels/${channelId}/members/${m.kind}/${m.id}`);
-    if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
+    if (r.ok && r.data?.id) {
+      const c = r.data as Channel;
+      if (c.private && m.kind === "user" && m.id === untracked(me)?.id) forget(c.id); // left a private one: it is gone
+      else channels.update((cs) => upsert(cs, c));
+    }
     return r;
   }
 
@@ -790,6 +811,20 @@ export type Metrics = {
 };
 
 /** May this person act on the task as its creator or its agent's owner (admins may too)? */
+/** "#支付后端", or "私房菜（私有）" for a private channel: how a channel is named in a line of text. */
+export const channelLabel = (c: Channel) => (c.private ? L(`${c.name} (private)`, `${c.name}（私有）`) : `#${c.name}`);
+
+/** Who may bring an agent into a private channel: its owner, or anyone when it takes the whole team's work. */
+export const mayBringAgent = (a: Agent, me: User | null) => !!me && (a.owner_id === me.id || a.dispatch === "team");
+/** "王磊的电脑" / "团队电脑「build-01」": where an agent runs, for the line that says a channel's words go there. */
+export function agentHost(t: { machines: () => Machine[]; users: () => User[] }, a: Agent): string {
+  const m = t.machines().find((x) => x.id === a.machine_id);
+  if (!m) return L("no computer yet", "还没有电脑");
+  if (m.team) return L(`the team computer ${m.name}`, `团队电脑「${m.name}」`);
+  const owner = t.users().find((u) => u.id === m.owner_id);
+  return L(`${owner?.name ?? "?"}’s computer`, `${owner?.name ?? "?"}的电脑`);
+}
+
 export const isParty = (t: Task, me: User | null, agent: Agent | undefined) =>
   !!me && (me.id === t.created_by || me.id === t.handler || me.id === agent?.owner_id || me.role === "admin");
 /** Who takes a task that stopped for people (accepts it, decides): the person named, else its creator. */

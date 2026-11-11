@@ -2,8 +2,8 @@
 import { effect, List, Scroll, signal, Text, untracked, View, type JSX } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius, Spinner } from "../ui";
-import { errorOf, isMember, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
+import { alpha, colors, hovered, Icon, radius, Spinner, Toggle } from "../ui";
+import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, growing, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
@@ -44,7 +44,9 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   return (
     <View style={{ flex: 1 }}>
       <Header
-        title={`# ${channel()?.name ?? ""}`}
+        title={channel()?.private ? channel()!.name : `# ${channel()?.name ?? ""}`}
+        icon={channel()?.private ? "lock" : undefined}
+        iconLabel={L("Private channel", "私有频道")}
         subtitle={[channel()?.topic, channel()?.repo ? repoLabel(channel()!.repo!) : ""].filter(Boolean).join(" · ") || undefined}
         back={props.back}
         onBack={props.onBack}
@@ -97,10 +99,13 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
         <If
           when={member()}
           else={
-            <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
-              <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
-              <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
-            </View>
+            // a private channel takes no joining (its members bring people in), and one sees it only when in it
+            <If when={!channel()?.private}>
+              <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
+                <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
+                <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
+              </View>
+            </If>
           }
         >
           <Composer
@@ -134,7 +139,7 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
       <If when={!editing()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.text : colors.muted }}>
-            {repo() ? repoLabel(repo()) : L("None: agents pick a repository when the work needs one.", "没有：需要改代码时，Agent 自己判断用哪个仓库。")}
+            {repo() ? repoLabel(repo()) : L("None", "没有")}
           </Text>
           <Btn small kind="ghost" testID="channel-repo-edit" label={repo() ? L("Change", "更换") : L("Set", "设置")} onPress={() => editing.set(true)} />
         </View>
@@ -279,14 +284,16 @@ function ChannelTriggers(props: { team: Team; channelId: string; agents: Agent[]
   }
   return (
     <View testID="channel-triggers" style={{ gap: 6, paddingTop: 10 }}>
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("TRIGGERS", "触发器")}</Text>
-        <If when={props.agents.length && !adding()}>
+      <Noted
+        testID="channel-triggers-about"
+        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("TRIGGERS", "触发器")}</Text>}
+        note={L("A trigger asks an agent here by itself: on a schedule, when a PR is opened, or on a push.", "触发器会自己去找这里的 Agent 干活：定时、有人开 PR、或者有推送时。")}
+        right={<If when={props.agents.length && !adding()}>
           <Btn small kind="ghost" testID="trigger-add" icon="plus" label={L("Add", "添加")} onPress={() => { agent.set(props.agents[0]?.id ?? ""); adding.set(true); }} />
-        </If>
-      </View>
+        </If>}
+      />
       <If when={!list().length && !adding()}>
-        <Text style={{ fontSize: 12, lineHeight: 17, color: colors.faint }}>{L("None. A trigger asks an agent here by itself: on a schedule, when a PR is opened, or on a push.", "没有。触发器会自己去找这里的 Agent 干活：定时、有人开 PR、或者有推送时。")}</Text>
+        <Text style={{ fontSize: 12, color: colors.faint }}>{L("None", "没有")}</Text>
       </If>
       <Each of={list()} key={(x) => x.id}>
         {(x) => {
@@ -365,10 +372,28 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
       ...t.agents().filter((a) => !isMember(c, "agent", a.id)).map((a) => ({ m: { kind: "agent", id: a.id } as Member, name: a.name, handle: a.handle, agent: a })),
     ];
   };
+  /** Another person's agent waiting to be brought into a private channel, once its host is said. */
+  const confirming = signal<Agent | null>(null);
+  /** Making it public: asked once more, as everyone will read its history. */
+  const publishing = signal(false);
+  const busy = signal(false);
+  const priv = () => !!channel()?.private;
+  const mayBring = (a?: Agent) => !a || !priv() || mayBringAgent(a, t.me());
   async function add(m: Member) {
     error.set("");
+    const a = m.kind === "agent" ? t.agents().find((x) => x.id === m.id) : undefined;
+    if (a && priv() && a.owner_id !== t.me()?.id && confirming()?.id !== a.id) return confirming.set(a);
+    confirming.set(null);
     const r = await t.addMember(props.channelId, m);
     if (!r.ok) error.set(failed(r));
+  }
+  async function publish() {
+    busy.set(true);
+    error.set("");
+    const r = await t.patchChannel(props.channelId, { private: false });
+    busy.set(false);
+    if (!r.ok) return error.set(failed(r));
+    publishing.set(false);
   }
   async function remove(m: Member) {
     error.set("");
@@ -385,7 +410,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
     <View testID="members" style={{ flex: 1, backgroundColor: colors.background }}>
       <Header
         title={L("Members", "成员")}
-        subtitle={`# ${channel()?.name ?? ""}`}
+        subtitle={channel()?.private ? L(`${channel()!.name} (private)`, `${channel()!.name}（私有）`) : `# ${channel()?.name ?? ""}`}
         back={props.back}
         onBack={props.onClose}
         right={
@@ -409,14 +434,41 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
             <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.muted }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>
               <Each of={outside()} key={(o) => `${o.m.kind}:${o.m.id}`}>
                 {(o) => (
-                  <View role="button" testID={`members-add-${o().handle}`} onPress={() => void add(o().m)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingHorizontal: 8, borderRadius: 8 }}>
-                    <Avatar name={o().name} agent={!!o().agent} size={22} />
-                    <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>
-                    <If when={o().agent}>{(a) => <RuntimeBadge runtime={a().runtime} />}</If>
-                    <Icon name="plus" size={14} tint={colors.accent} />
-                  </View>
+                  <If when={mayBring(o().agent)} else={
+                    // a private channel: someone else's agent that takes only its channels' work stays out
+                    <View testID={`members-add-${o().handle}`} accessibilityState={{ disabled: true }} style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 36, paddingHorizontal: 8, opacity: 0.55 }}>
+                      <Avatar name={o().name} agent size={22} />
+                      <View style={{ flex: 1 }}>
+                        <Noted
+                          testID={`members-add-${o().handle}-why`}
+                          label={<Text style={{ flexShrink: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>}
+                          note={L("Only its owner can bring it into a private channel.", "只有它的主人能拉进私有频道。")}
+                        />
+                      </View>
+                    </View>
+                  }>
+                    <View role="button" testID={`members-add-${o().handle}`} onPress={() => void add(o().m)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingHorizontal: 8, borderRadius: 8 }}>
+                      <Avatar name={o().name} agent={!!o().agent} size={22} />
+                      <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>
+                      <If when={o().agent}>{(a) => <RuntimeBadge runtime={a().runtime} />}</If>
+                      <Icon name="plus" size={14} tint={colors.accent} />
+                    </View>
+                  </If>
                 )}
               </Each>
+              <If when={confirming()}>
+                {(a) => (
+                  <View testID="members-host-warning" style={{ gap: 8, margin: 4, padding: 10, borderRadius: 8, backgroundColor: alpha(colors.warn, 0.1) }}>
+                    <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>
+                      {L(`@${a().handle} runs on ${agentHost(t, a())}; this channel's messages go there.`, `@${a().handle} 运行在${agentHost(t, a())}上，频道内容会发到那里。`)}
+                    </Text>
+                    <View style={{ flexDirection: "row", gap: 6 }}>
+                      <Btn small kind="primary" testID="members-host-ok" label={L("Bring it in", "拉进来")} onPress={() => void add({ kind: "agent", id: a().id })} />
+                      <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => confirming.set(null)} />
+                    </View>
+                  </View>
+                )}
+              </If>
             </If>
           </View>
         </If>
@@ -465,6 +517,27 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
               </View>
             )}
           </Each>
+        </If>
+        <If when={priv() && channel()?.created_by === t.me()?.id}>
+          <View testID="channel-publish" style={{ gap: 6, paddingTop: 16 }}>
+            <Noted
+              testID="channel-publish-about"
+              label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("PRIVATE CHANNEL", "私有频道")}</Text>}
+              note={L("Only its members see it, admins included. When the team should, make it public; its history comes along.", "只有成员看得到，管理员也一样。该给团队看时转为公开，历史都在。")}
+              right={<If when={!publishing()}><Btn small testID="channel-publish-start" label={L("Make public", "转为公开")} onPress={() => publishing.set(true)} /></If>}
+            />
+            <If when={publishing()}>
+              <View style={{ gap: 8, padding: 10, borderRadius: 8, backgroundColor: alpha(colors.warn, 0.1) }}>
+                <Text testID="channel-publish-warning" style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>
+                  {L("Its whole history becomes visible to the team, for good.", "所有历史消息都会对全队可见，不能再转回私有。")}
+                </Text>
+                <View style={{ flexDirection: "row", gap: 6 }}>
+                  <Btn small kind="danger" testID="channel-publish-ok" label={L("Make it public", "确认转为公开")} busy={busy()} onPress={() => void publish()} />
+                  <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => publishing.set(false)} />
+                </View>
+              </View>
+            </If>
+          </View>
         </If>
       </Scroll>
     </View>
@@ -549,13 +622,17 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
   const name = signal("");
   const topic = signal("");
   const picked = signal<Member[]>([]);
+  /** Private: only its members see it. Then only agents one may bring (one's own, or the team's) are offered, and
+   * another person's says where it runs: what is said there goes to that computer. */
+  const priv = signal(false);
   const error = signal("");
   const busy = signal(false);
   const others = () => {
     const me = t.me();
     return [
-      ...t.users().filter((u) => !u.disabled && u.id !== me?.id).map((u) => ({ m: { kind: "user", id: u.id } as Member, label: `${u.name} @${u.handle}`, agent: false })),
-      ...t.agents().map((a) => ({ m: { kind: "agent", id: a.id } as Member, label: `${a.name} @${a.handle}`, agent: true })),
+      ...t.users().filter((u) => !u.disabled && u.id !== me?.id).map((u) => ({ m: { kind: "user", id: u.id } as Member, label: `${u.name} @${u.handle}`, note: "", agent: false })),
+      ...t.agents().filter((a) => !priv() || mayBringAgent(a, me)).map((a) => ({ m: { kind: "agent", id: a.id } as Member, label: `${a.name} @${a.handle}`,
+        note: priv() && a.owner_id !== me?.id ? L(`runs on ${agentHost(t, a)}`, `运行在${agentHost(t, a)}上`) : "", agent: true })),
     ];
   };
   const has = (m: Member) => picked().some((x) => x.kind === m.kind && x.id === m.id);
@@ -563,7 +640,8 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
     if (!name().trim() || busy()) return;
     busy.set(true);
     error.set("");
-    const r = await t.createChannel(name().trim(), topic().trim(), picked());
+    const offered = new Set(others().map((o) => `${o.m.kind}:${o.m.id}`));
+    const r = await t.createChannel(name().trim(), topic().trim(), picked().filter((m) => offered.has(`${m.kind}:${m.id}`)), priv());
     busy.set(false);
     if (!r.ok) return error.set(r.status === 0 ? unreachable(t.url, r.error) : errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     props.onCreated(r.data.id);
@@ -574,6 +652,13 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 20, gap: 16, maxWidth: 560 }}>
         <Field label={L("Name", "名称")} value={name()} onChange={(v) => name.set(v)} placeholder={L("payments-backend", "支付后端")} testID="channel-name" autoFocus />
         <Field label={L("What it’s for (optional)", "做什么的（可选）")} value={topic()} onChange={(v) => topic.set(v)} testID="channel-topic" />
+        <Noted
+          testID="channel-private"
+          label={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{L("Private", "私有频道")}</Text>}
+          note={L("Only its members see it in Remi, admins included; whoever runs the server can still get at the database file. It can be made public later, never private again.",
+            "只有成员能在 Remi 里看到，管理员也一样；服务器管理员仍能接触数据库文件。以后可以转为公开，公开后不能再转回私有。")}
+          right={<Toggle testID="channel-private-toggle" value={priv()} label={L("Private channel", "私有频道")} onChange={(v) => priv.set(v)} />}
+        />
         <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{L("Members", "成员")}</Text>
         <View style={{ gap: 4 }}>
           <Each of={others()} key={(o) => `${o.m.kind}:${o.m.id}`}>
@@ -591,12 +676,15 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
                 </View>
                 <Avatar name={o().label} agent={o().agent} size={24} />
                 <Text style={{ fontSize: 14.5, color: colors.text }}>{o().label}</Text>
+                <If when={o().note}>
+                  <Text testID={`pick-${o().m.id}-host`} style={{ flex: 1, fontSize: 12.5, color: colors.warn, numberOfLines: 1 }}>{o().note}</Text>
+                </If>
               </View>
             )}
           </Each>
         </View>
         <ErrorNote text={error()} testID="channel-error" />
-        <Btn testID="channel-create" kind="primary" label={L("Create channel", "创建频道")} busy={busy()} disabled={!name().trim()} onPress={create} />
+        <Btn testID="channel-create" kind="primary" label={priv() ? L("Create private channel", "创建私有频道") : L("Create channel", "创建频道")} busy={busy()} disabled={!name().trim()} onPress={create} />
       </Scroll>
     </View>
   );

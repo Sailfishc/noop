@@ -10,8 +10,10 @@ import (
 	"unicode/utf8"
 )
 
-// Channels, threads and messages. Every channel is visible to everyone in the workspace (≤ 10 people); posting
-// needs membership. A message with thread_id is a reply in that top-level message's thread. Agents post through
+// Channels, threads and messages. A public channel is visible to everyone in the workspace (≤ 10 people); posting
+// needs membership. A private channel (and everything in it: messages, threads, tasks, outputs, triggers, search hits,
+// live frames) is visible to its members only, admins included: canRead is the one rule, and every way out goes
+// through it (teamprivate_test.go knocks on each as an outsider). A message with thread_id is a reply in that top-level message's thread. Agents post through
 // their machine's token.
 
 type member struct {
@@ -27,17 +29,20 @@ type channelView struct {
 	Repo  string `json:"repo"` // its usual repository, a hint for agents: host/owner/name, "" = none
 	// Conventions: how this channel works ("PR 标题用中文", "发布前在 #ops 说一声"): every agent working here reads
 	// them; the channel's members edit them.
-	Conventions string   `json:"conventions"`
-	Archived    bool     `json:"archived"`
-	Created     int64    `json:"created"`
-	Members     []member `json:"members"`
-	LastSeq     int64    `json:"last_seq"`
+	Conventions string `json:"conventions"`
+	// Private: only its members see it, or that it exists; only its creator (CreatedBy) may make it public
+	Private   bool     `json:"private"`
+	CreatedBy string   `json:"created_by"`
+	Archived  bool     `json:"archived"`
+	Created   int64    `json:"created"`
+	Members   []member `json:"members"`
+	LastSeq   int64    `json:"last_seq"`
 }
 
 func (h *Hub) channel(id string) (channelView, bool) {
 	var c channelView
-	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
-		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Archived, &c.Created)
+	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, private, COALESCE(created_by, ''), archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Private, &c.CreatedBy, &c.Archived, &c.Created)
 	if err != nil {
 		return c, false
 	}
@@ -67,13 +72,42 @@ func (h *Hub) isMember(channelID, kind, id string) bool {
 	return h.count("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND kind = ? AND member_id = ?", channelID, kind, id) == 1
 }
 
-// canRead: people read every channel; a machine reads the channels one of its agents is in.
+// canRead: a person reads every public channel and the private ones they are in; a machine reads the channels one of
+// its agents is in.
 func (h *Hub) canRead(w *principal, channelID string) bool {
 	if w.machineID == "" {
-		return true
+		return h.userCanRead(w.userID, channelID)
 	}
 	return h.count(`SELECT COUNT(*) FROM channel_members cm JOIN agents a ON a.id = cm.member_id
 		WHERE cm.channel_id = ? AND cm.kind = 'agent' AND a.machine_id = ?`, channelID, w.machineID) > 0
+}
+
+// userCanRead: the person sees the channel: it is public, or they are in it.
+func (h *Hub) userCanRead(userID, channelID string) bool {
+	return h.count(`SELECT COUNT(*) FROM channels c WHERE c.id = ? AND (c.private = 0 OR EXISTS (SELECT 1 FROM channel_members cm
+		WHERE cm.channel_id = c.id AND cm.kind = 'user' AND cm.member_id = ?))`, channelID, userID) > 0
+}
+
+// isPrivate: the channel is private.
+func (h *Hub) isPrivate(channelID string) bool {
+	return h.count("SELECT COUNT(*) FROM channels WHERE id = ? AND private = 1", channelID) > 0
+}
+
+// memberOrAdmin: in the channel, or an admin (who may act on a public channel without joining it; not on a private one).
+func (h *Hub) memberOrAdmin(channelID, userID string) bool {
+	return h.isMember(channelID, "user", userID) || (h.isAdmin(userID) && !h.isPrivate(channelID))
+}
+
+// readableBy: an SQL condition on col (a channel id): the person sees that channel. With its arguments.
+func readableBy(col, userID string) (string, []any) {
+	return col + ` IN (SELECT c.id FROM channels c WHERE c.private = 0 OR EXISTS (SELECT 1 FROM channel_members cm
+		WHERE cm.channel_id = c.id AND cm.kind = 'user' AND cm.member_id = ?))`, []any{userID}
+}
+
+// mayBringAgent: who may put an agent into a private channel: its owner, or anyone when it takes work from the whole
+// team (its dispatch scope). Others' agents are left out: what is said there reaches the computer it runs on.
+func (h *Hub) mayBringAgent(userID string, a agentView) bool {
+	return a.OwnerID == userID || a.Dispatch == "team"
 }
 
 // ---------------------------------------------------------------- live updates
@@ -109,9 +143,17 @@ func (h *Hub) broadcastChannel(channelID string, frame obj) {
 
 func (h *Hub) channelChanged(id string) {
 	if c, ok := h.channel(id); ok {
-		h.broadcastPeople(obj{"type": "channel", "channel": c})
+		if !c.Private { // a private one: its members only (and its agents' machines)
+			h.broadcastPeople(obj{"type": "channel", "channel": c})
+		}
 		h.broadcastChannel(id, obj{"type": "channel", "channel": c}) // machines too (people get it twice; it is idempotent)
 	}
+}
+
+// channelRemoved tells a person a private channel is gone for them (they left, or were taken out).
+func (h *Hub) channelRemoved(channelID, userID string) {
+	b, _ := json.Marshal(obj{"type": "channel_removed", "id": channelID})
+	h.socks.send("u:"+userID, b)
 }
 
 // v1Stream: one socket per client. People get {type: message|message_edited|channel|user|agent|machine, …};
@@ -184,6 +226,7 @@ func (h *Hub) v1ChannelCreate(w http.ResponseWriter, q *request) {
 		Name    string   `json:"name"`
 		Topic   string   `json:"topic"`
 		Members []member `json:"members"`
+		Private bool     `json:"private"`
 	}
 	_ = q.json(&b)
 	name := trimmed(b.Name, 40)
@@ -192,7 +235,11 @@ func (h *Hub) v1ChannelCreate(w http.ResponseWriter, q *request) {
 		return
 	}
 	slug := strings.ToLower(strings.TrimSpace(b.Slug))
-	if slug == "" {
+	if b.Private {
+		// slugs are unique across the team: one made from the name (or chosen) would let others find out by its clash
+		for slug = "p-" + randHex(4); h.count("SELECT COUNT(*) FROM channels WHERE slug = ?", slug) > 0; slug = "p-" + randHex(4) {
+		}
+	} else if slug == "" {
 		slug = strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(name), "-"), "-")
 		if slug == "" || h.count("SELECT COUNT(*) FROM channels WHERE slug = ?", slug) > 0 {
 			slug = "ch-" + randHex(3) // a Chinese name, or taken
@@ -211,10 +258,16 @@ func (h *Hub) v1ChannelCreate(w http.ResponseWriter, q *request) {
 			errJSON(w, 400, "没有这个成员："+m.Kind+" "+m.ID)
 			return
 		}
+		if b.Private && m.Kind == "agent" {
+			if a, _ := h.agent(m.ID); !h.mayBringAgent(q.who.userID, a) {
+				errJSON(w, 403, "@"+a.Handle+" 不接整个团队的活，只有它的主人能把它拉进私有频道")
+				return
+			}
+		}
 	}
 	id := newID("c_")
-	h.must(h.db.Exec("INSERT INTO channels (id, slug, name, topic, created_by, created) VALUES (?, ?, ?, ?, ?, ?)",
-		id, slug, name, trimmed(b.Topic, 500), q.who.userID, h.nowMs()))
+	h.must(h.db.Exec("INSERT INTO channels (id, slug, name, topic, private, created_by, created) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		id, slug, name, trimmed(b.Topic, 500), boolInt(b.Private), q.who.userID, h.nowMs()))
 	h.addMember(id, member{"user", q.who.userID})
 	for _, m := range b.Members {
 		h.addMember(id, m)
@@ -249,11 +302,11 @@ func (h *Hub) v1Channel(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.r.PathValue("id"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "not found")
 		return
 	}
-	if !h.isMember(c.ID, "user", q.who.userID) && !h.isAdmin(q.who.userID) {
+	if !h.memberOrAdmin(c.ID, q.who.userID) {
 		errJSON(w, 403, "先加入这个频道")
 		return
 	}
@@ -264,8 +317,22 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 		Archived *bool   `json:"archived"`
 		// Conventions: up to 4000 characters
 		Conventions *string `json:"conventions"`
+		// Private: false makes a private channel public (its creator only; there is no way back)
+		Private *bool `json:"private"`
 	}
 	_ = q.json(&b)
+	madePublic := false
+	if b.Private != nil && *b.Private != c.Private {
+		if *b.Private {
+			errJSON(w, 400, "公开频道不能转成私有：大家已经看过了。要私下聊，新建一个私有频道")
+			return
+		}
+		if c.CreatedBy != q.who.userID {
+			errJSON(w, 403, "只有创建这个频道的人能把它转为公开")
+			return
+		}
+		madePublic = true
+	}
 	if b.Conventions != nil {
 		if utf8.RuneCountInString(strings.TrimSpace(*b.Conventions)) > maxConventions {
 			errJSON(w, 400, "频道约定最多 4000 字")
@@ -292,15 +359,19 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 	if b.Archived != nil {
 		h.must(h.db.Exec("UPDATE channels SET archived = ? WHERE id = ?", *b.Archived, c.ID))
 	}
+	if madePublic { // its history, tasks and members stay; everyone hears of it as of a new channel (channelChanged)
+		h.must(h.db.Exec("UPDATE channels SET private = 0 WHERE id = ?", c.ID))
+	}
 	h.channelChanged(c.ID)
 	c, _ = h.channel(c.ID)
 	writeJSON(w, 200, c)
 }
 
-// v1MemberAdd: a person joins, or a member adds another person or any agent.
+// v1MemberAdd: a person joins, or a member adds another person or any agent. A private channel: no joining, its members
+// bring people in, and agents only as mayBringAgent says.
 func (h *Hub) v1MemberAdd(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.r.PathValue("id"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "not found")
 		return
 	}
@@ -318,28 +389,44 @@ func (h *Hub) v1MemberAdd(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "没有这个成员")
 		return
 	}
+	if c.Private && m.Kind == "agent" {
+		if a, _ := h.agent(m.ID); !h.mayBringAgent(q.who.userID, a) {
+			errJSON(w, 403, "@"+a.Handle+" 不接整个团队的活，只有它的主人能把它拉进私有频道")
+			return
+		}
+	}
 	h.addMember(c.ID, m)
 	h.channelChanged(c.ID)
 	c, _ = h.channel(c.ID)
 	writeJSON(w, 200, c)
 }
 
-// v1MemberRemove: anyone leaves; a member removes an agent; the agent's owner or an admin removes anyone.
+// v1MemberRemove: anyone leaves; a member removes an agent; an admin removes anyone (from a private channel only when
+// in it). A private channel its last person leaves is archived.
 func (h *Hub) v1MemberRemove(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.r.PathValue("id"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "not found")
 		return
 	}
 	m := member{q.r.PathValue("kind"), q.r.PathValue("member")}
 	self := m.Kind == "user" && m.ID == q.who.userID
-	allowed := self || h.isAdmin(q.who.userID) || (m.Kind == "agent" && h.isMember(c.ID, "user", q.who.userID))
+	inIt := h.isMember(c.ID, "user", q.who.userID)
+	allowed := self || (m.Kind == "agent" && inIt) || (h.isAdmin(q.who.userID) && (inIt || !c.Private))
 	if !allowed {
 		errJSON(w, 403, "forbidden")
 		return
 	}
 	h.channelChanged(c.ID) // before: the removed member hears it too
 	h.must(h.db.Exec("DELETE FROM channel_members WHERE channel_id = ? AND kind = ? AND member_id = ?", c.ID, m.Kind, m.ID))
+	if c.Private {
+		if m.Kind == "user" {
+			h.channelRemoved(c.ID, m.ID)
+		}
+		if h.count("SELECT COUNT(*) FROM channel_members WHERE channel_id = ? AND kind = 'user'", c.ID) == 0 {
+			h.must(h.db.Exec("UPDATE channels SET archived = 1 WHERE id = ?", c.ID)) // nobody left who could see it
+		}
+	}
 	h.channelChanged(c.ID)
 	c, _ = h.channel(c.ID)
 	writeJSON(w, 200, c)
@@ -499,7 +586,7 @@ func (h *Hub) v1Thread(w http.ResponseWriter, q *request) {
 // v1Post: a person posts as themselves; a machine posts as one of its agents ({as_agent}). Both must be in the channel.
 func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.r.PathValue("id"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "not found")
 		return
 	}
@@ -610,7 +697,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 
 func (h *Hub) v1Edit(w http.ResponseWriter, q *request) {
 	m, ok := h.message(q.r.PathValue("id"))
-	if !ok {
+	if !ok || !h.canRead(q.who, m.ChannelID) {
 		errJSON(w, 404, "not found")
 		return
 	}

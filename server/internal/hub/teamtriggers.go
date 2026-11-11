@@ -108,11 +108,11 @@ func (h *Hub) triggerChanged(t triggerView, removed bool) {
 // v1Triggers: a channel's triggers (?channel=…), for its members.
 func (h *Hub) v1Triggers(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.query("channel"))
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "没有这个频道")
 		return
 	}
-	if !h.isMember(c.ID, "user", q.who.userID) && !h.isAdmin(q.who.userID) {
+	if !h.memberOrAdmin(c.ID, q.who.userID) {
 		errJSON(w, 403, "先加入这个频道")
 		return
 	}
@@ -143,7 +143,7 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 		perDay = *b.MaxPerDay
 	}
 	c, ok := h.channel(b.ChannelID)
-	if !ok {
+	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "没有这个频道")
 		return
 	}
@@ -202,6 +202,10 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	var confirmed any
 	if me == a.OwnerID || !a.Confirm {
 		confirmed = me
+	} else if c.Private && !h.isMember(c.ID, "user", a.OwnerID) {
+		// its owner would have to confirm it in the channel's triggers, which they cannot see
+		errJSON(w, 403, "@"+a.Handle+" 的主人不在这个私有频道里，没法确认触发器；请主人进来，或换一个 Agent")
+		return
 	}
 	id := newID("trg_")
 	h.must(h.db.Exec("INSERT INTO triggers (id, channel_id, agent_id, created_by, kind, text, repeat, due, repo, branch, confirmed_by, created, max_per_day) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -240,6 +244,10 @@ func (h *Hub) mayManageTrigger(w http.ResponseWriter, q *request) (triggerView, 
 	}
 	a, _ := h.agent(t.AgentID)
 	me := q.who.userID
+	if !h.userCanRead(me, t.ChannelID) { // a private channel's triggers: its members only
+		errJSON(w, 404, "not found")
+		return t, a, false
+	}
 	if me != t.CreatedBy && me != a.OwnerID && !h.isAdmin(me) {
 		errJSON(w, 403, "只有设置它的人、Agent 的主人或管理员能改")
 		return t, a, false

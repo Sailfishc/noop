@@ -15,7 +15,13 @@ import (
 //     the wrong way and the only fix was to start over.
 //
 // And per agent: how many tasks it got and from how many people, which shows whether people go to a shared team
-// agent or to their own. All of it is read from what tasks already record (task_events, runs, cancelled_at).
+// agent or to their own. All of it is read from what tasks already record (task_events, runs, cancelled_at). Tasks in
+// private channels are left out: the page is the whole team's, and who uses which agent there is nobody else's business.
+
+// notPrivate: tasks outside private channels (an SQL condition on a tasks_v1 alias).
+func notPrivate(alias string) string {
+	return alias + ".channel_id NOT IN (SELECT id FROM channels WHERE private = 1)"
+}
 
 // redoWindow: a task asked within this long after the same person cancelled one in the same channel counts as a redo.
 const redoWindow = 24 * time.Hour
@@ -85,7 +91,7 @@ func (h *Hub) metrics(days int) metricsView {
 		at                  int64
 	}
 	rows, err := h.db.Query(`SELECT e.task_id, e.at, e.status, e.needs FROM task_events e JOIN tasks_v1 t ON t.id = e.task_id
-		WHERE t.created >= ? OR e.at >= ? ORDER BY e.task_id, e.at, e.rowid`, since, since)
+		WHERE (t.created >= ? OR e.at >= ?) AND `+notPrivate("t")+` ORDER BY e.task_id, e.at, e.rowid`, since, since)
 	if err != nil {
 		panic(err)
 	}
@@ -124,7 +130,7 @@ func (h *Hub) metrics(days int) metricsView {
 
 	// runs per tracked task
 	runs := []int64{}
-	rows, err = h.db.Query("SELECT runs FROM tasks_v1 WHERE tracked = 1 AND runs > 0 AND created >= ? ORDER BY runs", since)
+	rows, err = h.db.Query("SELECT runs FROM tasks_v1 t WHERE tracked = 1 AND runs > 0 AND created >= ? AND "+notPrivate("t")+" ORDER BY runs", since)
 	if err != nil {
 		panic(err)
 	}
@@ -146,7 +152,7 @@ func (h *Hub) metrics(days int) metricsView {
 	// cancelled, and asked again
 	rows, err = h.db.Query(`SELECT c.id, EXISTS (SELECT 1 FROM tasks_v1 n WHERE n.created_by = c.created_by AND n.channel_id = c.channel_id
 		AND n.id != c.id AND n.created >= c.cancelled_at AND n.created < c.cancelled_at + ?)
-		FROM tasks_v1 c WHERE c.cancelled_at IS NOT NULL AND c.cancelled_at >= ?`, redoWindow.Milliseconds(), since)
+		FROM tasks_v1 c WHERE c.cancelled_at IS NOT NULL AND c.cancelled_at >= ? AND `+notPrivate("c"), redoWindow.Milliseconds(), since)
 	if err != nil {
 		panic(err)
 	}
@@ -164,7 +170,7 @@ func (h *Hub) metrics(days int) metricsView {
 	// per agent
 	rows, err = h.db.Query(`SELECT a.id, COUNT(t.id), COUNT(DISTINCT t.created_by), COALESCE(SUM(t.created_by != a.owner_id), 0),
 		a.dispatch = 'team' AND a.confirm = 0, COALESCE(m.name, '')
-		FROM agents a LEFT JOIN tasks_v1 t ON t.agent_id = a.id AND t.created >= ? LEFT JOIN machines m ON m.id = a.machine_id
+		FROM agents a LEFT JOIN tasks_v1 t ON t.agent_id = a.id AND t.created >= ? AND `+notPrivate("t")+` LEFT JOIN machines m ON m.id = a.machine_id
 		GROUP BY a.id ORDER BY COUNT(t.id) DESC, a.handle`, since)
 	if err != nil {
 		panic(err)

@@ -117,7 +117,7 @@ func (h *Hub) v1AgentHandoff(w http.ResponseWriter, q *request) {
 		return
 	}
 	if target.Kind == "user" {
-		if !h.isMember(t.ChannelID, "user", target.ID) && !h.isAdmin(target.ID) {
+		if !h.memberOrAdmin(t.ChannelID, target.ID) {
 			errJSON(w, 400, "@"+target.Handle+" 不在这个频道里")
 			return
 		}
@@ -185,7 +185,12 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 	to, okTo := h.agent(x.To)
 	me := q.who.userID
 	from, _ := h.agent(t.AgentID)
-	if me != t.CreatedBy && me != t.Handler && me != from.OwnerID && me != to.OwnerID && !h.isAdmin(me) {
+	reads := h.userCanRead(me, t.ChannelID)
+	if !reads && me != t.CreatedBy && me != t.Handler && me != from.OwnerID && me != to.OwnerID {
+		errJSON(w, 404, "not found")
+		return
+	}
+	if me != t.CreatedBy && me != t.Handler && me != from.OwnerID && me != to.OwnerID && !(h.isAdmin(me) && reads) {
 		errJSON(w, 403, "只有发起人、处理人或两个 Agent 的主人能决定交接")
 		return
 	}
@@ -205,7 +210,7 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 		h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", me}, "不用交给 @"+to.Handle)
 		h.taskChanged(t.ID)
 		t, _ = h.task(t.ID)
-		writeJSON(w, 200, t)
+		writeJSON(w, 200, h.taskOut(q, t))
 		return
 	}
 	if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? AND state NOT IN ('done', 'closed')", t.ThreadID, to.ID) > 0 {
@@ -231,7 +236,7 @@ func (h *Hub) v1TaskHandoff(w http.ResponseWriter, q *request) {
 	h.setTask(t.ID, map[string]any{"handoffs": jsonOrNil(t.Handoffs)})
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, h.taskOut(q, t))
 }
 
 // v1AgentSubmit: `remi submit WHAT` before each submission to an outside service (a deployment, a render, a form):

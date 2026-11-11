@@ -3,7 +3,7 @@
 import { cleanup, Scroll, signal, Text, View } from "nsh";
 import { L } from "../i18n";
 import { colors, hovered, Icon, Spinner } from "../ui";
-import type { Message, Task, Team } from "./api";
+import { channelLabel, type Message, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { authorOf, Avatar, Field, Header, time } from "./ui";
 
@@ -27,7 +27,7 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
       found.set(r ?? { messages: [], tasks: [] });
     }, 300);
   }
-  const channelName = (id: string) => t.channels().find((c) => c.id === id)?.name ?? "";
+  const channelName = (id: string) => { const c = t.channels().find((x) => x.id === id); return c ? channelLabel(c) : ""; };
   const nothing = () => !!found() && !found()!.messages.length && !found()!.tasks.length;
   return (
     <View style={{ flex: 1 }}>
@@ -56,7 +56,7 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
                 <Icon name="lists" size={15} tint={colors.muted} />
                 <Text style={{ fontSize: 13, color: colors.faint }}>{x().id}</Text>
                 <Text style={{ flex: 1, fontSize: 14.5, color: colors.text, numberOfLines: 1 }}>{x().title}</Text>
-                <Text style={{ fontSize: 12.5, color: colors.muted }}>{STATUS[statusOf(x().state).status].label()} · #{channelName(x().channel_id)}</Text>
+                <Text style={{ fontSize: 12.5, color: colors.muted }}>{STATUS[statusOf(x().state).status].label()} · {channelName(x().channel_id)}</Text>
               </View>
             )}
           </Each>
@@ -77,7 +77,7 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
                   <Avatar name={a().name} agent={a().agent} size={28} />
                   <View style={{ flex: 1, gap: 3 }}>
                     <Text style={{ fontSize: 12.5, color: colors.faint }}>
-                      {`#${channelName(m().channel_id)}${m().thread_id ? L(" · in a thread", " · 线程里") : ""} · ${a().name} · ${time(m().created)}`}
+                      {`${channelName(m().channel_id)}${m().thread_id ? L(" · in a thread", " · 线程里") : ""} · ${a().name} · ${time(m().created)}`}
                     </Text>
                     <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.text, numberOfLines: 3 }}>{m().text || L("(a file)", "（文件）")}</Text>
                   </View>
