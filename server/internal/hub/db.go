@@ -162,8 +162,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN check_confirmed TEXT NOT NULL DEFAULT ''", // the command its agent's owner confirmed (another one waits again)
 		"ALTER TABLE triggers ADD COLUMN check_pending INTEGER NOT NULL DEFAULT 0", // a check sent to a computer and not answered yet (when)
 		"ALTER TABLE triggers ADD COLUMN check_machine TEXT NOT NULL DEFAULT ''",   // the computer it was sent to
-		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",
-		"ALTER TABLE users ADD COLUMN digest TEXT NOT NULL DEFAULT ''", // 「提案什么时候给我」, the person's own (teamproposals.go)                                // its thread's first message, not posted until the agent first speaks (teamduties.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",                                // its thread's first message, not posted until the agent first speaks (teamduties.go)
+		"ALTER TABLE users ADD COLUMN digest TEXT NOT NULL DEFAULT ''",             // 「提案什么时候给我」, the person's own (teamproposals.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err

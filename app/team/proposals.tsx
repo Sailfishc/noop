@@ -52,8 +52,8 @@ export function ProposalCard(props: { team: Team; batch: ProposalBatch }) {
         <Noted
           testID={`proposals-${b().id}-numbers`}
           label={<Txt variant="caption" tone="muted">{L("Answer by number", "按编号回答")}</Txt>}
-          note={L("\"1 3\" does 1 and 3 and leaves the rest on the card; \"1 3 其余不做\" also turns the rest down. What you leave goes away after 7 days.",
-            "「1 3」做第 1、3 条，其余留在卡片上；「1 3 其余不做」把剩下的都拒掉。没动的 7 天后消失。")}
+          note={L("\"1 3\" does 1 and 3 and leaves the rest on the card; \"1 3 其余不做\" also turns the rest down. Numbers only mean do. What stays on the card 7 days goes away.",
+            "「1 3」做第 1、3 条，其余留在卡片上；「1 3 其余不做」把剩下的都拒掉。编号只表示做。在卡片上 7 天没动的会消失。")}
         />
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Field grow small value={text()} onChange={(v) => text.set(v)} onSubmit={() => void send()} placeholder={L("1 3 rest no", "1 3 其余不做")} testID={`proposals-${b().id}-text`} />

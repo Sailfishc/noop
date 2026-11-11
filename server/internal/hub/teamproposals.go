@@ -382,14 +382,15 @@ func (h *Hub) proposalsChanged(userID string) {
 	h.socks.send("u:"+userID, b)
 }
 
-// tickProposals: a week-old proposal goes away; urgent ones outside quiet hours come now; at a person's time, what
+// tickProposals: a proposal a week on its card goes away (one still waiting for its card does not: it waits at most
+// one period, or an urgent one the quiet hours); urgent ones outside quiet hours come now; at a person's time, what
 // came in before it goes onto one card. Tick calls it (with h.mu held).
 func (h *Hub) tickProposals() {
 	now := h.now()
 	ms := now.UnixMilli()
 	old := ms - proposalsLast.Milliseconds()
 	var gone []string
-	rows, err := h.db.Query("SELECT DISTINCT user_id FROM proposals WHERE state IN (?, ?) AND created < ?", propWaiting, propOpen, old)
+	rows, err := h.db.Query("SELECT DISTINCT user_id FROM proposals WHERE state = ? AND delivered < ?", propOpen, old)
 	if err != nil {
 		panic(err)
 	}
@@ -400,7 +401,7 @@ func (h *Hub) tickProposals() {
 	}
 	rows.Close()
 	if len(gone) > 0 {
-		h.must(h.db.Exec("UPDATE proposals SET state = ?, answered = ? WHERE state IN (?, ?) AND created < ?", propExpired, ms, propWaiting, propOpen, old))
+		h.must(h.db.Exec("UPDATE proposals SET state = ?, answered = ? WHERE state = ? AND delivered < ?", propExpired, ms, propOpen, old))
 		for _, u := range gone {
 			h.proposalsChanged(u)
 		}
@@ -524,6 +525,9 @@ func (h *Hub) v1ProposalAnswer(w http.ResponseWriter, q *request) {
 var restNoRE = regexp.MustCompile(`(?i)(其余|其他|剩下的?)(都)?不做|rest\s*no|others?\s*no`)
 var numRE = regexp.MustCompile(`\d+`)
 
+// noRE: a "no" that is not "the rest no" ("2 不做", "不做 2"): numbers only ever mean 做, so this is refused.
+var noRE = regexp.MustCompile(`(?i)不做|不要|\bno\b|\bdon'?t\b`)
+
 // v1ProposalBatchAnswer: {text}: "1 3" does those and leaves the rest; "1 3 其余不做" declines the rest of the card.
 func (h *Hub) v1ProposalBatchAnswer(w http.ResponseWriter, q *request) {
 	me := q.who.userID
@@ -557,6 +561,10 @@ func (h *Hub) v1ProposalBatchAnswer(w http.ResponseWriter, q *request) {
 		}
 	}
 	rest := restNoRE.MatchString(b.Text)
+	if noRE.MatchString(restNoRE.ReplaceAllString(b.Text, "")) {
+		errJSON(w, 400, "编号只表示「做」。不做的点那一行的「不做」，或者写「1 3 其余不做」")
+		return
+	}
 	if len(nums) == 0 && !rest {
 		errJSON(w, 400, "写要做的编号，比如 1 3；加「其余不做」把剩下的都拒掉")
 		return

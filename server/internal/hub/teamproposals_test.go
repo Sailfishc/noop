@@ -56,6 +56,11 @@ func TestProposalsBatchAndAnswer(t *testing.T) {
 	check(t, "someone else's card is not there for them", e.do("POST", "/api/v1/proposal-batches/"+batch+"/answer", e.wl.session, map[string]any{"text": "1"}).status == 404)
 	check(t, "a number not on the card", e.do("POST", "/api/v1/proposal-batches/"+batch+"/answer", e.zw.session, map[string]any{"text": "4"}).status == 400)
 
+	for _, no := range []string{"2 不做", "不做 2", "1 3 2 no", "1, don't 2"} {
+		r = e.do("POST", "/api/v1/proposal-batches/"+batch+"/answer", e.zw.session, map[string]any{"text": no})
+		check(t, no+": numbers only mean 做, so it is refused and nothing starts", r.status == 400 && strings.Contains(string(r.raw), "其余不做") &&
+			e.h.count("SELECT COUNT(*) FROM proposals WHERE state = 'open'") == 3, r)
+	}
 	r = e.do("POST", "/api/v1/proposal-batches/"+batch+"/answer", e.zw.session, map[string]any{"text": "1 3"})
 	done := r.body["done"].([]any)
 	check(t, "1 3: two tasks", r.status == 200 && len(done) == 2, r)
@@ -140,6 +145,26 @@ func TestProposalsUrgentQuietAndExpiry(t *testing.T) {
 	e.advance(8 * 24 * time.Hour)
 	e.h.Tick()
 	check(t, "a week later the untouched ones are gone", len(e.cards(e.zw.session)) == 0)
+}
+
+func TestProposalsWeeklyExpireAWeekOnTheCard(t *testing.T) {
+	e := newTaskEnv(t, "channel", false) // Sunday 2026-11-08 04:00 UTC
+	check(t, "weekly", e.do("PATCH", "/api/v1/users/"+e.zw.id, e.zw.session, map[string]any{"digest": map[string]any{"every": "weekly"}}).status == 200)
+	e.advance(30 * time.Hour) // Monday 10:00, just after this week's card
+	_, tok, _ := e.claimed("@acha 每周看看")
+	e.propose(tok, "整理过期的 issue", "issues-weekly", false)
+	e.h.Tick()
+	check(t, "it waits for next Monday", len(e.cards(e.zw.session)) == 0)
+	e.advance(7 * 24 * time.Hour) // next Monday 10:00: a week since it was made
+	e.h.Tick()
+	cs := e.cards(e.zw.session)
+	check(t, "a week old, but it only now reaches the card: there", len(cs) == 1 && fmt.Sprint(cardTitles(cs[0])) == "[1 整理过期的 issue]", resp{raw: []byte(fmt.Sprint(cs))})
+	e.advance(6*24*time.Hour + 23*time.Hour) // Sunday 09:00
+	e.h.Tick()
+	check(t, "still there before a week on the card", len(e.cards(e.zw.session)) == 1)
+	e.advance(2 * time.Hour) // a week and an hour on the card
+	e.h.Tick()
+	check(t, "a week on the card: gone", len(e.cards(e.zw.session)) == 0 && e.h.count("SELECT COUNT(*) FROM proposals WHERE state = 'expired'") == 1)
 }
 
 func TestProposalDigestSettingAndPatrol(t *testing.T) {
