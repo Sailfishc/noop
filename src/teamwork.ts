@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
+import { CHECKPOINT_EVERY, dropCheckpoint, keptCheckpoints, saveCheckpoint } from "./checkpoint";
 import { addUsage, classify, FAILURE_TEXT, type Failure, failureText, planFor, resetAt, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 import type { TeamContext } from "./teamconfig";
@@ -59,6 +60,8 @@ export type Claim = {
   memory_writable?: boolean;
   /** The other agents it may turn to, a line each (\`remi who\`); "" or missing: none. */
   agents?: string;
+  /** This machine may keep a general task's directory on the server as its checkpoint (its owner's switch). */
+  checkpoint_files?: boolean;
 };
 export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message" | "quota" | "delegates"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
@@ -432,6 +435,9 @@ export type WorkerOptions = {
   steerWaitMs?: number;
   /** What the team config repository gives the runs (teamconfig.ts): conventions, MCP servers. */
   team?: () => TeamContext | null;
+  /** Save checkpoints of the tasks' directories (checkpoint.ts): when a run stops, and this often while it runs (ms). */
+  checkpoints?: boolean;
+  checkpointEveryMs?: number;
 };
 
 const expand = (p: string) => (p.startsWith("~") ? join(homedir(), p.slice(1)) : resolve(p));
@@ -570,6 +576,8 @@ export type FileApi = {
   preview(taskId: string, query: string, data: Uint8Array): Promise<boolean>;
   /** A thread attachment ("/media/…"). */
   download(path: string): Promise<Uint8Array | null>;
+  /** A general task's packed directory, its checkpoint (checkpoint.ts): its id on the server. */
+  checkpoint?(taskId: string, data: Uint8Array): Promise<{ id: string; size: number } | null>;
 };
 
 const MAX_OUT_FILE = 50 << 20;
@@ -821,7 +829,25 @@ export function createWorker(o: WorkerOptions) {
   /** Running tasks with news: stop the run between two tool calls and resume it with the news. */
   const steers = new Map<string, () => void>();
   const claiming = new Set<string>();
+  /** What happens once a run is over (its last checkpoint), by task. */
+  const afterRuns = new Map<string, () => Promise<unknown>>();
   let stopped = false;
+  const ckDeps = { api: o.api, dir: join(root, ".checkpoints"), log, upload: o.files?.checkpoint?.bind(o.files) };
+  /** Saves are one at a time per task (the timer and the run's stop may meet). */
+  const saving = new Map<string, Promise<unknown>>();
+  const checkpoint = (id: string, wd: Workdir, filesAllowed: boolean) => {
+    const p = (saving.get(id) ?? Promise.resolve()).then(() => saveCheckpoint(ckDeps, id, wd, filesAllowed))
+      .catch((e) => log(`${id} 存检查点出错：${e instanceof Error ? e.message : e}`));
+    saving.set(id, p);
+    return p.finally(() => { if (saving.get(id) === p) saving.delete(id); });
+  };
+  /** An ended task's checkpoints go (its wip branches, the local refs). */
+  const dropping = new Set<string>();
+  const drop = async (id: string) => {
+    if (!o.checkpoints || dropping.has(id) || running.has(id)) return;
+    dropping.add(id);
+    try { await saving.get(id); await dropCheckpoint(ckDeps, id); } catch {} finally { dropping.delete(id); }
+  };
 
   const report = (id: string, body: Record<string, unknown>) => o.api(`/api/v1/tasks/${id}/report`, { method: "POST", body: JSON.stringify(body) });
 
@@ -885,6 +911,12 @@ export function createWorker(o: WorkerOptions) {
       return;
     }
     if (o.files && wd.files) await fetchInputs(o.files, c, wd.files).catch(() => null);
+    let cancelled = false;
+    if (o.checkpoints) { // while it runs, every 10 minutes; once more when it stops (unless it was cancelled)
+      const ckWd = wd, files = c.checkpoint_files === true;
+      const timer = setInterval(() => void checkpoint(t.id, ckWd, files), o.checkpointEveryMs ?? CHECKPOINT_EVERY);
+      afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
+    }
     const resume = t.session;
     const prompt = !resume ? taskPrompt(c, wd, o.team?.()) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
@@ -921,7 +953,7 @@ export function createWorker(o: WorkerOptions) {
       else stepTimer ??= setTimeout(flushStep, every - (Date.now() - lastStep));
     };
     const stallMs = o.stallMs ?? 20 * 60_000, timeoutMs = o.timeoutMs ?? 60 * 60_000;
-    let usage: Usage | undefined, cancelled = false, wakeUp = () => {};
+    let usage: Usage | undefined, wakeUp = () => {};
     const tc = o.team?.(), teamMcp = tc && Object.keys(tc.mcp).length ? { servers: tc.mcp, file: tc.mcpFile } : null;
     const go = async (resumeId: string, text: string): Promise<RunResult> => {
       const h = rt.start({
@@ -1110,7 +1142,8 @@ export function createWorker(o: WorkerOptions) {
       const p = run(c).catch(async (e) => {
         log(`${t.id} 出错：${e instanceof Error ? e.message : e}`);
         await finish(c.task, { state: "failed", summary: `守护进程出错：${e instanceof Error ? e.message : e}` }).catch(() => null);
-      }).finally(() => { running.delete(t.id); kills.delete(t.id); steers.delete(t.id); void poll(); });
+      }).then(async () => { await afterRuns.get(t.id)?.(); }).catch(() => {})
+        .finally(() => { running.delete(t.id); kills.delete(t.id); steers.delete(t.id); afterRuns.delete(t.id); void poll(); });
       running.set(t.id, p);
     } finally {
       claiming.delete(t.id);
@@ -1171,6 +1204,7 @@ export function createWorker(o: WorkerOptions) {
     else if (t.state === "closed" || t.state === "done") {
       kills.get(t.id)?.(); // cancelled while it ran
       if (t.state === "closed") void cancelOutside(t.id);
+      void (running.get(t.id) ?? Promise.resolve()).then(() => drop(t.id)); // ended: its checkpoints go
     }
   }
 
@@ -1227,6 +1261,7 @@ export function createWorker(o: WorkerOptions) {
   /** The folders of tasks that ended a week ago or more (the server says which; it keeps them that long in case
    * someone picks the task up again) go, so worktrees do not pile up on the machine. */
   async function sweep(): Promise<string[]> {
+    await dropEnded().catch(() => null);
     let ids: string[] = [];
     try { ids = [...new Set(readdirSync(root).map((n) => n.replace(/\.(files|repos)$/, "")).filter((n) => /^T-\d+$/.test(n)))].sort(); } catch { return []; }
     ids = ids.filter((id) => !running.has(id) && !claiming.has(id) && !unsent(id));
@@ -1241,6 +1276,16 @@ export function createWorker(o: WorkerOptions) {
     }
     if (removed.length) log(`清理了已结束一周以上的任务目录：${removed.join(" ")}`);
     return removed;
+  }
+
+  /** The checkpoints of tasks that ended while this machine did not hear of it (it was off): their wip branches go. */
+  async function dropEnded() {
+    if (!o.checkpoints) return;
+    const ids = keptCheckpoints(ckDeps.dir).filter((id) => !running.has(id) && !claiming.has(id));
+    for (let i = 0; i < ids.length; i += 100) {
+      const r = await o.api(`/api/v1/machine/tasks?ended=${ids.slice(i, i + 100).join(",")}&age=0`).catch(() => null);
+      for (const t of (r?.tasks ?? []) as { id: string }[]) if (ids.includes(t.id)) await drop(t.id);
+    }
   }
 
   return {

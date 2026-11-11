@@ -1195,6 +1195,14 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
         </View>
       </If>
 
+      <If when={t.me()?.id === m().owner_id || isAdmin(t)}>
+        <Noted testID={`machine-${m().id}-checkpoint`} label={<Txt>{L("Keep general tasks’ files on the server", "把不用 Git 的任务的工作目录存到服务端")}</Txt>}
+          note={L("A task with no repository keeps its directory on the server as its checkpoint (at most 100 MB; not in/, dependency folders or files that look like keys), so another computer could go on with it. Those files then leave this computer: whoever runs the server can read them in its database. Repository tasks always keep theirs on a wip branch of the repository. On by default for your own computer, off for a team machine.",
+            "没有仓库的任务把工作目录存到服务端作为检查点（最多 100 MB，不含 in/、依赖目录和看起来是密钥的文件），换一台电脑能接着做。这些文件因此会离开这台电脑：管理服务端的人能在它的数据库里读到。用仓库的任务始终存在仓库的 wip 分支上。个人电脑默认开，团队机器默认关。")}
+          right={<Toggle testID={`machine-${m().id}-checkpoint-files`} value={!!m().checkpoint_files} label={L("Keep general tasks’ files on the server", "把不用 Git 的任务的工作目录存到服务端")}
+            onChange={async (v) => { const r = await t.patchMachine(m().id, { checkpoint_files: v }); if (!r.ok) joinError.set(failed(r)); }} />} />
+      </If>
+
       <Label text={L("Agents on this machine", "跑在这台机器上的 Agent")} />
       <Each of={agents()} key={(a) => a.id}>
         {(a) => {

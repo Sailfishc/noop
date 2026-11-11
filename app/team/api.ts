@@ -20,6 +20,9 @@ export type Machine = {
   team?: boolean;
   /** A person's own machine that takes the team config repository too (its owner turned it on; team machines always do). */
   sync_team_config?: boolean;
+  /** General tasks' directories are kept on the server as their checkpoints (on for a person's own computer, off for a
+   * team machine, unless set). */
+  checkpoint_files?: boolean;
   /** What its agents can use beyond the runtime (names only; secrets stay on the machine). */
   skills?: string[] | null; mcp?: string[] | null;
   /** How the team config repository last synced there. */
@@ -72,6 +75,12 @@ export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: b
   via?: string[] | null; parent?: string; trigger?: string;
   /** The parent's agent delegated it (remi delegate): its result goes back to that agent; redos: times it sent it back. */
   delegated?: boolean; redos?: number };
+/** A task's latest checkpoint: when it was saved, when it was last found still current, and why one was not. */
+export type Checkpoint = {
+  at: number; checked: number; machine: string;
+  repos: { repo: string; branch: string; commit?: string; head?: string; error?: string }[];
+  files?: { id: string; size: number } | null; error?: string;
+};
 export type Task = {
   id: string; channel_id: string; thread_id: string; agent_id: string; created_by: string; title: string; body: string;
   /** The person the request named to take it when it stops for people ("由 @x 验收"); "" or absent = its creator. */
@@ -102,6 +111,8 @@ export type Task = {
   evidence?: Evidence[] | null;
   /** Its agent aligned with people once (an align card): it may not again. */
   aligned?: boolean;
+  /** Where it got to, kept off its computer (a wip branch, or its directory on the server); null: none yet. */
+  checkpoint?: Checkpoint | null;
   /** Questions its agent put to people while it worked (`remi ask`); an open one is on that person's 待你处理. */
   asked?: Asked[] | null;
   /** Repositories its agent declared it changes (`remi repo`), besides repo. */
@@ -789,7 +800,7 @@ export function createTeam(s: Session) {
     return patchMachine(id, { name });
   }
   /** name; team (admins): make it a team machine or no longer one. */
-  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean }) {
+  async function patchMachine(id: string, patch: { name?: string; team?: boolean; sync_team_config?: boolean; checkpoint_files?: boolean }) {
     const r = await api("PATCH", `/api/v1/machines/${id}`, patch);
     if (r.ok) machines.update((ms) => upsert(ms, r.data.machine as Machine));
     return r;

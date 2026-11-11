@@ -75,6 +75,9 @@ type machineView struct {
 	// SyncTeamConfig: a person's own machine takes the team config repository too: its MCP commands run there and
 	// its skills show up in the person's own runtimes, so only its owner turns this on. Team machines always do.
 	SyncTeamConfig bool `json:"sync_team_config"`
+	// CheckpointFiles: general tasks' directories are kept on the server as their checkpoints (teamcheckpoint.go);
+	// on for a person's own computer, off for a team machine, unless its owner (or an admin) set it.
+	CheckpointFiles bool `json:"checkpoint_files"`
 	// RuntimeStatus: its runtimes that take no work now (a usage limit, no credit, logged out), by name (teamquota.go)
 	RuntimeStatus map[string]runtimeStatus `json:"runtime_status"`
 	machineInfo
@@ -109,7 +112,7 @@ type gitCred struct {
 	Via        string `json:"via"` // token | gh
 }
 
-const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}'), team, sync_team_config"
+const machineCols = "id, owner_id, name, COALESCE(os, ''), COALESCE(arch, ''), COALESCE(runtimes, '[]'), max_sessions, last_seen, COALESCE(info, '{}'), team, sync_team_config, COALESCE(checkpoint_files, CASE WHEN team = 1 THEN 0 ELSE 1 END)"
 
 func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	if err != nil {
@@ -120,7 +123,7 @@ func (h *Hub) scanMachines(rows *sql.Rows, err error) []machineView {
 	for rows.Next() {
 		var m machineView
 		var rt, info string
-		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info, &m.Team, &m.SyncTeamConfig); err != nil {
+		if err := rows.Scan(&m.ID, &m.OwnerID, &m.Name, &m.OS, &m.Arch, &rt, &m.MaxSessions, &m.LastSeen, &info, &m.Team, &m.SyncTeamConfig, &m.CheckpointFiles); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(rt), &m.Runtimes)

@@ -142,6 +142,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE tasks_v1 ADD COLUMN aligned INTEGER NOT NULL DEFAULT 0",     // its agent aligned with people once (teamalign.go): never again
 		"ALTER TABLE tasks_v1 ADD COLUMN evidence TEXT NOT NULL DEFAULT '[]'",    // per acceptance criterion, how its agent verified it (teamevidence.go)
 		"ALTER TABLE task_events ADD COLUMN who TEXT NOT NULL DEFAULT ''",        // the person the task needed then ("" = nobody); teammetrics.go
+		"ALTER TABLE tasks_v1 ADD COLUMN checkpoint TEXT",                        // its latest checkpoint (teamcheckpoint.go)
+		"ALTER TABLE machines ADD COLUMN checkpoint_files INTEGER",               // keep general tasks' directories here (NULL: on for a person's own, off for a team machine)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -173,6 +175,9 @@ func initSchema(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(asksSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(checkpointSchema); err != nil {
 		return err
 	}
 	return initSearch(db)
