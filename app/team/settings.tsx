@@ -249,6 +249,11 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
           </View>
         </View>
       </Panel>
+      <Panel title={L("My preferences", "我的偏好")} testID="preferences"
+        note={L("Agents read this on every task you ask for, after the channel's and the team's conventions (those win where they differ). It goes to the computer the agent runs on: no passwords or keys.",
+          "你发起的每个任务，Agent 开工时都会读到这段话；排在频道约定和团队约定之后，冲突时以约定为准。它会随任务发到 Agent 所在的电脑上，别写密码和密钥。")}>
+        <MyPreferences team={t} />
+      </Panel>
       <LoginCodePanel team={t} />
       <DevicesPanel team={t} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 4 }}>
@@ -263,6 +268,48 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
         <Btn testID="sign-out" kind="danger" label={L("Sign out", "退出登录")} onPress={props.onSignOut} />
       </View>
     </>
+  );
+}
+
+/** 「我的偏好」: one's own words for the agents, on the tasks one asks for. */
+function MyPreferences(props: { team: Team }) {
+  const t = props.team;
+  const value = signal(untracked(t.preferences));
+  const busy = signal(false);
+  const saved = signal(false);
+  const error = signal("");
+  const changed = () => value().trim() !== t.preferences();
+  const grow = growing({ min: 76, max: 260, pad: 22, line: 20 });
+  // loaded after the page opened, and nothing typed yet: show it
+  effect(() => {
+    const p = t.preferences();
+    if (!untracked(changed) || !untracked(value).trim()) value.set(p);
+  });
+  async function save() {
+    busy.set(true);
+    error.set("");
+    const r = await t.savePreferences(value().trim());
+    busy.set(false);
+    saved.set(r.ok);
+    if (!r.ok) error.set(failed(r));
+  }
+  return (
+    <View style={{ gap: 6 }}>
+      <Input
+        testID="preferences-input"
+        value={value()}
+        multiline
+        placeholder={L("e.g. Reply in Chinese. In a PR description, say what changed before why. Ask me when unsure.", "比如：回复用中文；PR 描述先写改了什么再写为什么；不确定的地方先问我。")}
+        class="placeholder:text-faint"
+        onChange={({ value: v }) => { value.set(v); saved.set(false); }}
+        onContentSizeChange={grow.onContentSizeChange}
+        style={{ height: grow.height(), padding: 10, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field, fontSize: 13.5, lineHeight: 20, color: colors.text }}
+      />
+      <ErrorNote text={error()} testID="preferences-error" />
+      <View style={{ flexDirection: "row", justifyContent: "flex-end" }}>
+        <Btn small testID="preferences-save" label={saved() && !changed() ? L("Saved", "已保存") : L("Save", "保存")} busy={busy()} disabled={!changed()} onPress={save} />
+      </View>
+    </View>
   );
 }
 
@@ -573,7 +620,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <AgentRepo team={t} agent={a()} />
       </Panel>
 
-      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads this at the start of every task and rewrites it when it learns something that will matter later.", "它每次开工前都会读，学到以后用得上的东西时会自己改写。")}>
+      <Panel title={L("Memory (memory.md)", "记忆（memory.md）")} testID={`agent-memory-${a().handle}-title`} note={L("It reads all of this at the start of every task, whoever asked and wherever, and rewrites it when it learns something that will matter later. Only you (for a team agent, the admins too) can see it here, but the agent may repeat it in its replies: keep private matters out.", "它每次开工前都会读全部内容（不管是谁、在哪个频道派的活），学到以后用得上的东西时会自己改写。这里只有你能看到（团队 Agent 还有管理员），但 Agent 干活时可能在回复里说出来，私事别让它记。")}>
         <AgentMemory team={t} agent={a()} />
       </Panel>
 

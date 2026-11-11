@@ -303,6 +303,8 @@ const POLL_MS = 10_000;
 export function createTeam(s: Session) {
   const conn = signal<Conn>("connecting");
   const me = signal<User | null>(null);
+  /** 「我的偏好」: one's own words for the agents on the tasks one asks for (only GET /me has them). */
+  const preferences = signal("");
   /** The address others reach the server at, as the server is set up (-public-url); "" when it isn't. */
   const publicUrl = signal("");
   /** The address to put in links and commands for other people and computers: the server's public one, else the one this app connected to. */
@@ -482,7 +484,7 @@ export function createTeam(s: Session) {
     const [m, u, a, ma, c] = await Promise.all([
       api("GET", "/api/v1/me"), api("GET", "/api/v1/users"), api("GET", "/api/v1/agents"), api("GET", "/api/v1/machines"), api("GET", "/api/v1/channels"),
     ]);
-    if (m.ok) { me.set(m.data.user as User); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
+    if (m.ok) { me.set(m.data.user as User); preferences.set(String(m.data.preferences ?? "")); publicUrl.set(String(m.data.public_url ?? "").replace(/\/+$/, "")); if (m.data.workspace) workspace.set(m.data.workspace as Workspace); }
     if (u.ok) users.set(u.data.users as User[]);
     if (a.ok) agents.set(a.data.agents as Agent[]);
     if (ma.ok) machines.set(ma.data.machines as Machine[]);
@@ -703,6 +705,11 @@ export function createTeam(s: Session) {
     }
     return r;
   }
+  async function savePreferences(text: string) {
+    const r = await api("PATCH", `/api/v1/users/${me()?.id ?? ""}`, { preferences: text });
+    if (r.ok) preferences.set(text.trim());
+    return r;
+  }
   const invite = (email: string, role: "admin" | "member") => api("POST", "/api/v1/invites", { email, role });
   /** An admin lets someone in (the account is made now) or turns them away. */
   async function decideSignup(id: string, approve: boolean) {
@@ -792,6 +799,7 @@ export function createTeam(s: Session) {
   });
 
   return {
+    preferences, savePreferences,
     url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, logout, dispose, applyFrame, catchUp,

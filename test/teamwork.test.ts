@@ -607,3 +607,27 @@ test("waiting results: a wait with no way to wake is not a wait; durations; chec
   expect(parseCheck('working…\n{"state":"done","note":"ok"}')).toEqual({ state: "done", note: "ok" });
   expect(parseCheck("nothing")).toBe(null);
 });
+
+test("the person's preferences come after the conventions; a private channel's task leaves the memory alone", async () => {
+  const p = taskPrompt({ ...claim(), channel: { id: "c_1", name: "支付后端", topic: "", conventions: "发布前在 #ops 说一声" }, requester_preferences: " 回复用中文 " },
+    { cwd: "/w", writable: [] }, { instructions: "PR 标题用中文", mcp: {} });
+  const prefs = p.indexOf("# 张伟's preferences (they asked for this task; where they differ from the conventions above, the conventions win)\n回复用中文\n");
+  expect(prefs).toBeGreaterThan(p.indexOf("# How #支付后端 works"));
+  expect(prefs).toBeGreaterThan(p.indexOf("# Team conventions"));
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("preferences (they asked");
+  expect(taskPrompt(claim(), { cwd: "/w", writable: [] })).not.toContain("Do not update your memory");
+  expect(taskPrompt({ ...claim(), memory_writable: false }, { cwd: "/w", writable: [] })).toContain("Do not update your memory on this task");
+
+  for (const writable of [true, false]) {
+    const W = mkdtempSync(join(tmpdir(), "teamwork-"));
+    const calls: { path: string; body: any }[] = [];
+    const rt = fakeRuntime([{ text: '```json\n{"status":"review","summary":"好了","memory":"- 张伟爱吃辣"}\n```' }], []);
+    const w = createWorker({ api: fakeApi({ "T-0001": { ...claim(), memory_writable: writable } }, calls), maxParallel: 1, workRoot: W, runtimes: { codex: rt }, stepEveryMs: 0, log: () => {} });
+    w.onTask({ ...claim().task, state: "queued" } as any, () => true);
+    await Bun.sleep(1);
+    await w.idle();
+    const report = calls.find((c) => c.body?.state === "review")!.body;
+    expect(report.memory).toBe(writable ? "- 张伟爱吃辣" : undefined);
+    rmSync(W, { recursive: true, force: true });
+  }
+});

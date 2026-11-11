@@ -143,6 +143,6 @@ func (h *Hub) resumeAgents(machineID string, info []runtimeInfo) {
 
 func (h *Hub) agentChanged(id string) {
 	if a, ok := h.agent(id); ok {
-		h.broadcastPeople(obj{"type": "agent", "agent": a})
+		h.broadcastAgent(a)
 	}
 }

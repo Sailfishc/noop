@@ -59,6 +59,24 @@ func (s *sockets) send(tag string, msg []byte) {
 	}
 }
 
+// sendExcept: to the sockets of the tag, but not those that also carry one of skip's tags.
+func (s *sockets) sendExcept(tag string, msg []byte, skip map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+next:
+	for k := range s.byTag[tag] {
+		for _, t := range k.tags {
+			if skip[t] {
+				continue next
+			}
+		}
+		select {
+		case k.out <- msg:
+		default:
+		}
+	}
+}
+
 func (h *Hub) serveSocket(w http.ResponseWriter, r *http.Request, tags []string, opened, closed func()) {
 	if r.Header.Get("upgrade") != "websocket" {
 		errJSON(w, 426, "websocket expected")
