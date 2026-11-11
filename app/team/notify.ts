@@ -47,7 +47,7 @@ export function taskAlert(t: Task, channelName: string | undefined, now: number)
   const where = channelName ? `#${channelName} · ${t.id}` : t.id;
   return {
     key: `task:${t.id}:${t.state}`,
-    title: NEED[t.state]?.() ?? L("Waiting for you", "待你决定"),
+    title: (t.state === "needs_decision" && t.decision?.kind === "align" ? L("Wants to align with you first", "开工前想和你对齐") : NEED[t.state]?.()) ?? L("Waiting for you", "待你决定"),
     body: t.redacted ? `${t.id}  ${L("in a private channel", "在一个私有频道里")}` : `${where}  ${t.title}`,
     channelId: t.channel_id, threadId: t.thread_id,
   };

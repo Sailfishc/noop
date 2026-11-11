@@ -46,6 +46,12 @@ const out = (o) => console.log(JSON.stringify(o));
 out({ type: "thread.started", thread_id: resume || "thr_fake_1" });
 const done = (summary) => { out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "review", summary }) + "\\n\`\`\`" } }); out({ type: "turn.completed" }); process.exit(0); };
 if (prompt.includes("paused you between two steps")) done("插话后：" + (prompt.includes("改主意") ? "按新的要求做了" : "没收到新要求"));
+if (prompt.includes("ALIGN-TEST") && !resume && prompt.includes("# Align first")) { // aligns before it works
+  out({ type: "item.completed", item: { type: "agent_message", text: "\\n\`\`\`json\\n" + JSON.stringify({ status: "align", summary: "先对一下", acceptance: ["对账一致", "10 分钟内跑完"], approach: "按天分批" }) + "\\n\`\`\`" } });
+  out({ type: "turn.completed" });
+  process.exit(0);
+}
+if (resume && (prompt.includes("按这个做") || prompt.includes("回滚"))) done("对齐后开工：" + (prompt.includes("5 分钟内跑完") ? "按改过的标准" : prompt.includes("回滚") ? "按回复改了标准" : "?"));
 if (prompt.includes("STEER-TEST")) { // a long tool call, then it would go on for a long time
   out({ type: "item.started", item: { type: "command_execution", command: "sleep 1" } });
   await Bun.sleep(1500);
@@ -117,6 +123,29 @@ check("in the same run (no new turn), back for review", t.runs === 3 && t.state 
 
 // the creator accepts it
 check("accepted", (await api("POST", "/api/v1/tasks/T-0001/accept", zw.session)).json.state === "done");
+
+// align: a larger request with no criteria stops once for "what done means"; 按这个做 (edited) writes the criteria and
+// the same session goes on; a reply instead of the button goes on too, with no second alignment
+const alignAsk = async (text: string, id: string) => {
+  const m = await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text });
+  await api("POST", `/api/v1/tasks/${id}/confirm`, wl.session);
+  return m.json.id as string;
+};
+const get = async (id: string) => (await api("GET", `/api/v1/tasks/${id}`, zw.session)).json;
+await alignAsk("@acha ALIGN-TEST 重写对账", "T-0002");
+await until("it stops to align", async () => (await get("T-0002")).state === "needs_decision");
+let a = await get("T-0002");
+check("an align card with its criteria, waiting for the creator", a.decision?.kind === "align" && a.decision.acceptance.length === 2 && a.holder?.why === "align", JSON.stringify(a.decision));
+await api("POST", "/api/v1/tasks/T-0002/decide", zw.session, { acceptance: "对账一致\n5 分钟内跑完" });
+await until("按这个做: it goes on in the same session and delivers", async () => ["review", "done"].includes((await get("T-0002")).state)); // it changed nothing: done as an answer
+a = await get("T-0002");
+check("with the criteria as edited", a.acceptance === "对账一致\n5 分钟内跑完" && a.summary.startsWith("对齐后开工：按改过的标准"), a.summary);
+const root3 = await alignAsk("@acha ALIGN-TEST 整理发布流程", "T-0003");
+await until("the second one stops to align", async () => (await get("T-0003")).state === "needs_decision");
+await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "再加一条：要有回滚步骤", thread_id: root3 });
+await until("a reply instead: it goes on and delivers, no second card", async () => ["review", "done"].includes((await get("T-0003")).state));
+a = await get("T-0003");
+check("it followed the reply", a.summary.startsWith("对齐后开工：按回复改了标准") && a.aligned === true, a.summary);
 
 ta.stop();
 rmSync(W, { recursive: true, force: true });

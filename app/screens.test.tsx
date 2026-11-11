@@ -48,6 +48,18 @@ const net = () => server(newLog(), {
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, tasks);
 const start = () => open("./App.tsx", { storage: SESSION, ...SIZE, network: net() });
+// the first task stopped to align: what "done" will mean, waiting for 张伟
+const aligning = task({ id: "T-0001", state: "needs_decision", tracked: true, title: "看下慢查询", created_by: "u_1", aligned: true,
+  holder: { kind: "user", id: "u_1", why: "align" },
+  decision: { kind: "align", question: "做完意味着", options: null, acceptance: ["/orders 的 P99 降到 200ms 以内", "加索引不锁表", "有一份压测前后的对比"],
+    not_doing: ["不改查询接口的参数"], approach: "先加 created_at 索引，再压测对比。", dirty: true },
+  calls: [{ at: T0, who: "u_1", kind: "align", class: "align" }] });
+const alignNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [aligning, ...tasks.slice(1)]);
 
 // The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
 describe("showcase", () => {
@@ -91,6 +103,19 @@ describe("screens", () => {
     await app.waitFor("id:close-thread");
     await app.waitFor("text:收到，在看"); // the reply, not the spinner
     await shot(app, "thread");
+  });
+
+  test("thread-align: the align card, its criteria editable", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: alignNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:task-T-0001-align-go");
+    await shot(app, "thread-align");
+    await app.press("id:thread >> id:task-T-0001-align-edit");
+    await app.waitFor("id:thread >> id:task-T-0001-align-input");
+    await shot(app, "thread-align-edit");
   });
 
   test("members", async () => {

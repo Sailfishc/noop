@@ -30,9 +30,13 @@ export type TeamTask = {
   repos?: string[];
   /** Something new for its running agent (people's words, a repository it asked for): the run is resumed with it. */
   news?: boolean;
+  /** Its agent already aligned with people once (status align): it may not again. */
+  aligned?: boolean;
 };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
-export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string };
+export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string;
+  /** It came from another agent (a handoff) or a trigger, not from a person's own words. */
+  via?: string[] | null; parent?: string; trigger?: string };
 export type Claim = {
   task: TeamTask; agent: TeamAgent & { repo?: string; memory?: string };
   /** repo: the channel's usual repository, a hint (the agent declares a repository itself with `remi repo`). */
@@ -56,10 +60,12 @@ export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer"
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
 export type WaitSpec = { how: "callback" | "poll" | "timer"; check?: string; cancel?: string; every?: string | number; expect?: string | number; deadline?: string | number; what?: string };
 export type TaskResult = {
-  status: "review" | "needs_decision" | "blocked" | "failed" | "waiting";
+  status: "review" | "needs_decision" | "blocked" | "failed" | "waiting" | "align";
   summary: string; question?: string; options?: string[]; recommendation?: string; pr_title?: string; pr_body?: string;
-  /** The criteria the agent worked to, when people gave none. */
-  acceptance?: string;
+  /** The criteria the agent worked to, when people gave none (align: the criteria it proposes, one per item). */
+  acceptance?: string | string[];
+  /** align: what it will leave alone, and how it will go about it. */
+  not_doing?: string[]; approach?: string;
   /** The agent's memory.md as it wants it now, when it learned something lasting. */
   memory?: string;
   /** Results kept by outside services it called. */
@@ -94,7 +100,7 @@ export function reactionOf(text: string): string {
   return e.length <= 16 && /^\p{Extended_Pictographic}/u.test(e) && !/[\p{L}\p{N}]/u.test(e) ? e : "";
 }
 
-const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting"]);
+const STATUSES = new Set(["review", "needs_decision", "blocked", "failed", "waiting", "align"]);
 
 /** The result block at the end of the agent's last message. Without one, the message itself is the summary. */
 export function parseTaskResult(text: string): TaskResult {
@@ -198,6 +204,34 @@ function mandateLine(c: Claim): string {
   return `\nMandate: ${rule}${m.confirm ? "; your owner confirmed this task" : ""}. Autonomy ${AUTONOMY[m.autonomy] ?? m.autonomy}.`;
 }
 
+/** Should the agent align before it works (design 「对齐」)? Only for a person's own request with no acceptance
+ * criteria written, that did not say "直接做", and only once per task. Whether the request is big enough is the
+ * agent's call, by the rule in ALIGN. */
+export function mayAlign(t: TeamTask): boolean {
+  const m = t.mandate;
+  return !t.aligned && !t.acceptance?.trim() && !m?.trigger && !m?.parent && !m?.via?.length && !/直接做|just do it/i.test(t.body ?? "");
+}
+
+const ALIGN = `# Align first, when the request is larger
+Before changing anything, decide whether to align with the person who asked. Align when ALL of these hold:
+1. no acceptance criteria were written (true here);
+2. it is not a question or lookup you can answer in one reply;
+3. at least one of: it changes more than one file, it will take more than about ten minutes, or the request can
+   reasonably be read more than one way.
+What the person or the channel wrote above may say otherwise ("小改动不用跟我对齐", "一律先对齐"): follow them.
+To align: only read (code, docs, the thread) and change nothing, then stop with this result block instead of the usual one:
+\`\`\`json
+{"status": "align", "summary": "one sentence: what you read and why you are checking", "acceptance": ["1 to 5 checkable outcomes, each a result, not an action"], "not_doing": ["optional: one or two things you will leave alone"], "approach": "one sentence: how you will do it"}
+\`\`\`
+The person answers with "按这个做" (the criteria, maybe edited, become the task's acceptance criteria) or a reply that
+changes them: then start work at once and do not align again. You align at most once per task.`;
+
+/** The run aligned again although it already had: what it is told instead, in the same session. */
+export const ALIGNED_AGAIN = `This task has already been aligned once and may not align again. Do not stop to align: carry on with the
+work to the acceptance criteria you have (or the person's latest words in the thread), and end with the usual result block.
+
+${RESULT_SPEC}`;
+
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): string {
   const a = c.agent, t = c.task;
@@ -225,7 +259,7 @@ ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
-${c.read_token ? `\n${LOOKUP}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
 ${REACT}
 
 ${RESULT_SPEC}`;
@@ -856,7 +890,25 @@ export function createWorker(o: WorkerOptions) {
       log(`${t.id} → ${plan.act === "block" ? "blocked" : "failed"}（${failure}）`);
       return;
     }
-    const result = r.text ? parseTaskResult(r.text) : { status: "failed" as const, summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
+    let result: TaskResult = r.text ? parseTaskResult(r.text) : { status: "failed" as const, summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
+    if (result.status === "align" && !mayAlign(c.task) && r.session) { // once per task: told so, in the same session
+      log(`${t.id} 已经对齐过，让它按现有标准继续`);
+      const again = await go(r.session, ALIGNED_AGAIN);
+      if (again.killed || cancelled) { log(`${t.id} 已停止`); return; }
+      r = again;
+      result = r.text ? parseTaskResult(r.text) : { status: "failed", summary: `运行失败：${r.error ?? `退出码 ${r.exitCode}`}` };
+    }
+    if (result.status === "align") {
+      const list = (v: unknown) => (Array.isArray(v) ? v : String(v ?? "").split("\n")).map((x) => String(x).trim()).filter(Boolean);
+      if (!mayAlign(c.task) || !list(result.acceptance).length) {
+        await finish(t, { state: "blocked", summary: `${result.summary ? `${result.summary}\n\n` : ""}Agent 想再对齐一次（每个任务只对齐一次），没有开工：在线程里回一句它该怎么做`, session: r.session, ...(usage ? { usage } : {}) });
+        return;
+      }
+      await finish(t, { state: "align", summary: result.summary, session: r.session, ...(usage ? { usage } : {}),
+        align: { acceptance: list(result.acceptance), not_doing: list(result.not_doing), approach: String(result.approach ?? ""), dirty: await touched(wd) } });
+      log(`${t.id} → align`);
+      return;
+    }
     let extra: { pr?: PR; note?: string } | null = null;
     const morePRs: PR[] = [], moreNotes: string[] = [];
     if (o.afterRun && result.status === "review") {
@@ -896,7 +948,7 @@ export function createWorker(o: WorkerOptions) {
     // summary is the whole result (a question answered, a lookup), so it needs nobody's acceptance.
     if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length && !morePRs.length
       && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
-    if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
+    if (result.acceptance && !t.acceptance?.trim()) body.acceptance = Array.isArray(result.acceptance) ? result.acceptance.join("\n") : String(result.acceptance);
     if (c.memory_writable !== false && typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
     await finish(t, body);

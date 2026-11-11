@@ -199,7 +199,7 @@ func (h *Hub) metrics(days int, userID string) metricsView {
 		}
 	}
 	v.Reply = durations(all, allOpen)
-	for _, k := range []string{"confirm", "decide", "unblock", "retry", "accept"} {
+	for _, k := range []string{"confirm", "align", "decide", "unblock", "retry", "accept"} {
 		if len(byKind[k])+len(byKindOpen[k]) > 0 {
 			v.ReplyBy[k] = durations(byKind[k], byKindOpen[k])
 		}

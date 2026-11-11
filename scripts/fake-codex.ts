@@ -5,6 +5,7 @@
 // What it does, by a tag in the request (tags, so the run prompt's own words don't trigger them):
 //   (none)      in a repository: commits a small file, reports review; elsewhere: writes out/notes.md, reports review
 //   [decide]    asks a question with two options (needs_decision)
+//   [align]     first stops to align (what "done" means, status align); resumed, it does the work
 //   [block]     reports blocked
 //   [fail]      reports failed
 //   [slow]      takes ten times as long (to look at a running task)
@@ -39,7 +40,12 @@ await step("rg -n TODO .");
 
 if (has("fail")) finish({ status: "failed", summary: "（假 Codex）按要求失败了：[fail]。" });
 else if (has("block")) finish({ status: "blocked", summary: "（假 Codex）缺数据库只读账号，拿到之前做不下去。" });
-else if (has("decide") && !resume) {
+else if (has("align") && !resume) {
+  finish({
+    status: "align", summary: "（假 Codex）读过相关代码了，开工前先对一下做完意味着什么。",
+    acceptance: ["慢查询的 P99 降到 200ms 以内", "加索引不锁表", "有一份压测前后的对比"], not_doing: ["不改查询接口的参数"], approach: "先加 created_at 索引，再压测对比。",
+  });
+} else if (has("decide") && !resume) {
   finish({
     status: "needs_decision", summary: "（假 Codex）两种做法都准备好了，需要你选一个。",
     question: "索引加在哪一列？", options: ["A: created_at — 最常用的查询能用上", "B: user_id — 只帮到退款页"], recommendation: "A",

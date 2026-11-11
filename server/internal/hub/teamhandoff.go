@@ -27,7 +27,7 @@ const (
 	maxSubmits = 3
 )
 
-// holderView: who has the ball and why: confirm | handoff_card | answer | handoff | decide | accept | unblock | retry
+// holderView: who has the ball and why: confirm | handoff_card | answer | handoff | align | decide | accept | unblock | retry
 // (a person), work | wait (the agent).
 type holderView struct {
 	Kind string `json:"kind"`
@@ -76,6 +76,9 @@ func (h *Hub) holderOf(t taskView) *holderView {
 	}
 	switch t.State {
 	case taskNeedsDecision:
+		if t.Decision != nil && t.Decision.Kind == "align" {
+			return user(takerOf(t), "align")
+		}
 		return user(takerOf(t), "decide")
 	case taskReview:
 		return user(takerOf(t), "accept")

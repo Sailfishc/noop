@@ -89,11 +89,19 @@ var stoppedStates = map[string]bool{taskReview: true, taskNeedsDecision: true, t
 var reportStates = map[string]bool{taskReview: true, taskNeedsDecision: true, taskBlocked: true, taskFailed: true, taskWaiting: true}
 
 type decisionView struct {
+	// Kind: "" a choice among options | align: before it starts, what "done" means (teamalign.go)
+	Kind           string   `json:"kind,omitempty"`
 	Question       string   `json:"question"`
 	Options        []string `json:"options"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Answer         string   `json:"answer,omitempty"`
 	AnsweredBy     string   `json:"answered_by,omitempty"`
+	// align: the criteria it proposes (at most maxAlign), what it will leave alone, how it will go about it, and
+	// whether it had already changed files when it stopped to align (it should only have read)
+	Acceptance []string `json:"acceptance,omitempty"`
+	NotDoing   []string `json:"not_doing,omitempty"`
+	Approach   string   `json:"approach,omitempty"`
+	Dirty      bool     `json:"dirty,omitempty"`
 }
 
 // prView: the change request the task produced (a GitHub PR, an Ant Code PR (GitLab MR)).
@@ -164,6 +172,7 @@ type taskView struct {
 	Repos       []string      `json:"repos"`        // repositories its agent declared it changes (remi repo), besides repo
 	Handoffs    []handoffView `json:"handoffs"`     // its agent's handoffs to other agents (remi handoff @agent): cards a person clicks
 	Submits     []submitView  `json:"submits"`      // its agent's submissions to outside services (remi submit), at most maxSubmits
+	Aligned     bool          `json:"aligned"`      // its agent aligned with people once (teamalign.go): it may not again
 	Holder      *holderView   `json:"holder"`       // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
 	Calls       []callView    `json:"calls"`        // each time it needed a person, and why (calls.go)
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
@@ -176,7 +185,7 @@ type taskView struct {
 
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
-	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits`
+	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -189,7 +198,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -273,10 +282,14 @@ type taskEvent struct {
 
 // noteStatus records the task's status when it differs from the last one recorded, with the person it now needs
 // (attention.go's calls: who the task came to need, and for what).
-func (h *Hub) noteStatus(id, state string) {
+// kind, when given, says what a person is needed for more precisely than the state does (align).
+func (h *Hub) noteStatus(id, state string, kind ...string) {
 	status, needs := statusOf(state)
 	if state == taskReview {
 		needs = "accept"
+	}
+	if len(kind) > 0 && kind[0] != "" && needs != "" {
+		needs = kind[0]
 	}
 	var last, lastNeeds string
 	_ = h.db.QueryRow("SELECT status, needs FROM task_events WHERE task_id = ? AND needs NOT IN "+sideKindsSQL+" ORDER BY at DESC, rowid DESC LIMIT 1", id).Scan(&last, &lastNeeds)
@@ -318,8 +331,10 @@ func (h *Hub) taskEvents(id string) ([]taskEvent, []callView) {
 }
 
 func (h *Hub) setTask(id string, cols map[string]any) {
+	needs, _ := cols["_needs"].(string) // what the new state needs a person for, when the state alone doesn't say (align)
+	delete(cols, "_needs")
 	if state, ok := cols["state"].(string); ok {
-		h.noteStatus(id, state)
+		h.noteStatus(id, state, needs)
 	}
 	sets, args := []string{"updated = ?"}, []any{h.nowMs()}
 	for k, v := range cols {
@@ -763,8 +778,15 @@ func (h *Hub) v1TaskDecide(w http.ResponseWriter, q *request) {
 	if !ok {
 		return
 	}
-	var b struct{ Choice string }
+	var b struct {
+		Choice     string
+		Acceptance *string // align: the criteria as the person left them (edited or not)
+	}
 	_ = q.json(&b)
+	if t.Decision != nil && t.Decision.Kind == "align" {
+		h.alignGo(w, q, t, b.Acceptance)
+		return
+	}
 	choice := trimmed(b.Choice, 2000)
 	if choice == "" || t.Decision == nil {
 		errJSON(w, 400, "choice required")
@@ -955,6 +977,8 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		Failure string `json:"failure"`
 		// Usage: tokens this run used
 		Usage *usageView `json:"usage"`
+		// Align: with state align, what "done" will mean (teamalign.go)
+		Align *alignReport `json:"align"`
 	}
 	if err := q.json(&b); err != nil {
 		errJSON(w, 400, "bad json")
@@ -1013,6 +1037,15 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
 	}
 	if b.State != "" {
+		if b.State == "align" {
+			d, msg, code := h.alignDecision(t, b.Align)
+			if d == nil {
+				errJSON(w, code, msg)
+				return
+			}
+			b.State, b.Decision = taskNeedsDecision, d
+			cols["aligned"], cols["tracked"], cols["_needs"] = 1, 1, "align"
+		}
 		if !reportStates[b.State] {
 			errJSON(w, 400, "state 只能是 review、needs_decision、blocked、failed 或 waiting")
 			return
@@ -1037,17 +1070,24 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 				errJSON(w, 400, "needs_decision 要带 decision.question")
 				return
 			}
-			d := decisionView{Question: trimmed(b.Decision.Question, 300), Recommendation: trimmed(b.Decision.Recommendation, 100)}
-			for _, o := range b.Decision.Options {
-				if o = trimmed(o, 300); o != "" && len(d.Options) < 6 {
-					d.Options = append(d.Options, o)
+			if b.Decision.Kind == "align" {
+				cols["decision"] = jsonOrNil(b.Decision) // made by alignDecision
+			} else {
+				d := decisionView{Question: trimmed(b.Decision.Question, 300), Recommendation: trimmed(b.Decision.Recommendation, 100)}
+				for _, o := range b.Decision.Options {
+					if o = trimmed(o, 300); o != "" && len(d.Options) < 6 {
+						d.Options = append(d.Options, o)
+					}
 				}
+				cols["decision"] = jsonOrNil(d)
 			}
-			cols["decision"] = jsonOrNil(d)
 		}
 		text := summary
 		if state == taskNeedsDecision {
 			text = strings.TrimSpace(summary + "\n\n" + b.Decision.Question)
+			if b.Decision.Kind == "align" {
+				text = strings.TrimSpace(summary + "\n\n" + alignText(*b.Decision))
+			}
 		}
 		text = h.callHandler(t, state, text)
 		if text != "" {

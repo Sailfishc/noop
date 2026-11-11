@@ -32,7 +32,7 @@ an orders repo and @notes, #支付后端) and runs this repository's daemon as t
 - It prints login links and a curl line. Run it in the background, then drive it through the API
   (`.dev/state.json` holds the sessions) and look with `node scripts/dev-shot.cjs [--as wl] [--size 390x844]
   [--click x,y] out.png`, a screenshot of the web client signed in against the real server.
-- In a request, `[decide]`, `[block]`, `[fail]` and `[slow]` make the fake Codex ask, get stuck, fail or take
+- In a request, `[align]`, `[decide]`, `[block]`, `[fail]` and `[slow]` make the fake Codex align first, ask, get stuck, fail or take
   its time; otherwise it commits a file (repository task) or writes `out/notes.md` (general task) and reports review.
 
 ## Workflow for Small Fixes
