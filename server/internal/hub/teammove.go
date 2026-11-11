@@ -60,15 +60,12 @@ func (h *Hub) moveTarget(a agentView, from string) string {
 		if id == from || (h.count("SELECT COUNT(*) FROM machines WHERE id = ? AND team = 1", id) > 0) != team {
 			continue
 		}
-		if h.canTake(id, h.taskRuntime(a)) {
+		if h.canTake(id, a.Runtime) {
 			return id
 		}
 	}
 	return ""
 }
-
-// taskRuntime: the runtime the task runs with (its agent's; step 5 PR 3 lets one task use another).
-func (h *Hub) taskRuntime(a agentView) string { return a.Runtime }
 
 func (h *Hub) setMove(id string, m *moveView) {
 	h.must(h.db.Exec("UPDATE tasks_v1 SET move = ? WHERE id = ?", jsonOrNil(m), id))
@@ -82,6 +79,7 @@ func (h *Hub) tickMoves() {
 	now := h.nowMs()
 	for _, t := range ts {
 		a, ok := h.agent(t.AgentID)
+		a = runsWith(t, a)
 		from := h.holder(t)
 		off, since := false, int64(0)
 		if from != "" {
@@ -131,6 +129,7 @@ func (h *Hub) v1TaskMove(w http.ResponseWriter, q *request) {
 		return
 	}
 	a, _ := h.agent(t.AgentID)
+	a = runsWith(t, a)
 	if a.OwnerID != q.who.userID {
 		errJSON(w, 403, "只有 Agent 的主人能决定换哪台电脑")
 		return
@@ -174,7 +173,7 @@ func (h *Hub) v1TaskMove(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "个人电脑和团队电脑之间不换")
 		return
 	}
-	if !h.canTake(to, h.taskRuntime(a)) {
+	if !h.canTake(to, a.Runtime) {
 		errJSON(w, 409, "那台电脑现在接不了活")
 		return
 	}

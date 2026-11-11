@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
 import { CHECKPOINT_EVERY, dropCheckpoint, keptCheckpoints, saveCheckpoint } from "./checkpoint";
+import { RUNTIME_NAMES } from "./gitflow";
 import { addUsage, classify, FAILURE_TEXT, type Failure, failureText, planFor, resetAt, type Usage } from "./runfail";
 import type { TeamAgent, TeamMessage } from "./teamagent";
 import type { TeamContext } from "./teamconfig";
@@ -35,6 +36,10 @@ export type TeamTask = {
   aligned?: boolean;
   /** Times it moved to another computer (server teammove.go): a run claimed with another count is void. */
   moves?: number;
+  /** The runtime this task runs with when its owner switched it from the agent's (换引擎继续); the claim's agent already
+   * says so. engine: the card, from which runtime. */
+  runtime?: string;
+  engine?: { from: string; to: string; reason: string; state: string } | null;
   /** Where it got to, kept off its computer (checkpoint.ts): what a computer it moved to restores. */
   checkpoint?: TaskCheckpoint | null;
 };
@@ -285,6 +290,24 @@ ${mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.ag
 ${REACT}
 
 ${RESULT_SPEC}`;
+}
+
+const HELD: Record<string, string> = { quota: "hit its usage limit", billing: "ran out of credit", auth: "was logged out", not_installed: "is not installed" };
+
+/** A fresh session after the task's owner switched it to another runtime (换引擎继续): what happened, where things are. */
+export function switchedPrompt(c: Claim): string {
+  const e = c.task.engine;
+  if (!e || e.state !== "switched" || !c.task.runtime || c.task.runtime !== c.agent.runtime) return "";
+  const from = RUNTIME_NAMES[e.from] ?? e.from;
+  return `
+
+# Going on with another runtime
+This task ran with ${from} on this computer until ${from} ${HELD[e.reason] ?? "stopped taking work"}; your owner switched
+this task to you (${RUNTIME_NAMES[c.agent.runtime] ?? c.agent.runtime}). This is a fresh session: ${from}'s session is not
+available, so the request and its thread above are the record of what happened (\`remi read --thread\` for all of it).
+The work directory is as ${from} left it: look at the commits on the task branch and the files not yet committed
+(\`git log\`, \`git status\`), then go on from there rather than starting over. Before redoing anything that acts
+outside (a submission, a deployment, a message), check whether it already happened.`;
 }
 
 /** The first run on the computer a task moved to: where it got to, as far as the checkpoint says. */
@@ -992,7 +1015,7 @@ export function createWorker(o: WorkerOptions) {
       afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
     }
     const resume = t.session;
-    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") + switchedPrompt(c) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;

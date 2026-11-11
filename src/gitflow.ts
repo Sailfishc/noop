@@ -128,9 +128,14 @@ export function providerFor(cfg: Cfg, host: string, f: Fetch = fetch): Provider 
   return g?.token ? gitlab(host, String(g.token), f, g.api ? String(g.api).replace(/\/$/, "") : undefined) : null;
 }
 
+/** What people call a runtime. */
+export const RUNTIME_NAMES: Record<string, string> = { codex: "Codex", claude: "Claude Code", pi: "Pi" };
+
 /** The PR's description: what the agent wrote, then who made it for whom (outside Remi nobody knows the agent). */
 export function prBody(c: Claim, r: TaskResult): string {
-  return `${(r.pr_body || r.summary || c.task.title).trim()}\n\n---\n由 Remi 的 @${c.agent.handle}（${c.agent.name}）替 ${c.creator.name} 完成 · 任务 ${c.task.id}`;
+  const e = c.task.engine, rt = (x: string) => RUNTIME_NAMES[x] ?? x;
+  const engine = c.task.runtime && e?.state === "switched" ? ` · 用 ${rt(c.agent.runtime)} 完成（这个任务从 ${rt(e.from)} 换过来）` : "";
+  return `${(r.pr_body || r.summary || c.task.title).trim()}\n\n---\n由 Remi 的 @${c.agent.handle}（${c.agent.name}）替 ${c.creator.name} 完成 · 任务 ${c.task.id}${engine}`;
 }
 
 /** Push the task branch and open (or find) its PR. Only agent/… branches are ever pushed. */

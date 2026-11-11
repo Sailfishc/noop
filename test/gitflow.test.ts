@@ -116,6 +116,10 @@ test("after a run: the task branch is pushed and its PR opened; nothing to push,
 
     await expect(after(c, { status: "review", summary: "" }, { ...wd, branch: "main" })).rejects.toThrow("只推 agent/");
     expect(prBody(c, { status: "review", summary: "加了索引" })).toContain("@acha（阿查）替 张伟 完成 · 任务 T-0001");
+    expect(prBody(c, { status: "review", summary: "" })).not.toContain("换过来");
+    // its owner switched this task to another runtime (换引擎继续): the PR says which did it
+    const switched = { ...c, agent: { ...c.agent, runtime: "claude" }, task: { ...c.task, runtime: "claude", engine: { from: "codex", to: "claude", reason: "quota", state: "switched" } } };
+    expect(prBody(switched as any, { status: "review", summary: "加了索引" })).toContain("任务 T-0001 · 用 Claude Code 完成（这个任务从 Codex 换过来）");
   } finally {
     rmSync(W, { recursive: true, force: true });
   }

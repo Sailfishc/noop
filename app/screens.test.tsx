@@ -106,6 +106,24 @@ const moveNet = () => server(newLog(), {
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, [moving, ...tasks.slice(1)]);
+// the first task waits for Codex's limit (two hours away) and Claude Code on the same computer can take it: its agent's
+// owner (张伟) is asked whether it goes on with Claude Code
+const reset = Date.now() + 2 * 3600_000;
+const engineTask = (x: Record<string, unknown>) => task({ id: "T-0001", tracked: true, title: "看下慢查询", created_by: "u_1", claimed_by: "m_1", ...x });
+const stopped = engineTask({ state: "waiting", holder: { kind: "user", id: "u_1", why: "engine" },
+  wait: { how: "quota", since: Date.now() - 600_000, expect: reset, machine: "m_1", runtime: "codex" },
+  engine: { from: "codex", to: "claude", machine: "m_1", at: Date.now(), since: Date.now() - 600_000, reason: "quota", state: "proposed" },
+  calls: [{ at: T0, who: "u_1", kind: "engine", class: "outside" }] });
+const switched = engineTask({ state: "running", step: "在读 slow log", runtime: "claude",
+  engine: { from: "codex", to: "claude", machine: "m_1", at: Date.now(), since: Date.now() - 600_000, reason: "quota", state: "switched", decided_by: "u_1" } });
+const engineNet = (t: ReturnType<typeof task>) => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [{ ...box, runtimes: ["codex", "claude"],
+    runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }, { name: "claude", version: "2.1.0", installed: true, logged_in: true }],
+    runtime_status: { codex: { state: "quota", reason: "quota", text: "等额度恢复", until: reset, since: Date.now() - 600_000, at: Date.now() - 600_000 } } }] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [t, ...tasks.slice(1)]);
 
 // The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
 describe("showcase", () => {
@@ -175,6 +193,24 @@ describe("screens", () => {
     expect(app.shows("id:thread >> id:task-T-0001-move-wait")).toBe(true);
     expect(app.shows("id:thread >> id:task-T-0001-move-lost")).toBe(true);
     await shot(app, "thread-move");
+  });
+
+  test("thread-engine: the 换引擎继续 card for the agent's owner; once switched, the task says which runtime runs it", async () => {
+    let app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...SIZE, network: engineNet(stopped) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-engine-go");
+    expect(app.shows("id:thread >> id:task-T-0001-engine-keep")).toBe(true);
+    await shot(app, "thread-engine");
+    app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...SIZE, network: engineNet(switched) });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:从 Codex 换来"); // the facts: Claude Code, switched from Codex (its ⓘ says why)
+    expect(app.shows("id:task-T-0001-engine-go")).toBe(false);
+    await shot(app, "thread-engine-switched");
   });
 
   test("thread-evidence: a delivered task, each criterion with how it was checked", async () => {

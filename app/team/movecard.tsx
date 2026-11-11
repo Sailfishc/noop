@@ -36,6 +36,7 @@ export function MoveCard(props: { team: Team; task: Task; move: Move; busy: bool
   return (
     <Card tight testID={`task-${id()}-move`}>
       <Noted
+        wrap
         testID={`task-${id()}-move-what`}
         note={note()}
         label={<Txt variant="caption" weight="semibold" tone="accent">{L(`${name(props.move.from)} has been offline ${gone()} min; ${id()} stopped on it`, `${name(props.move.from)} 离线 ${gone()} 分钟了，${id()} 停在上面`)}</Txt>}

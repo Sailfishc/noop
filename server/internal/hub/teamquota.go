@@ -106,7 +106,7 @@ func (h *Hub) putRuntimeStatus(machineID, runtime string, s *runtimeStatus) {
 		h.must(h.db.Exec("DELETE FROM runtime_status WHERE machine_id = ? AND runtime = ?", machineID, runtime))
 		// the tasks it held back in the queue: their machine hears of them now, not at its next poll
 		for _, t := range scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'queued'
-			AND `+onMachine("agent_id")+` AND agent_id IN (SELECT id FROM agents WHERE runtime = ?) ORDER BY num`, machineID, runtime)) {
+			AND `+onMachine("agent_id")+` AND (runtime = ? OR (runtime = '' AND agent_id IN (SELECT id FROM agents WHERE runtime = ?))) ORDER BY num`, machineID, runtime, runtime)) {
 			h.taskChanged(t.ID)
 		}
 	} else {

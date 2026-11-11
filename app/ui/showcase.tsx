@@ -144,6 +144,9 @@ export function Showcase() {
           <View style={{ flex: 1, gap: 12 }}>
             <Label testID="showcase-label" text="A label with a note" note="The explanation lives behind the ⓘ, never under the label." />
             <Noted label={<Text style={{ fontSize: scale.text.body, color: colors.text }}>Noted, with something on the right</Text>} note="Pressing ⓘ shows this." right={<Tag label="right" />} />
+            <View style={{ width: 260 }}>
+              <Noted wrap label={<Text style={{ fontSize: scale.text.body, color: colors.text }}>Noted wrap: a sentence on a card wraps in a narrow column, its ⓘ after it</Text>} note="Without wrap a long label runs past the column." />
+            </View>
           </View>
           <Panel title="Panel" note="A panel's note is behind its ⓘ too." style={{ flex: 1 }}>
             <Text style={{ fontSize: scale.text.body, color: colors.muted }}>Content</Text>

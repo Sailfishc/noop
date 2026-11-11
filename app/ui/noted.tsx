@@ -9,13 +9,14 @@ import { alpha, colors, focusRing, hovered, scale } from "./theme";
  * A label with its guidance behind a small ⓘ after it, so a page reads as its labels and fields, not paragraphs
  * (AGENTS.md: explanations go behind an ⓘ). With a pointer, resting on the ⓘ shows the note as a tooltip; a press
  * (or a tap on a phone, which has no hover) opens it in a small popover until the next press or a press elsewhere.
- * `right` goes at the end of the label's row. Test ids: `<testID>-info` (the ⓘ), `<testID>-note` (the open note).
+ * `right` goes at the end of the label's row; `wrap` lets a long label (a sentence on a card) wrap rather than overflow. Test ids: `<testID>-info` (the ⓘ), `<testID>-note` (the open note).
  */
-export function Noted(props: { label: JSX.Element; note?: string; testID?: string; right?: JSX.Element }) {
+export function Noted(props: { label: JSX.Element; note?: string; testID?: string; right?: JSX.Element; wrap?: boolean }) {
   const open = signal(false);
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-      {props.label}
+      {/* wrap: a long label wraps in a narrow column (the thread panel) instead of running past it */}
+      <If when={props.wrap} else={props.label}><View style={{ flexShrink: 1 }}>{props.label}</View></If>
       <If when={props.note}>
         <Popover
           open={open()}

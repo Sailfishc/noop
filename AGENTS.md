@@ -41,6 +41,8 @@ an orders repo on both of 张伟's two machines and @notes, #支付后端) and r
   [--click x,y] out.png`, a screenshot of the web client signed in against the real server.
 - In a request, `[align]`, `[decide]`, `[block]`, `[fail]` and `[slow]` make the fake Codex align first, ask, get stuck, fail or take
   its time; otherwise it commits a file (repository task) or writes `out/notes.md` (general task) and reports review.
+  `[quota]` makes it hit its usage limit (`FAKE_CODEX_QUOTA_MIN` minutes away); the machines also have the same fake as
+  `claude`, which never does, so a long limit brings up the 换引擎继续 card. `dev-shot.cjs --lang zh` shoots in Chinese.
 
 ## Workflow for Small Fixes
 
