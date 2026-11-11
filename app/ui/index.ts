@@ -26,3 +26,4 @@ export { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
 export { ListRow } from "./list-row";
 export { Tabs } from "./tabs";
 export { Empty } from "./empty";
+export { Count } from "./count";

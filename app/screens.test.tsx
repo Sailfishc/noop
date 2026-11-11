@@ -240,9 +240,15 @@ describe("phone", () => {
 // his @bei only his channels'. And an agent's owner who is not in someone's private channel: a row without its content.
 const home = { id: "c_3", slug: "p-1a2b3c4d", name: "私房菜", topic: "周末的菜谱整理", archived: false, created: T0, private: true, created_by: "u_1",
   members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 1 };
+/** 张伟's private chat with his @acha: a request without an @, and its answer. */
+const chat = { id: "c_4", slug: "p-4d4d4d4d", name: "acha", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_1",
+  members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 2 };
 const privNet = () => ({
   ...net(),
-  [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home] } },
+  [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home, chat] } },
+  [`GET ${URL}/api/v1/channels/c_4/messages?*`]: { body: { messages: [
+    msg({ id: "msg_d1", seq: 1, channel_id: "c_4", author: { kind: "user", id: "u_1" }, text: "帮我把下周的会议整理成一张表", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] }),
+    msg({ id: "msg_d2", seq: 2, channel_id: "c_4", author: { kind: "agent", id: "a_1" }, text: "好的，整理好放在 out/meetings.md 了。", mentions: [] })], more: false } },
   [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null },
     { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", dispatch: "team" }] } },
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box, { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" }] } },
@@ -271,6 +277,17 @@ describe("private", () => {
     await app.press("id:open-inbox");
     await app.waitFor("id:task-T-0009");
     await shot(app, "private-inbox-redacted");
+  });
+
+  test("private-dm: a chat with one's own agent, and a first one with someone else's", async () => {
+    const app = await privStart();
+    await app.waitFor("id:side-agent-acha");
+    await app.press("id:side-agent-acha");
+    await app.waitFor("text:好的，整理好放在 out/meetings.md 了。");
+    await shot(app, "private-dm");
+    await app.press("id:side-agent-helper");
+    await app.waitFor("id:dm-draft-helper");
+    await shot(app, "private-dm-new");
   });
 
   test("private-new-channel", async () => {

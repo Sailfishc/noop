@@ -54,9 +54,12 @@ if (existsSync(STATE)) {
   // 张伟's own project: only he (and @notes, his) sees it; 王磊 sees no trace of it
   const mine = await api("POST", "/api/v1/channels", zw.session, { name: "私房菜", topic: "周末的菜谱整理", private: true, members: [{ kind: "agent", id: notes.id }] });
   await api("POST", `/api/v1/channels/${mine.id}/messages`, zw.session, { text: "这里记我自己的事，团队看不到" });
+  // and his private chat with @notes: no @ needed, the message is its work
+  const dm = await api("POST", "/api/v1/channels", zw.session, { dm_agent: notes.id });
+  await api("POST", `/api/v1/channels/${dm.id}/messages`, zw.session, { text: "帮我列一下这周要做的事" });
   state = { zw: zw.session, wl: wl.session, zwId: zw.user.id, wlId: wl.user.id, machineToken: mach.token, channel: pay.id };
   writeFileSync(STATE, JSON.stringify(state, null, 2));
-  console.log("dev: seeded 张伟 (admin), 王磊, the machine 开发机, @acha (orders repo, needs 张伟's confirm), @notes, #支付后端, #运维, 张伟's private 私房菜");
+  console.log("dev: seeded 张伟 (admin), 王磊, the machine 开发机, @acha (orders repo, needs 张伟's confirm), @notes, #支付后端, #运维, 张伟's private 私房菜 and his private chat with @notes");
 }
 
 for (const [who, session] of [["张伟", state.zw], ["王磊", state.wl]] as const) {

@@ -5,21 +5,22 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, safeArea, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner } from "../ui";
-import { reminderUp, createTeam, isMember, runtimeLabel, TEAM_KEYS, type Session, type Team } from "./api";
+import { alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, Txt } from "../ui";
+import { reminderUp, createTeam, isMember, mayBringAgent, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
 import { agentState, chrome, FOOTER, WIDE } from "./ui";
-import { ChannelView, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
+import { ChannelView, DMDraft, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
 import { SignIn } from "./signin";
 
 // ---------------------------------------------------------------- workspace
 
-type Page = { kind: "channel"; id: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search" } | { kind: "home" };
+/** dm: a private chat with the agent not made yet (its first message makes it, and the page becomes the channel). */
+type Page = { kind: "channel"; id: string } | { kind: "dm"; agent: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search" } | { kind: "home" };
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
 /** Narrow windows (phones): the tabs along the bottom. */
 type Tab = "chat" | "inbox" | "tasks" | "me";
@@ -65,7 +66,8 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   effect(() => {
     const cs = t.channels(), me = t.me();
     if (untracked(page).kind !== "home" || !me || !cs.length || !untracked(wide)) return;
-    const first = cs.find((c) => isMember(c, "user", me.id)) ?? cs[0];
+    const first = cs.find((c) => !c.dm_agent && isMember(c, "user", me.id)) ?? cs.find((c) => !c.dm_agent);
+    if (!first) return;
     open({ kind: "channel", id: first.id });
   });
 
@@ -109,6 +111,10 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
           side={side()} onThread={(id) => side.set({ kind: "thread", id })} onMembers={() => side.set(side()?.kind === "members" ? null : { kind: "members" })}
         />
       );
+    }
+    if (p.kind === "dm") {
+      const a = t.agents().find((x) => x.id === p.agent);
+      if (a) return <DMDraft team={t} agent={a} back={!wide()} onBack={() => showList.set(true)} onMade={(id) => open({ kind: "channel", id })} />;
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
     if (p.kind === "tasks") return <TasksPage team={t} back={false} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
@@ -216,9 +222,24 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
   const t = props.team;
   const mine = computed(() => {
     const me = t.me();
-    return t.channels().filter((c) => !c.archived).map((c) => ({ c, member: !!me && isMember(c, "user", me.id) }));
+    return t.channels().filter((c) => !c.archived && !c.dm_agent).map((c) => ({ c, member: !!me && isMember(c, "user", me.id) }));
   });
   const myAgents = () => t.agents().filter((a) => a.owner_id === t.me()?.id);
+  /** 私聊: every agent I may hand work (mine first), then my chats with agents that are gone or no longer take my work. */
+  const chats = computed(() => {
+    const me = t.me();
+    const live = t.agents().filter((a) => mayBringAgent(a, me)).sort((a, b) => Number(b.owner_id === me?.id) - Number(a.owner_id === me?.id));
+    const dead = t.channels().filter((c) => c.dm_agent && c.created_by === me?.id && !live.some((a) => a.id === c.dm_agent));
+    return [...live.map((a) => ({ key: a.id, agent: a as Agent | null, handle: a.handle })), ...dead.map((c) => ({ key: c.dm_agent!, agent: null, handle: c.name }))];
+  });
+  const openChat = (agentId: string) => {
+    const c = t.dmWith(agentId);
+    props.onOpen(c ? { kind: "channel", id: c.id } : { kind: "dm", agent: agentId });
+  };
+  const chatActive = (agentId: string) => {
+    const p = props.page;
+    return (p.kind === "dm" && p.agent === agentId) || (p.kind === "channel" && t.dmWith(agentId)?.id === p.id);
+  };
   const Row = (p: { testID: string; icon: IconName; label: string; active: boolean; badge?: number; dim?: boolean; onPress: () => void }) => (
     <View
       role="button"
@@ -229,11 +250,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
     >
       <Icon name={p.icon} size={15} tint={p.dim ? colors.faint : colors.muted} />
       <Text style={{ flex: 1, fontSize: 14.5, fontWeight: p.badge ? "600" : "400", color: p.dim ? colors.muted : colors.text, numberOfLines: 1 }}>{p.label}</Text>
-      <If when={p.badge}>
-        <View style={{ minWidth: 20, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
-          <Text testID={`${p.testID}-unread`} style={{ fontSize: 11.5, fontWeight: "600", color: colors.onAccent }}>{String(p.badge)}</Text>
-        </View>
-      </If>
+      <Count n={p.badge ?? 0} testID={`${p.testID}-unread`} />
     </View>
   );
   const Section = (p: { label: string; right?: JSX.Element }) => (
@@ -285,36 +302,47 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           )}
         </Each>
         <Section
-          label={L("MY AGENTS", "我的 Agent")}
+          label={L("PRIVATE CHATS", "私聊")}
           right={
             <View role="button" testID="side-agents" accessibilityLabel={L("Manage agents", "管理 Agent")} onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
               <Icon name="settings" size={14} tint={colors.muted} />
             </View>
           }
         />
-        <If when={myAgents().length} else={
+        <Each of={chats()} key={(x) => x.key}>
+          {(x) => {
+            const a = () => x().agent;
+            const st = () => (a() ? agentState(t, a()!) : null);
+            const mine = () => a()?.owner_id === t.me()?.id;
+            const owner = () => t.users().find((u) => u.id === a()?.owner_id)?.name ?? "";
+            const unread = () => { const c = t.dmWith(x().key); return c ? t.unread()[c.id] || 0 : 0; };
+            return (
+              <View role="button" testID={`side-agent-${x().handle}`} onPress={() => openChat(x().key)} hoverStyle={hovered()}
+                style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: chatActive(x().key) ? alpha(colors.text, 0.08) : "transparent" }}>
+                <Avatar name={a()?.name ?? x().handle} agent size={22} />
+                <View style={{ flex: 1, gap: 1 }}>
+                  <Text style={{ fontSize: 14, fontWeight: unread() ? "600" : "400", color: a() ? colors.text : colors.muted, numberOfLines: 1 }}>{a()?.name ?? `@${x().handle}`}</Text>
+                  <If when={st()} else={<Txt variant="caption" tone="faint">{L("history only", "只能看历史")}</Txt>}>
+                    {(s) => (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                        <Dot tone={s().tone} />
+                        <Text testID={`side-agent-${x().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: s().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
+                          {mine() ? `${runtimeLabel(a()!.runtime)} · ${s().label}` : L(`${owner()}’s · ${s().label}`, `${owner()}的 · ${s().label}`)}
+                        </Text>
+                      </View>
+                    )}
+                  </If>
+                </View>
+                <Count n={unread()} testID={`side-agent-${x().handle}-unread`} />
+              </View>
+            );
+          }}
+        </Each>
+        <If when={!myAgents().length}>
           <View role="button" testID="side-agent-new" onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ height: 30, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8 }}>
             <Icon name="plus" size={14} tint={colors.faint} />
             <Text style={{ fontSize: 13.5, color: colors.muted }}>{L("Create your first agent", "新建你的第一个 Agent")}</Text>
           </View>
-        }>
-          <Each of={myAgents()} key={(a) => a.id}>
-            {(a) => {
-              const st = () => agentState(t, a());
-              return (
-                <View role="button" testID={`side-agent-${a().handle}`} onPress={() => props.onSettings("agents", a().handle)} hoverStyle={hovered()} style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 }}>
-                  <Avatar name={a().name} agent size={22} />
-                  <View style={{ flex: 1, gap: 1 }}>
-                    <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                      <Dot tone={st().tone} />
-                      <Text testID={`side-agent-${a().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{`${runtimeLabel(a().runtime)} · ${st().label}`}</Text>
-                    </View>
-                  </View>
-                </View>
-              );
-            }}
-          </Each>
         </If>
       </Scroll>
       {/* phones: me and settings are the Me tab */}

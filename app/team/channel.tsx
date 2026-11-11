@@ -2,7 +2,7 @@
 import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
 import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
@@ -26,6 +26,15 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   const people = () => (channel()?.members ?? []).filter((m) => m.kind === "user");
   const agents = () => (channel()?.members ?? []).filter((m) => m.kind === "agent");
   const faces = () => [...people(), ...agents()].slice(0, 4);
+  /** A private chat: its agent (null once deleted), and why it takes no more messages ("" = it does). */
+  const dmAgent = () => { const id = channel()?.dm_agent; return id ? t.agents().find((a) => a.id === id) ?? null : null; };
+  const dmClosed = () => {
+    const c = channel();
+    if (!c?.dm_agent) return "";
+    const a = dmAgent();
+    if (!a) return L("This agent was deleted. The chat keeps its history.", "这个 Agent 已经删除，私聊只能看历史。");
+    return mayBringAgent(a, t.me()) ? "" : L(`@${a.handle} no longer takes your work. The chat keeps its history.`, `@${a.handle} 不再接你的活，私聊只能看历史。`);
+  };
   const joining = signal(false);
   /** Conversation | Tasks (as in Raft: the channel's tasks as a board or a list). */
   const tab = signal<"chat" | "tasks">("chat");
@@ -35,13 +44,13 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
   return (
     <View style={{ flex: 1 }}>
       <Header
-        title={channel()?.private ? channel()!.name : `# ${channel()?.name ?? ""}`}
-        icon={channel()?.private ? "lock" : undefined}
-        iconLabel={L("Private channel", "私有频道")}
-        subtitle={[channel()?.topic, channel()?.repo ? repoLabel(channel()!.repo!) : ""].filter(Boolean).join(" · ") || undefined}
+        title={channel()?.dm_agent ? dmAgent()?.name ?? `@${channel()!.name}` : channel()?.private ? channel()!.name : `# ${channel()?.name ?? ""}`}
+        icon={channel()?.dm_agent ? "bubble" : channel()?.private ? "lock" : undefined}
+        iconLabel={channel()?.dm_agent ? L("Private chat", "私聊") : L("Private channel", "私有频道")}
+        subtitle={channel()?.dm_agent ? dmSubtitle(t, dmAgent()) : [channel()?.topic, channel()?.repo ? repoLabel(channel()!.repo!) : ""].filter(Boolean).join(" · ") || undefined}
         back={props.back}
         onBack={props.onBack}
-        right={
+        right={channel()?.dm_agent ? undefined : 
           <View
             role="button"
             testID="channel-members"
@@ -89,7 +98,7 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           estimatedItemSize={72}
           onLoadMoreAtStart={() => t.loadOlder(props.id)}
           contentStyle={{ paddingVertical: 12 }}
-          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
+          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{channel()?.dm_agent ? L("No messages yet. Say what you need; no @ needed.", "还没有消息。直接说要它做什么，不用 @。") : L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
           style={{ flex: 1 }}
         >
           {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
@@ -106,16 +115,54 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
             </If>
           }
         >
-          <Composer
-            team={t}
-            channelId={props.id}
-            testID="team-composer"
-            placeholder={L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
-            asTask
-            onSend={(text, files, asTask) => t.send(props.id, text, null, files, asTask)}
-          />
+          <If when={!dmClosed()} else={<View style={{ padding: 12, borderTopWidth: 1, borderTopColor: colors.border }}><Txt testID="dm-closed" tone="muted" center>{dmClosed()}</Txt></View>}>
+            <Composer
+              team={t}
+              channelId={props.id}
+              testID="team-composer"
+              placeholder={channel()?.dm_agent ? L(`Message ${dmAgent()?.name ?? ""}, no @ needed`, `直接跟 ${dmAgent()?.name ?? ""} 说，不用 @`) : L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
+              asTask
+              agent={dmAgent()?.handle}
+              onSend={(text, files, asTask) => t.send(props.id, text, null, files, asTask)}
+            />
+          </If>
         </If>
       </If>
+    </View>
+  );
+}
+
+/** A private chat's subtitle: where its agent runs, when that is someone else's computer (what is said goes there). */
+function dmSubtitle(t: Team, a: Agent | null): string {
+  if (!a) return L("Private chat", "私聊");
+  return a.owner_id === t.me()?.id ? L("Private chat", "私聊") : L(`Private chat · runs on ${agentHost(t, a)}`, `私聊 · 运行在${agentHost(t, a)}上`);
+}
+
+/** A private chat not made yet: the agent's name, an empty page and a box. The first message makes it on the server. */
+export function DMDraft(props: { team: Team; agent: Agent; back: boolean; onBack: () => void; onMade: (channelId: string) => void }) {
+  const t = props.team;
+  return (
+    <View testID={`dm-draft-${props.agent.handle}`} style={{ flex: 1 }}>
+      <Header title={props.agent.name} icon="bubble" iconLabel={L("Private chat", "私聊")} subtitle={dmSubtitle(t, props.agent)} back={props.back} onBack={props.onBack} />
+      <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 12 }}>
+        <Avatar name={props.agent.name} agent size={44} />
+        <Txt variant="message" tone="muted" center>{L(`Only you and @${props.agent.handle} see this chat. Say what you need; no @ needed.`, `这个私聊只有你和 @${props.agent.handle} 看得到。直接说要它做什么，不用 @。`)}</Txt>
+      </View>
+      <Composer
+        team={t}
+        channelId=""
+        testID="team-composer"
+        placeholder={L(`Message ${props.agent.name}, no @ needed`, `直接跟 ${props.agent.name} 说，不用 @`)}
+        asTask
+        agent={props.agent.handle}
+        onSend={async (text, files, asTask) => {
+          const r = await t.openDM(props.agent.id);
+          if (!r.ok) return errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`));
+          const err = await t.send(r.data.id, text, null, files, asTask);
+          if (!err) props.onMade(r.data.id);
+          return err;
+        }}
+      />
     </View>
   );
 }

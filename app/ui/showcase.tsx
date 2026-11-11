@@ -6,6 +6,7 @@ import { Scroll, signal, Text, View, type JSX } from "nsh";
 import { Avatar } from "./avatar";
 import { Btn, IconBtn } from "./button";
 import { Choice } from "./choice";
+import { Count } from "./count";
 import { Dot } from "./dot";
 import { Empty } from "./empty";
 import { ListRow } from "./list-row";
@@ -174,13 +175,15 @@ export function Showcase() {
         </Modal>
       </Section>
 
-      <Section title="Tag tones, Dot (on / off / tones), Spinner, Empty">
+      <Section title="Tag tones, Count, Dot (on / off / tones), Spinner, Empty">
         <Row>
           <Tag label="muted" />
           <Tag label="accent" tone="accent" />
           <Tag label="up" tone="up" />
           <Tag label="warn" tone="warn" />
           <Tag label="danger" tone="danger" />
+          <Count n={3} />
+          <Count n={128} />
           <Dot on />
           <Dot on={false} />
           <Dot tone="up" />
