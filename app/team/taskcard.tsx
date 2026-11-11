@@ -1,8 +1,8 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
-import { L } from "../i18n";
+import { L, lang } from "../i18n";
 import { alpha, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Spinner } from "../ui";
-import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
+import { blockedReason, errorOf, isParty, machinesOf, taskMachine, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
@@ -40,12 +40,20 @@ const HOW: Record<string, () => string> = {
   poll: () => L("checked now and then", "定时查询"),
   timer: () => L("looks again at a set time", "到点再看"),
   answer: () => L("woken by the answer", "等人回答"),
+  quota: () => L("its runtime’s usage limit", "运行时的额度"),
 };
+
+/** A task waiting for its runtime's usage limit: when it goes on by itself. */
+function quotaShort(w: Wait): string {
+  if (w.expect) return L(`Waiting for quota, goes on about ${time(w.expect)}`, `等额度恢复，预计 ${time(w.expect)} 自动继续`);
+  return L(`Waiting for quota, tries again ${time(w.next_at ?? 0)}`, `等额度恢复，${time(w.next_at ?? 0)} 再试`);
+}
 
 /** What a waiting task waits for, in one short line (its card). */
 export function waitShort(task: Task): string {
   const w = task.wait;
   if (!w) return "";
+  if (w.how === "quota") return quotaShort(w);
   const until = w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : L(`until ${time(w.deadline)}`, `最晚 ${time(w.deadline)}`);
   return [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), until].join(" · ");
 }
@@ -54,6 +62,7 @@ export function waitShort(task: Task): string {
 export function waitLines(task: Task): string[] {
   const w = task.wait;
   if (!w) return [];
+  if (w.how === "quota") return [quotaShort(w), ...(w.note ? [w.note] : [])];
   const lines = [
     [w.what || (w.how === "answer" ? L("an answer", "回答") : L("an outside result", "外部结果")), HOW[w.how]?.() ?? w.how].join(" · "),
     [w.expect ? L(`expected ${time(w.expect)}`, `预计 ${time(w.expect)}`) : "", L(`wakes the agent anyway at ${time(w.deadline)}`, `最晚 ${time(w.deadline)} 叫醒 Agent`)].filter(Boolean).join(" · "),
@@ -176,7 +185,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
   const owner = () => t.users().find((u) => u.id === agent()?.owner_id);
-  const machine = () => t.machines().find((m) => m.id === agent()?.machine_id);
+  const machine = () => taskMachine(t, task(), agent());
   const me = () => t.me();
   const isOwner = () => !!me() && (me()!.id === agent()?.owner_id || me()!.role === "admin");
   const party = () => isParty(task(), me(), agent());
@@ -205,7 +214,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (!r.ok) return error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
     renaming.set(false);
   }
-  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff", body: unknown = {}) {
+  async function act(action: "confirm" | "decline" | "cancel" | "accept" | "decide" | "reopen" | "takeover" | "handoff" | "retry", body: unknown = {}) {
     busy.set(action);
     error.set("");
     const r = await t.act(task().id, action, body);
@@ -215,7 +224,12 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   const waiting = () => {
     const s = task().state;
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
-    if (s === "queued" && agent()?.paused) return L(`Waiting: the agent is paused (${agent()!.paused!.text}); reply here once it is fixed`, `排队中：Agent 已暂停（${agent()!.paused!.text}），处理好后在这里回复一句`);
+    // several computers and none can take it now (as the server picks): it goes to whichever comes back first
+    if (s === "queued" && !task().claimed_by && agent() && machinesOf(t, agent()!).length > 1 && blockedReason(agent()!, machine(), false)) {
+      return L("Waiting for one of its computers to free up", "等一台能接活的电脑");
+    }
+    const trouble = s === "queued" ? machine()?.runtime_status?.[agent()?.runtime ?? "codex"] : undefined;
+    if (trouble) return `${machine()!.name}${L(": ", "：")}${runtimeTrouble(trouble, lang() !== "zh")}`;
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
     if (s === "running") return task().step || L("Working…", "干活中…");
     if (s === "waiting") return waitShort(task());
@@ -386,11 +400,14 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           <Btn small kind="primary" testID={`task-${task().id}-confirm`} label={L("Start it", "确认开工")} busy={busy() === "confirm"} onPress={() => act("confirm")} />
           <Btn small testID={`task-${task().id}-decline`} label={L("Decline", "不接")} busy={busy() === "decline"} onPress={() => act("decline")} />
         </If>
+        <If when={task().state === "waiting" && task().wait?.how === "quota" && party()}>
+          <Btn small kind="primary" testID={`task-${task().id}-retry`} label={L("Try now", "现在就试")} busy={busy() === "retry"} onPress={() => act("retry")} />
+        </If>
         <If when={task().state === "review" && party()}>
           <Btn small kind="primary" testID={`task-${task().id}-accept`} label={L("Accept", "验收通过")} busy={busy() === "accept"} onPress={() => act("accept")} />
         </If>
         <If when={party() && !["done", "closed"].includes(task().state) && !(task().state === "pending" && isOwner())}>
-          <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
+          <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : task().state === "waiting" ? L("Cancel", "取消") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />
         </If>
         <If when={party() && ["review", "needs_decision", "blocked", "failed"].includes(task().state)}>
           <If when={task().state !== "review"}>

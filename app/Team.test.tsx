@@ -507,6 +507,36 @@ describe("settings", () => {
     expect(app.shows("id:machine-remove-confirm-m_1")).toBe(true);
   });
 
+  test("an agent on several of one's computers: tick them and put them in order", async () => {
+    const saved: any[] = [];
+    const desk = { ...mac, id: "m_3", name: "张伟的台式机", runtime_info: [{ name: "codex", installed: true, logged_in: true }] };
+    let agent = { ...acha };
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 900,
+      network: {
+        ...server(newLog()),
+        [`GET ${URL}/api/v1/machines`]: { body: { machines: [mac, desk] } },
+        [`GET ${URL}/api/v1/agents`]: () => ({ body: { agents: [agent] } }),
+        [`PATCH ${URL}/api/v1/agents/a_1`]: (r: { body?: string | null }) => {
+          const b = JSON.parse(r.body!);
+          saved.push(b);
+          agent = { ...agent, machines: b.machines, machine_id: b.machines[0] ?? null };
+          return { body: agent };
+        },
+      },
+    });
+    await settings(app, "agents");
+    await app.waitFor("id:agent-acha-machine-m_3-on");
+    expect(app.shows("id:agent-acha-machine-m_1-up")).toBe(false); // one computer: nothing to order
+    await app.press("id:agent-acha-machine-m_3-on");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ machines: ["m_1", "m_3"] });
+    await app.waitFor("id:agent-acha-machine-m_3-up");
+    await app.press("id:agent-acha-machine-m_3-up");
+    await app.waitUntil(() => saved.length === 2);
+    expect(saved[1]).toEqual({ machines: ["m_3", "m_1"] });
+  });
+
   test("a new agent: a machine first, then a runtime on it and its model, then who can use it", async () => {
     const created: any[] = [];
     const reported = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: true },
@@ -1333,8 +1363,8 @@ describe("private channels", () => {
   // 张伟's own project: him and @acha; 王磊 owns @bei (his channels' work only) and @helper (the whole team's)
   const home = { id: "c_3", slug: "p-1a2b3c4d", name: "私房菜", topic: "", archived: false, created: T0, private: true, created_by: "u_1",
     members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_1" }], last_seq: 0 };
-  const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, dispatch: "channel" };
-  const helper = { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", dispatch: "team" };
+  const bei = { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, machines: [], dispatch: "channel" };
+  const helper = { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", machines: ["m_2"], dispatch: "team" };
   const wlMac = { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" };
   const net = (log: Log, over: Record<string, unknown> = {}, tasks: any[] = []) => ({
     ...server(log, {}, tasks),

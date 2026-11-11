@@ -167,6 +167,7 @@ func TestPrivateChannelMembers(t *testing.T) {
 	check(t, "a team-wide agent comes in", r.status == 200, r)
 
 	// its owner is not in the channel: they confirm its work without seeing what it is
+	before := len(llLive.all())
 	m := e.do("POST", "/api/v1/channels/"+p.pid+"/messages", e.wl.session, map[string]any{"text": "@helper 帮忙试吃 zebra"}).body
 	ts := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.wl.session, nil).body["tasks"].([]any)
 	tid := ts[0].(map[string]any)["id"].(string)
@@ -176,6 +177,8 @@ func TestPrivateChannelMembers(t *testing.T) {
 	check(t, "without what it is about", row["redacted"] == true && row["title"] == "" && row["body"] == "" && row["channel_id"] == "" && row["thread_id"] == "" &&
 		row["needs"] == "confirm" && row["created_by"] == e.wl.id && row["agent_id"] == team && !strings.Contains(string(e.do("GET", "/api/v1/inbox", e.ll.session, nil).raw), "zebra"))
 	check(t, "they still cannot open it", e.do("GET", "/api/v1/tasks/"+tid, e.ll.session, nil).status == 404)
+	live := llLive.all()[before:]
+	check(t, "the row reaches them live, as redacted as in the inbox", strings.Contains(live, `"id":"`+tid+`"`) && strings.Contains(live, `"redacted":true`) && !strings.Contains(live, "zebra"))
 	r = e.do("POST", "/api/v1/tasks/"+tid+"/confirm", e.ll.session, nil)
 	check(t, "but they confirm it, and the answer says no more", r.status == 200 && r.body["state"] == "queued" && r.body["redacted"] == true && !strings.Contains(string(r.raw), "zebra"), r)
 

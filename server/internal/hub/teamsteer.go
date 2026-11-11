@@ -163,7 +163,11 @@ func (h *Hub) v1AgentRepo(w http.ResponseWriter, q *request) {
 		errJSON(w, 429, "一个任务最多声明 5 个仓库")
 		return
 	}
-	if a.MachineID == nil || !h.machineReaches(*a.MachineID, remote) {
+	at := h.holder(t) // the computer running it
+	if at == "" && a.MachineID != nil {
+		at = *a.MachineID
+	}
+	if at == "" || !h.machineReaches(at, remote) {
 		errJSON(w, 403, "这台机器上没有 "+remote+"，也没有它所在平台的凭证；请人把仓库放到这台机器上，或者换一台机器")
 		return
 	}

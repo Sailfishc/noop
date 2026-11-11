@@ -271,8 +271,29 @@ func (h *Hub) taskOut(q *request, t taskView) taskView {
 }
 
 func (h *Hub) taskChanged(id string) {
-	if t, ok := h.task(id); ok {
-		h.broadcastChannel(t.ChannelID, obj{"type": "task", "task": t})
+	t, ok := h.task(id)
+	if !ok {
+		return
+	}
+	h.broadcastChannel(t.ChannelID, obj{"type": "task", "task": t})
+	// its people outside the channel (the agent's owner who confirms it, a requester who left) see it in their inbox
+	// too: the whole task where they may read the channel, else as redacted as the inbox shows it
+	people := []string{t.CreatedBy, t.Handler}
+	if a, ok := h.agent(t.AgentID); ok {
+		people = append(people, a.OwnerID)
+	}
+	told := map[string]bool{}
+	for _, u := range people {
+		if u == "" || told[u] || h.isMember(t.ChannelID, "user", u) {
+			continue
+		}
+		told[u] = true
+		out := t
+		if !h.userCanRead(u, t.ChannelID) {
+			out = redact(t)
+		}
+		b, _ := json.Marshal(obj{"type": "task", "task": out})
+		h.socks.send("u:"+u, b)
 	}
 }
 
@@ -589,11 +610,13 @@ func (h *Hub) v1Inbox(w http.ResponseWriter, q *request) {
 		OR (t.state = 'needs_decision' AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state = 'review' AND COALESCE(NULLIF(t.handler, ''), t.created_by) = ?)
 		OR (t.state IN ('blocked', 'failed') AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
+		OR (t.state = 'waiting' AND json_extract(t.wait, '$.how') = 'quota' AND json_extract(t.wait, '$.stale') = 1
+			AND (t.created_by = ? OR t.agent_id IN (SELECT id FROM agents WHERE owner_id = ?)))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.asked) q
 			WHERE json_extract(q.value, '$.user') = ? AND COALESCE(json_extract(q.value, '$.answered'), 0) = 0))
 		OR (t.state NOT IN ('done', 'closed') AND EXISTS (SELECT 1 FROM json_each(t.handoffs) x WHERE json_extract(x.value, '$.state') = 'proposed'
 			AND (COALESCE(NULLIF(t.handler, ''), t.created_by) = ? OR json_extract(x.value, '$.to') IN (SELECT id FROM agents WHERE owner_id = ?))))
-		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me))
+		ORDER BY t.updated DESC LIMIT 200`, me, me, me, me, me, me, me, me, me, me, me))
 	ts = h.withOutputs(ts)
 	for i := range ts {
 		ts[i] = h.taskOut(q, ts[i]) // an owner not in a private channel still confirms; they see no more than that
@@ -814,8 +837,12 @@ func (h *Hub) machineTask(w http.ResponseWriter, q *request) (taskView, agentVie
 		return t, agentView{}, false
 	}
 	a, _ := h.agent(t.AgentID)
-	if a.MachineID == nil || *a.MachineID != q.who.machineID {
+	if !h.agentOn(a.ID, q.who.machineID) {
 		errJSON(w, 403, "这个任务的 Agent 不在这台机器上")
+		return t, a, false
+	}
+	if hold := h.holder(t); hold != "" && hold != q.who.machineID { // it stays on the computer that took it
+		errJSON(w, 409, "这个任务在另一台电脑上进行，留在那台")
 		return t, a, false
 	}
 	return t, a, true
@@ -828,13 +855,13 @@ const endedKeep = 7 * 24 * time.Hour
 func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 	if q.query("waiting") == "1" { // its tasks that wait on a check command it runs
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state = 'waiting' AND json_extract(wait, '$.how') = 'poll'
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+			AND claimed_by = ? ORDER BY num`, q.who.machineID))
 		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	if q.query("prs") == "1" { // the open PRs of its agents' tasks, to follow their state and CI
 		writeJSON(w, 200, obj{"tasks": scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE json_extract(pr, '$.state') = 'open'
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))})
+			AND claimed_by = ? ORDER BY num`, q.who.machineID))})
 		return
 	}
 	if ids := q.query("ended"); ids != "" { // of the task folders it keeps, the ones whose task ended a week ago or more
@@ -847,16 +874,29 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 			args = append(args, id)
 		}
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('done', 'closed')
-			AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) AND updated < ?
+			AND claimed_by = ? AND updated < ?
 			AND id IN (?`+strings.Repeat(", ?", len(list)-1)+`) ORDER BY num`, args...))
 		writeJSON(w, 200, obj{"tasks": ts})
 		return
 	}
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('queued', 'running')
-		AND agent_id IN (SELECT id FROM agents WHERE machine_id = ?) ORDER BY num`, q.who.machineID))
+		AND `+onMachine("agent_id")+` ORDER BY num`, q.who.machineID))
 	out := []taskView{}
+	agents := map[string]agentView{}
 	for _, t := range ts {
-		if t.State == taskQueued || (t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID) {
+		if t.State == taskQueued {
+			a, ok := agents[t.AgentID]
+			if !ok {
+				a, _ = h.agent(t.AgentID)
+				agents[t.AgentID] = a
+			}
+			if ok, _ := h.pickable(t, a, q.who.machineID); !ok { // another of its computers takes it (teampool.go)
+				continue
+			}
+			if ok, _ := h.runtimeGate(t, q.who.machineID, a.Runtime, false); ok { // held back by its runtime here: not offered
+				out = append(out, t)
+			}
+		} else if t.ClaimedBy != nil && *t.ClaimedBy == q.who.machineID {
 			out = append(out, t)
 		}
 	}
@@ -889,7 +929,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	}
 	// claimed again by its own machine: a restart of the daemon (counted), unless it stopped the run to take up news
 	// (a reply, an answer, a repository it asked for): that is the run going on, not dying
-	if !h.mayRun(w, t, a, mine && !t.News) {
+	if !h.mayRun(w, t, a, q.who.machineID, mine && !t.News) {
 		return
 	}
 	fresh := h.unseen(t)
@@ -976,8 +1016,13 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		// Run: which run of the task this is (its runs when claimed). A final report of an earlier run is refused, so a
 		// report the machine sends again (it kept it until the server took it) never lands twice.
 		Run int64 `json:"run"`
-		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go)
+		// Failure: with state blocked or failed, what kind of failure ended the run (teamhealth.go); with state waiting,
+		// "quota": the runtime hit a usage limit, and the task waits for it to reset (teamquota.go)
 		Failure string `json:"failure"`
+		// RetryAt, Note: with failure quota, when the runtime said the limit resets (unix ms, 0: it did not say) and
+		// what it said
+		RetryAt int64  `json:"retry_at"`
+		Note    string `json:"note"`
 		// Usage: tokens this run used
 		Usage *usageView `json:"usage"`
 		// Evidence: with state review, how each acceptance criterion was verified (teamevidence.go)
@@ -1055,7 +1100,11 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			errJSON(w, 400, "state 只能是 review、needs_decision、blocked、failed 或 waiting")
 			return
 		}
-		if b.State == taskWaiting {
+		quota := b.State == taskWaiting && b.Failure == "quota"
+		if quota {
+			s := h.runtimeFailed(q.who.machineID, a.Runtime, "quota", b.RetryAt, b.Note)
+			cols["wait"] = jsonOrNil(quotaWait(q.who.machineID, a.Runtime, s, h.nowMs()))
+		} else if b.State == taskWaiting {
 			wt, msg := h.newWait(b.Wait)
 			if wt == nil {
 				errJSON(w, 400, msg)
@@ -1066,7 +1115,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		if b.Result == "confirmed" || b.Result == "unconfirmed" {
 			cols["result"] = b.Result
 		}
-		h.runEnded(t, a, b.State, b.Failure, cols)
+		h.runEnded(t, a, q.who.machineID, b.State, b.Failure, b.RetryAt, b.Note, cols)
 		state := b.State
 		summary := trimmed(b.Summary, 8000)
 		cols["summary"], cols["step"] = summary, ""
@@ -1107,7 +1156,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" {
 			state = taskDone
-		} else if state == taskReview || state == taskWaiting {
+		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
 		}
 		if t.News {

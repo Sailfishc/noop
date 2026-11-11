@@ -80,8 +80,8 @@ func (h *Hub) canRead(w *principal, channelID string) bool {
 	if w.machineID == "" {
 		return h.userCanRead(w.userID, channelID)
 	}
-	return h.count(`SELECT COUNT(*) FROM channel_members cm JOIN agents a ON a.id = cm.member_id
-		WHERE cm.channel_id = ? AND cm.kind = 'agent' AND a.machine_id = ?`, channelID, w.machineID) > 0
+	return h.count(`SELECT COUNT(*) FROM channel_members cm JOIN agent_machines am ON am.agent_id = cm.member_id
+		WHERE cm.channel_id = ? AND cm.kind = 'agent' AND am.machine_id = ?`, channelID, w.machineID) > 0
 }
 
 // userCanRead: the person sees the channel: it is public, or they are in it.
@@ -124,8 +124,8 @@ func (h *Hub) broadcastPeople(frame obj) {
 func (h *Hub) broadcastChannel(channelID string, frame obj) {
 	b, _ := json.Marshal(frame)
 	rows, err := h.db.Query(`SELECT 'u:' || member_id FROM channel_members WHERE channel_id = ? AND kind = 'user'
-		UNION SELECT 'm:' || a.machine_id FROM channel_members cm JOIN agents a ON a.id = cm.member_id
-		WHERE cm.channel_id = ? AND cm.kind = 'agent' AND a.machine_id IS NOT NULL`, channelID, channelID)
+		UNION SELECT 'm:' || am.machine_id FROM channel_members cm JOIN agent_machines am ON am.agent_id = cm.member_id
+		WHERE cm.channel_id = ? AND cm.kind = 'agent'`, channelID, channelID)
 	if err != nil {
 		panic(err)
 	}
@@ -625,7 +625,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 	author := member{"user", q.who.userID}
 	if q.who.machine {
 		a, ok := h.agent(b.AsAgent)
-		if !ok || a.MachineID == nil || *a.MachineID != q.who.machineID {
+		if !ok || !h.agentOn(a.ID, q.who.machineID) {
 			errJSON(w, 403, "这台机器上没有这个 Agent")
 			return
 		}
@@ -728,7 +728,7 @@ func (h *Hub) v1Edit(w http.ResponseWriter, q *request) {
 	mine := (m.Author.Kind == "user" && !q.who.machine && m.Author.ID == q.who.userID)
 	if m.Author.Kind == "agent" && q.who.machine {
 		a, ok := h.agent(m.Author.ID)
-		mine = ok && a.MachineID != nil && *a.MachineID == q.who.machineID
+		mine = ok && h.agentOn(a.ID, q.who.machineID)
 	}
 	if !mine {
 		errJSON(w, 403, "只能改自己的消息")
@@ -756,7 +756,7 @@ func (h *Hub) v1Updates(w http.ResponseWriter, q *request) {
 	var err error
 	if q.who.machine {
 		rows, err = h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.seq > ? AND m.channel_id IN (
-			SELECT cm.channel_id FROM channel_members cm JOIN agents a ON a.id = cm.member_id WHERE cm.kind = 'agent' AND a.machine_id = ?)
+			SELECT cm.channel_id FROM channel_members cm JOIN agent_machines am ON am.agent_id = cm.member_id WHERE cm.kind = 'agent' AND am.machine_id = ?)
 			ORDER BY m.seq LIMIT 501`, after, q.who.machineID)
 	} else {
 		rows, err = h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.seq > ? AND m.channel_id IN (

@@ -10,9 +10,9 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
+import { alpha, Avatar, Btn, Choice, IconBtn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
 import {
-  installCommand, isLoopback, loginQr, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
+  blockedReason, installCommand, isLoopback, loginQr, machineNow, machinesOf, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn, runtimeTrouble,
   type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { momentsLine, outsideLine, statsLine } from "./calls";
@@ -480,7 +480,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
   const split = () => windowSize().width >= 1080;
   /** Phones: the list, or one agent's page (never both). */
   const narrow = () => windowSize().width < WIDE;
-  const machineOf = (a: Agent) => t.machines().find((m) => m.id === a.machine_id);
+  const machineOf = (a: Agent) => machineNow(t, a); // where its new work goes
   const list = () => (
     <View style={{ gap: 4, ...(split() ? { width: 280 } : {}) }}>
       <Each of={mine()} key={(a) => a.id}>
@@ -548,6 +548,61 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
   );
 }
 
+/** An agent's computers: the ones it may run on, ticked and in order (a new task goes to the first that can take it),
+ * each with whether it can take work now. A team machine's agent has that one machine. */
+function AgentMachines(props: { team: Team; agent: Agent; onChange: (ids: string[]) => void }) {
+  const t = props.team;
+  const a = () => props.agent;
+  const picked = () => machinesOf(t, a()).map((m) => m.id);
+  const onTeam = () => !!machinesOf(t, a())[0]?.team;
+  /** The rows: its computers in order, then the owner's others (a team agent: just its machine, or pick one). */
+  const rows = () => {
+    const own = myMachinesOf(t).filter((m) => (onTeam() ? !!m.team : !m.team && m.owner_id === a().owner_id));
+    return [...machinesOf(t, a()), ...own.filter((m) => !picked().includes(m.id))];
+  };
+  const set = (ids: string[]) => props.onChange(ids);
+  const toggle = (id: string, on: boolean) => {
+    if (onTeam()) return set(on ? [id] : []);
+    set(on ? [...picked(), id] : picked().filter((x) => x !== id));
+  };
+  const move = (id: string, by: number) => {
+    const ids = [...picked()];
+    const i = ids.indexOf(id);
+    const j = i + by;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    set(ids);
+  };
+  return (
+    <View style={{ gap: 2 }}>
+      <Each of={rows()} key={(m) => m.id}>
+        {(m) => {
+          const at = () => picked().indexOf(m().id);
+          const why = () => blockedReason(a(), m(), lang() !== "zh");
+          const id = () => `agent-${a().handle}-machine-${m().id}`;
+          return (
+            <View testID={id()} style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 40 }}>
+              <Toggle testID={`${id()}-on`} label={m().name} value={at() >= 0} onChange={(on) => toggle(m().id, on)} />
+              <Dot on={m().online} />
+              <Txt weight="medium" lines={1}>{m().name}</Txt>
+              <View style={{ flex: 1 }}>
+                <If when={at() >= 0}>
+                  <Noted testID={`${id()}-status`} note={why() || undefined}
+                    label={<Txt variant="caption" lines={1} tone={why() ? "warn" : "up"}>{at() === 0 && picked().length > 1 ? L("first · ", "第一 · ") : ""}{why() ? L("can’t take work now", "暂时接不了活") : L("can take work", "能接活")}</Txt>} />
+                </If>
+              </View>
+              <If when={at() >= 0 && picked().length > 1}>
+                <IconBtn size="sm" icon="arrow-up" testID={`${id()}-up`} label={L("Try it earlier", "往前排")} disabled={at() === 0} onPress={() => move(m().id, -1)} />
+                <IconBtn size="sm" icon="arrow-down" testID={`${id()}-down`} label={L("Try it later", "往后排")} disabled={at() === picked().length - 1} onPress={() => move(m().id, 1)} />
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+    </View>
+  );
+}
+
 function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }) {
   const t = props.team;
   const a = () => props.agent;
@@ -556,7 +611,6 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
   const owner = () => t.users().find((u) => u.id === a().owner_id);
   const st = () => agentState(t, a());
   const error = signal("");
-  const moving = signal(false);
   const removing = signal(false);
   async function patch(p: Partial<Agent>) {
     error.set("");
@@ -599,19 +653,11 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         </Panel>
       </If>
 
-      <Panel title={L("Runs on", "运行在")} testID={`agent-runs-${a().handle}`} note={L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Dot on={!!machine()?.online} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 14.5, fontWeight: "500", color: colors.text }}>{machine()?.name ?? L("No machine", "没有机器")}</Text>
-            <Text style={{ fontSize: 12.5, color: colors.muted }}>{machine() ? [machine()!.online ? L("online", "在线") : L("offline", "离线"), machine()!.os, L(`${machine()!.max_sessions} at a time`, `同时 ${machine()!.max_sessions} 个`)].filter(Boolean).join(" · ") : L("Pick one of your machines.", "选一台你的机器。")}</Text>
-          </View>
-          <If when={myMachines().length} else={<Btn small label={L("Add a machine", "添加机器")} onPress={props.onMachines} />}>
-            <Btn small testID={`agent-move-${a().handle}`} label={L("Change machine", "换机器")} onPress={() => moving.update((v) => !v)} />
-          </If>
-        </View>
-        <If when={moving()}>
-          <Choice testID={`agent-machine-${a().handle}`} options={myMachines().map((m) => ({ value: m.id, label: m.name }))} value={a().machine_id ?? ""} onChange={async (v) => { if (await patch({ machine_id: v })) moving.set(false); }} />
+      <Panel title={L("Runs on", "运行在")} testID={`agent-runs-${a().handle}`} note={machine()?.team
+        ? L("Changes apply to new tasks; running ones finish where they started.", "改动只影响新任务，正在跑的任务在原来的地方跑完。")
+        : L("Tick the computers it may run on and put them in order: a new task goes to the first one that can take it (online, its runtime logged in and not out of quota, a free slot). A task stays on the computer that took it.", "勾上它可以用的电脑并排好先后：新任务交给第一台能接活的（在线、Runtime 已登录且没在等额度、还有空位）。任务被哪台接走就留在那台。")}>
+        <If when={myMachines().length} else={<View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}><Txt grow tone="muted">{L("No machine", "没有机器")}</Txt><Btn small label={L("Add a machine", "添加机器")} onPress={props.onMachines} /></View>}>
+          <AgentMachines team={t} agent={a()} onChange={(ids) => void patch({ machines: ids })} />
         </If>
         <Label text="Runtime" />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -764,7 +810,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
     machine.set(props.machine ?? (ms.find((m) => m.online) ?? ms[0])?.id ?? "");
   });
   const picked = () => mine().find((m) => m.id === machine());
-  const agentsOn = (m: Machine) => t.agents().filter((a) => a.machine_id === m.id);
+  const agentsOn = (m: Machine) => t.agents().filter((a) => a.machine_id === m.id || !!a.machines?.includes(m.id));
   /** Can this runtime be picked on the picked machine, and what to say about it. */
   const rt = (name: string): { ok: boolean; note: string; warn: boolean } => {
     const r = RUNTIMES.find((x) => x.name === name)!;
@@ -995,7 +1041,7 @@ function InstallCommand(props: { team: Team; name: string; code: string }) {
 function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => void; onAgent: (handle: string) => void }) {
   const t = props.team;
   const m = () => props.machine;
-  const agents = () => t.agents().filter((a) => a.machine_id === m().id);
+  const agents = () => t.agents().filter((a) => a.machine_id === m().id || !!a.machines?.includes(m().id));
   const confirming = signal(false);
   const join = signal("");
   const joinError = signal("");
@@ -1078,12 +1124,18 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <If when={reported()} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("Start the daemon on that computer; it reports its runtimes when it connects.", "在那台电脑上启动守护进程，连上后会上报它的 Runtime。")}</Text>}>
         <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
           <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Login", "登录"), 0.8, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1.4, colors.muted)}
+            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Status", "状态"), 1.6, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1, colors.muted)}
           </View>
           <Each of={[...RUNTIMES]}>
             {(r) => {
               const info = () => runtimeOn(m(), r().name);
               const users = () => agents().filter((a) => a.runtime === r().name);
+              const trouble = () => m().runtime_status?.[r().name];
+              // can it take work: its trouble (a quota it waits for, credit, login), else how it is logged in
+              const status = (): [string, TextTone] => !info()?.installed ? ["—", "faint"]
+                : trouble() ? [runtimeTrouble(trouble()!, lang() !== "zh"), trouble()!.state === "quota" ? "warn" : "danger"]
+                : info()!.logged_in === false ? [L("not logged in", "未登录"), "warn"]
+                : info()!.logged_in === true ? [L("✓ logged in", "✓ 已登录"), "default"] : [L("unknown", "未知"), "default"];
               return (
                 <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
                   <View style={{ flex: 1.2, flexDirection: "row", alignItems: "center", gap: 6 }}>
@@ -1091,8 +1143,11 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
                     <If when={!r().ready}><Tag label={L("phase 2", "第二阶段")} /></If>
                   </View>
                   {cell(info()?.installed ? (info()!.version ? `v${info()!.version}` : L("installed", "已安装")) : L("not installed", "未安装"), 0.8, info()?.installed ? colors.text : colors.faint)}
-                  {cell(!info()?.installed ? "—" : info()!.logged_in === true ? L("✓ logged in", "✓ 已登录") : info()!.logged_in === false ? L("not logged in", "未登录") : L("unknown", "未知"), 0.8, info()?.logged_in === false ? colors.warn : colors.text)}
-                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1.4, colors.muted)}
+                  <View style={{ flex: 1.6 }}>
+                    <Noted testID={`machine-${m().id}-runtime-${r().name}-status`} note={trouble()?.note}
+                      label={<Txt lines={1} grow tone={status()[1]}>{status()[0]}</Txt>} />
+                  </View>
+                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1, colors.muted)}
                 </View>
               );
             }}

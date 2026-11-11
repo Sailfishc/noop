@@ -43,7 +43,7 @@ const box = { ...mac, team: true, git: [{ provider: "gitlab", host: "code.corp.c
   team_config: { repo: "git@code.corp.com:team/remi-config.git", commit: "abc1234", synced: T0, instructions: true } };
 const net = () => server(newLog(), {
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
-  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null }] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, machines: [] }] } },
   [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, tasks);
@@ -251,6 +251,85 @@ describe("screens", () => {
   });
 });
 
+// Step 3 「额度等重置」: codex on the Mac waits for its 5-hour limit, claude there needs its owner (out of credit), and
+// the first task waits in its session for the reset, with 「现在就试」.
+const RESET = Date.now() + 3 * 3_600_000;
+const quotaBox = { ...box, runtimes: ["codex", "claude"],
+  runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }, { name: "claude", version: "2.1.322", installed: true, logged_in: true }],
+  runtime_status: {
+    codex: { state: "quota", reason: "quota", text: "等额度恢复", note: "You’ve hit your usage limit. Try again at 2:30 PM.", until: RESET, next_at: RESET + 90_000, since: T0, at: T0 },
+    claude: { state: "blocked", reason: "billing", text: "需要你处理：余额不足", note: "Credit balance is too low", since: T0, at: T0 },
+  } };
+const quotaTask = task({ id: "T-0001", state: "waiting", tracked: true, title: "看下慢查询", created_by: "u_1", session: "thr_1",
+  wait: { how: "quota", expect: RESET, next_at: RESET + 90_000, deadline: 0, since: T0, machine: "m_1", runtime: "codex", note: "You’ve hit your usage limit. Try again at 2:30 PM." } });
+const quotaNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [quotaBox] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+  [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages, more: false } },
+  [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
+}, [quotaTask, ...tasks.slice(1)]);
+
+describe("quota", () => {
+  test("a task waits for its runtime's quota; the machine card says how each runtime is", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: quotaNet() });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:close-thread");
+    await app.waitFor("text:收到，在看");
+    await app.waitFor("id:thread >> id:task-T-0001-retry");
+    await shot(app, "thread-quota");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings");
+    await app.press("id:settings-nav-machines");
+    await app.waitFor("id:machine-m_1-runtime-codex-status-info");
+    await shot(app, "settings-machines-quota");
+  });
+
+  test("on a phone", async () => {
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 390, height: 844, network: quotaNet() });
+    await app.waitFor("id:channel-pay");
+    await app.press("id:channel-pay");
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:task-T-0001-retry");
+    await shot(app, "phone-quota-thread");
+  });
+});
+
+// An agent on two of its owner's computers: the first waits for its quota, so new work goes to the second.
+const mine = { ...quotaBox, team: false, name: "张伟的 Mac", git: [] };
+const desk = { ...mac, id: "m_3", name: "张伟的台式机", runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }] };
+const laptop = { ...mac, id: "m_4", name: "张伟的笔记本", online: false, runtime_info: [{ name: "codex", version: "0.80.0", installed: true, logged_in: true }] };
+const poolNet = () => server(newLog(), {
+  [`GET ${URL}/api/v1/machines`]: { body: { machines: [mine, desk, laptop] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [{ ...acha, machine_id: mine.id, machines: [mine.id, desk.id] }] } },
+});
+
+describe("pool", () => {
+  test("an agent's computers, in order, with whether each can take work", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: poolNet() });
+    await app.waitFor("id:open-tasks");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings");
+    await app.press("id:settings-nav-agents");
+    await app.waitFor(`id:agent-acha-machine-${desk.id}`);
+    expect(app.shows(`id:agent-acha-machine-${laptop.id}-up`)).toBe(false); // not ticked: not in the order
+    await shot(app, "settings-agent-machines");
+  });
+
+  test("on a phone", async () => {
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 390, height: 844, network: poolNet() });
+    await app.waitFor("id:tab-me");
+    await app.press("id:tab-me");
+    await app.waitFor("id:settings-nav-agents");
+    await app.press("id:settings-nav-agents");
+    await app.waitFor("id:agent-acha");
+    await app.press("id:agent-acha");
+    await app.waitFor(`id:agent-acha-machine-${desk.id}`);
+    await shot(app, "phone-agent-machines");
+  });
+});
+
 // Phones: the tab bar's four tabs, a channel and its thread, one agent's page.
 const PHONE = { width: 390, height: 844 };
 const phone = () => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...PHONE, network: net() });
@@ -319,8 +398,8 @@ const privNet = () => ({
   [`GET ${URL}/api/v1/channels/c_4/messages?*`]: { body: { messages: [
     msg({ id: "msg_d1", seq: 1, channel_id: "c_4", author: { kind: "user", id: "u_1" }, text: "帮我把下周的会议整理成一张表", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] }),
     msg({ id: "msg_d2", seq: 2, channel_id: "c_4", author: { kind: "agent", id: "a_1" }, text: "好的，整理好放在 out/meetings.md 了。", mentions: [] })], more: false } },
-  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null },
-    { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", dispatch: "team" }] } },
+  [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha, { ...acha, id: "a_2", handle: "bei", name: "贝", owner_id: "u_2", machine_id: null, machines: [] },
+    { ...acha, id: "a_3", handle: "helper", name: "帮手", owner_id: "u_2", machine_id: "m_2", machines: ["m_2"], dispatch: "team" }] } },
   [`GET ${URL}/api/v1/machines`]: { body: { machines: [box, { ...mac, id: "m_2", owner_id: "u_2", name: "王磊的 Mac" }] } },
   [`GET ${URL}/api/v1/channels/c_3/messages?*`]: { body: { messages: [msg({ id: "msg_p1", seq: 1, channel_id: "c_3", author: { kind: "user", id: "u_1" }, text: "@acha 把这周末的菜谱整理成一张表", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] })], more: false } },
   [`GET ${URL}/api/v1/inbox`]: { body: { tasks: [task({ id: "T-0009", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "pending", tracked: true, redacted: true, updated: Date.now() })] } },

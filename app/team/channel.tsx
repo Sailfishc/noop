@@ -3,7 +3,7 @@ import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
 import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
-import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
+import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
 import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
@@ -547,7 +547,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
                             <Dot tone={st().tone} />
                             <Text testID={`member-${a().handle}-state`} style={{ flex: 1, fontSize: 12, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
-                              {st().blocked ? st().label : [t.machines().find((m) => m.id === a().machine_id)?.name, st().label].filter(Boolean).join(" · ")}
+                              {st().blocked ? st().label : [machineNow(t, a())?.name, st().label].filter(Boolean).join(" · ")}
                             </Text>
                           </View>
                         </View>

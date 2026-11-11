@@ -49,7 +49,7 @@
     "pressable": 2
   },
   "app/team/settings.tsx": {
-    "font-size": 99,
+    "font-size": 97,
     "radius": 17,
     "spacing": 43,
     "pressable": 6
