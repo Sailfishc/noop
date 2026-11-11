@@ -87,9 +87,10 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       for (const x of xs) x.enabled = b.enabled;
       return { body: { triggers: xs } };
     },
-    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string }) => {
+    [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string; body?: string | null }) => {
       const id = r.url.match(/triggers\/([^/]+)\//)![1];
-      log.acts.push(`${id} confirm`);
+      const seen = r.body ? JSON.parse(r.body).check_cmd : undefined;
+      log.acts.push(seen ? `${id} confirm ${seen}` : `${id} confirm`);
       const x = triggers.find((y) => y.id === id)!;
       x.confirmed_by = "u_1";
       x.check_waits = false;

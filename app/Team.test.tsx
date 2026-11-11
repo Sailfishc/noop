@@ -1417,7 +1417,7 @@ describe("passing the ball", () => {
     expect(app.shows("text:$ gh run list -b main -s failure -L 5")).toBe(true);
     expect(app.shows("text:检查命令改了，等 @zhangwei 确认")).toBe(true);
     await app.press("id:trigger-confirm-trg_1");
-    await app.waitUntil(() => log.acts.includes("trg_1 confirm"));
+    await app.waitUntil(() => log.acts.includes("trg_1 confirm gh run list -b main -s failure -L 5")); // the command as shown
     await app.waitFor("text:/触发过 3 次/");
     await app.press("id:trigger-add");
     expect(app.shows("text:/输出和上次一样/")).toBe(false); // what it does waits behind the ⓘ

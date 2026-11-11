@@ -889,7 +889,8 @@ export function createTeam(s: Session) {
     api("GET", `/api/v1/triggers/runs?${Object.entries(q).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&")}`);
   /** Pause or resume every trigger of a duty. */
   const pauseDuty = (body: { channel_id: string; agent_id: string; duty: string; enabled: boolean }) => api("POST", "/api/v1/triggers/duty", body);
-  const confirmTrigger = (id: string) => api("POST", `/api/v1/triggers/${id}/confirm`, {});
+  /** A trigger with a check command is confirmed with the command as shown (409 when it changed meanwhile). */
+  const confirmTrigger = (id: string, checkCmd?: string) => api("POST", `/api/v1/triggers/${id}/confirm`, checkCmd ? { check_cmd: checkCmd } : {});
   const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });

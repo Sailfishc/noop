@@ -30,7 +30,8 @@ func TestCheckCommands(t *testing.T) {
 	e.h.Tick()
 	check(t, "before he confirms the command never runs", len(checks(e.token)) == 0 && tasks() == 0)
 	check(t, "张伟 can't confirm it, admin as he is", e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.zw.session, nil).status == 403 && trg()["check_waits"] == true)
-	check(t, "王磊 confirms", e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, nil).status == 200 && trg()["check_waits"] == nil)
+	check(t, "a confirmation must name the command it saw", e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, nil).status == 409 && trg()["check_waits"] == true)
+	check(t, "王磊 confirms", e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, map[string]any{"check_cmd": "git ls-remote origin main"}).status == 200 && trg()["check_waits"] == nil)
 
 	// due: the check goes to @acha's computer; no task yet
 	day()
@@ -88,7 +89,12 @@ func TestCheckCommands(t *testing.T) {
 	check(t, "张伟 changes the command: it waits for 王磊 again", r.status == 200 && r.body["check_waits"] == true, r)
 	day()
 	check(t, "meanwhile nothing runs", len(checks(e.token)) == 0)
-	e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, nil)
+	r = e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, map[string]any{"check_cmd": "git ls-remote origin main"})
+	check(t, "王磊 confirms the command he saw before it changed: refused", r.status == 409 && trg()["check_waits"] == true, r)
+	day()
+	check(t, "and still nothing runs", len(checks(e.token)) == 0)
+	r = e.do("POST", "/api/v1/triggers/"+id+"/confirm", e.wl.session, map[string]any{"check_cmd": "curl -s https://ci.example.com/main/status"})
+	check(t, "the new one, seen: confirmed", r.status == 200 && trg()["check_waits"] == nil, r)
 	r = e.do("PATCH", "/api/v1/triggers/"+id, e.wl.session, map[string]any{"check_cmd": "ls out/"})
 	check(t, "王磊's own change needs no confirmation", r.status == 200 && r.body["check_waits"] == nil && r.body["check_cmd"] == "ls out/", r)
 	check(t, "a PR trigger can't be given one", e.do("PATCH", "/api/v1/triggers/"+id, e.wl.session, map[string]any{"check_cmd": strings.Repeat("x", 1001)}).status == 400)

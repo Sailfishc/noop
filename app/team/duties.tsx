@@ -240,7 +240,7 @@ function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run
         </Txt>
       </If>
       <View style={{ flexDirection: "row", gap: 6 }}>
-        <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void props.run(t.confirmTrigger(x().id))} /></If>
+        <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void props.run(t.confirmTrigger(x().id, x().check_cmd))} /></If>
         <If when={x().confirmed_by && !props.grouped}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void props.run(t.patchTrigger(x().id, { enabled: !x().enabled }))} /></If>
         <Btn small kind="ghost" testID={`trigger-remove-${x().id}`} label={L("Remove", "删除")} onPress={() => void props.run(t.deleteTrigger(x().id))} />
       </View>

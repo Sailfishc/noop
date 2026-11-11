@@ -306,7 +306,16 @@ func (h *Hub) v1TriggerConfirm(w http.ResponseWriter, q *request) {
 		errJSON(w, 403, "由 @"+a.Handle+" 的主人确认")
 		return
 	}
-	h.must(h.db.Exec("UPDATE triggers SET confirmed_by = ?, check_confirmed = check_cmd WHERE id = ?", q.who.userID, t.ID))
+	// {check_cmd}: a check command is confirmed as the owner saw it; changed meanwhile, they look again
+	var b struct {
+		CheckCmd *string `json:"check_cmd"`
+	}
+	_ = q.json(&b)
+	if t.CheckCmd != "" && (b.CheckCmd == nil || *b.CheckCmd != t.CheckCmd) {
+		errJSON(w, 409, "检查命令刚被改了，请看过新的再确认")
+		return
+	}
+	h.must(h.db.Exec("UPDATE triggers SET confirmed_by = ?, check_confirmed = ? WHERE id = ?", q.who.userID, t.CheckCmd, t.ID))
 	h.triggerChanged(t, false)
 	t, _ = h.trigger(t.ID)
 	writeJSON(w, 200, t)
