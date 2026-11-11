@@ -173,7 +173,7 @@ type agentView struct {
 	Repo string `json:"repo"`
 	// Memory: its memory.md, what it keeps between tasks. Its owner edits it; the agent rewrites it when it learns
 	// something lasting.
-	Memory string `json:"memory"`
+	Memory string `json:"memory,omitempty"`
 	// Paused: why it takes no work now (its runtime is logged out, out of credit); nil = it does (teamhealth.go)
 	Paused *pauseView `json:"paused"`
 }
@@ -439,6 +439,9 @@ func (h *Hub) v1Me(w http.ResponseWriter, q *request) {
 	out := obj{"user": u, "public_url": h.cfg.PublicURL, "workspace": h.workspace(),
 		"machines": h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE owner_id = ? ORDER BY created", u.ID)),
 		"agents":   scanAgents(h.db.Query("SELECT "+agentCols+" FROM agents WHERE owner_id = ? ORDER BY created", u.ID))}
+	if q.who.machineID == "" {
+		out["preferences"] = h.preferences(u.ID)
+	}
 	if q.who.machineID != "" {
 		ms := h.scanMachines(h.db.Query("SELECT "+machineCols+" FROM machines WHERE id = ?", q.who.machineID))
 		out["machine"] = ms[0]
@@ -477,12 +480,22 @@ func (h *Hub) v1UserPatch(w http.ResponseWriter, q *request) {
 		Name     *string `json:"name"`
 		Role     *string `json:"role"`
 		Disabled *bool   `json:"disabled"`
+		// Preferences: 「我的偏好」, the person's own only
+		Preferences *string `json:"preferences"`
 	}
 	_ = q.json(&b)
 	self, admin := id == q.who.userID, h.isAdmin(q.who.userID)
-	if (b.Name != nil && !self && !admin) || ((b.Role != nil || b.Disabled != nil) && (!admin || self)) {
+	if (b.Name != nil && !self && !admin) || ((b.Role != nil || b.Disabled != nil) && (!admin || self)) || (b.Preferences != nil && !self) {
 		errJSON(w, 403, "forbidden")
 		return
+	}
+	if b.Preferences != nil {
+		h.setPreferences(id, *b.Preferences)
+		if b.Name == nil && b.Role == nil && b.Disabled == nil { // nothing anyone else sees changed
+			u, _ := h.user(id)
+			writeJSON(w, 200, u)
+			return
+		}
 	}
 	if b.Name != nil {
 		if n := trimmed(*b.Name, 60); n != "" {
@@ -614,7 +627,11 @@ func (h *Hub) v1MachineReport(w http.ResponseWriter, q *request) {
 // ---------------------------------------------------------------- agents
 
 func (h *Hub) v1Agents(w http.ResponseWriter, q *request) {
-	writeJSON(w, 200, obj{"agents": scanAgents(h.db.Query("SELECT " + agentCols + " FROM agents ORDER BY created"))})
+	as := scanAgents(h.db.Query("SELECT " + agentCols + " FROM agents ORDER BY created"))
+	for i := range as {
+		as[i] = h.agentFor(q.who, as[i])
+	}
+	writeJSON(w, 200, obj{"agents": as})
 }
 
 type agentBody struct {
@@ -739,7 +756,7 @@ func (h *Hub) v1AgentCreate(w http.ResponseWriter, q *request) {
 		return
 	}
 	a, _ := h.agent(id)
-	h.broadcastPeople(obj{"type": "agent", "agent": a})
+	h.broadcastAgent(a)
 	writeJSON(w, 200, a)
 }
 
@@ -764,7 +781,7 @@ func (h *Hub) v1AgentPatch(w http.ResponseWriter, q *request) {
 		return
 	}
 	a, _ = h.agent(a.ID)
-	h.broadcastPeople(obj{"type": "agent", "agent": a})
+	h.broadcastAgent(a)
 	writeJSON(w, 200, a)
 }
 

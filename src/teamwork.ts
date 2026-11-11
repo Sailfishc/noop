@@ -46,6 +46,11 @@ export type Claim = {
   callback_url?: string;
   /** What the run's `remi` command reads the chat with (only while this task runs). */
   read_token?: string;
+  /** 「我的偏好」 of the person who asked: below the channel's and the team's conventions. */
+  requester_preferences?: string;
+  /** false: the agent may not change its memory on this task (a private channel where that would leak); the server
+   * drops it anyway, this only spares the agent the effort. Missing (an older server): it may. */
+  memory_writable?: boolean;
 };
 export type Wake = { reason: "callback" | "done" | "failed" | "errors" | "timer" | "deadline" | "message"; note?: string; payload?: string; at: number };
 /** What wakes a waiting task: a call to its callback address, a check command this machine runs, or a time. */
@@ -199,13 +204,14 @@ export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): st
   const conventions = [
     team?.instructions ? `# Team conventions (the team's AGENTS.md; they hold in every channel)\n${team.instructions}\n\n` : "",
     c.channel.conventions ? `# How #${c.channel.name} works (its members wrote this; it comes before the team's conventions)\n${c.channel.conventions}\n\n` : "",
+    c.requester_preferences?.trim() ? `# ${c.creator.name}'s preferences (they asked for this task; where they differ from the conventions above, the conventions win)\n${c.requester_preferences.trim()}\n\n` : "",
   ].join("");
   return `You are ${a.name} (@${a.handle}), an AI teammate in a Remi workspace, running headless on your owner's machine.
 ${a.description ? `Your role: ${a.description}\n` : ""}People @-mention you in a channel with requests; this is one of them. Many are questions: just answer them.
 
 # Your memory (memory.md)
 ${a.memory?.trim() || "(empty)"}
-
+${c.memory_writable === false ? "Do not update your memory on this task (leave \"memory\" out of your result): it is in a private channel, and what you keep would reach people outside it.\n" : ""}
 ${RULES(wd, c)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 
 ${conventions}# Channel #${c.channel.name}
@@ -891,7 +897,7 @@ export function createWorker(o: WorkerOptions) {
     if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length && !morePRs.length
       && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
     if (result.acceptance && !t.acceptance?.trim()) body.acceptance = String(result.acceptance);
-    if (typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
+    if (c.memory_writable !== false && typeof result.memory === "string" && result.memory.trim() && result.memory.trim() !== (c.agent.memory ?? "").trim()) body.memory = result.memory.trim().slice(0, 8000);
     if (result.status === "needs_decision") body.decision = { question: result.question, options: result.options ?? [], recommendation: result.recommendation };
     await finish(t, body);
     log(`${t.id} → ${result.status}`);

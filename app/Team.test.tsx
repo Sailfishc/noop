@@ -359,6 +359,27 @@ describe("settings", () => {
     await app.press(`id:settings-nav-${tab}`);
   };
 
+  test("「我的偏好」: one's own words for the agents, its explanation behind the ⓘ, saved with a PATCH of oneself", async () => {
+    const saved: any[] = [];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: { ...server(newLog()),
+      [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } },
+      [`PATCH ${URL}/api/v1/users/u_1`]: (r: { body?: string | null }) => { saved.push(JSON.parse(r.body!)); return { body: zw }; } } });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:preferences-input");
+    expect(app.value("id:preferences-input")).toBe("回复用中文；PR 描述先写改了什么再写为什么。");
+    expect(app.shows("id:preferences-note")).toBe(false);
+    await app.press("id:preferences-info");
+    await app.waitFor("text:/别写密码和密钥/");
+    expect(app.enabled("id:preferences-save")).toBe(false);
+    await app.clear("id:preferences-input");
+    await app.type("id:preferences-input", "不确定的地方先问我");
+    await app.press("id:preferences-save");
+    await app.waitUntil(() => saved.length === 1);
+    expect(saved[0]).toEqual({ preferences: "不确定的地方先问我" });
+    await app.waitFor("text:已保存");
+  });
+
   test("the bottom-left menu and ⌘, open Settings, a page of its own; back returns to the channel", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/sessions`]: { body: { sessions: [] } } } });
     await app.waitFor("id:team-composer");
