@@ -1359,6 +1359,51 @@ describe("private channels", () => {
     expect(log.patches[0]).toEqual({ private: false });
   });
 
+  test("私聊: the agents I may hand work are listed; the first message makes the chat, and needs no @", async () => {
+    const log = newLog();
+    const made: any[] = [];
+    const chat = { id: "c_9", slug: "p-9f9f9f9f", name: "helper", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_3",
+      members: [{ kind: "user", id: "u_1" }, { kind: "agent", id: "a_3" }], last_seq: 0 };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`POST ${URL}/api/v1/channels`]: (r: { body?: string | null }) => { made.push(JSON.parse(r.body!)); return { body: chat }; },
+      // the server has what was posted by the time the chat opens
+      [`GET ${URL}/api/v1/channels/c_9/messages?*`]: () => ({ body: { messages: log.posts.map((p, i) => msg({ id: `msg_9${i}`, seq: i + 1, channel_id: "c_9", text: p.text })), more: false } }),
+    }) });
+    await app.waitFor("id:side-agent-acha");
+    expect(app.shows("id:side-agent-helper")).toBe(true); // 王磊's, takes the whole team's work
+    expect(app.shows("id:side-agent-bei")).toBe(false); // 王磊's, his channels' only
+    expect(app.shows("text:/^王磊的 · /")).toBe(true);
+    await app.press("id:side-agent-helper");
+    await app.waitFor("id:dm-draft-helper");
+    expect(app.shows("text:私聊 · 运行在王磊的电脑上")).toBe(true);
+    expect(made.length).toBe(0); // nothing made by opening it
+    await app.type("id:team-composer", "整理一下菜谱");
+    await app.waitFor("text:/将派给 帮手/");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(made).toEqual([{ dm_agent: "a_3" }]);
+    expect(log.posts[0]).toMatchObject({ text: "整理一下菜谱" });
+    await app.waitFor("text:整理一下菜谱");
+    expect(app.shows("id:channel-members")).toBe(false); // its members are fixed
+    expect(app.shows("id:channel-p-9f9f9f9f")).toBe(false); // not among the channels
+  });
+
+  test("a private chat whose agent was deleted keeps its history and takes no more messages", async () => {
+    const log = newLog();
+    const chat = { id: "c_8", slug: "p-8e8e8e8e", name: "gone", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_9",
+      members: [{ kind: "user", id: "u_1" }], last_seq: 1 };
+    const said = msg({ id: "msg_80", seq: 1, channel_id: "c_8", text: "以前说过的话" });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 800, network: net(log, {
+      [`GET ${URL}/api/v1/channels`]: { body: { channels: [pay, ops, home, chat] } },
+      [`GET ${URL}/api/v1/channels/c_8/messages?*`]: { body: { messages: [said], more: false } },
+    }) });
+    await app.waitFor("id:side-agent-gone");
+    await app.press("id:side-agent-gone");
+    await app.waitFor("text:以前说过的话");
+    expect(app.shows("id:dm-closed")).toBe(true);
+    expect(app.shows("id:team-composer")).toBe(false);
+  });
+
   test("an agent's owner not in the private channel gets a row without what it is about, and still confirms it", async () => {
     const log = newLog();
     const hidden = task({ id: "T-0007", channel_id: "", thread_id: "", title: "", body: "", created_by: "u_2", state: "pending", tracked: true, redacted: true });

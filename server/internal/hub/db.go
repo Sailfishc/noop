@@ -138,10 +138,15 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN stuck_noted TEXT NOT NULL DEFAULT ''",   // the stuck task its creator was told about, once
 		"ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0",     // only its members see it (chat.go canRead)
 		"ALTER TABLE users ADD COLUMN preferences TEXT NOT NULL DEFAULT ''",      // 「我的偏好」: given to agents on the tasks they ask for (teammemory.go)
+		"ALTER TABLE channels ADD COLUMN dm_agent TEXT",                          // a person's private chat with this agent (teamdm.go)
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
 		}
+	}
+	// one private chat per person and agent
+	if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS channels_dm ON channels (created_by, dm_agent) WHERE dm_agent IS NOT NULL"); err != nil {
+		return err
 	}
 	// dispatch used to say both who and whether to confirm: owner | confirm (channel, confirm) | open (channel, no confirm)
 	for _, up := range []string{

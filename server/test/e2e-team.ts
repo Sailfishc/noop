@@ -122,6 +122,15 @@ check("its owner reads its memory", (await memOf(wl.session)) === "- zw 喜欢�
 check("others don't", (await memOf(zw.session)) === undefined);
 check("nobody else reads 张伟's preferences", !JSON.stringify((await api("GET", "/api/v1/users", wl.session)).json).includes("回复用中文"));
 
+// a private chat: 王磊 and his @acha, made by its first message, which needs no @
+const dm = await api("POST", "/api/v1/channels", wl.session, { dm_agent: agent.json.id });
+check("a private chat", dm.status === 200 && dm.json.dm_agent === agent.json.id && dm.json.private === true, JSON.stringify(dm.json).slice(0, 160));
+check("one per person and agent", (await api("POST", "/api/v1/channels", wl.session, { dm_agent: agent.json.id })).json.id === dm.json.id);
+const dmPost = await api("POST", `/api/v1/channels/${dm.json.id}/messages`, wl.session, { text: "整理一下这周的事" });
+const dmTasks = (await api("GET", `/api/v1/tasks?thread=${dmPost.json.id}`, wl.session)).json.tasks;
+check("a message without an @ is the agent's work", dmTasks.length === 1 && dmTasks[0].agent_id === agent.json.id, JSON.stringify(dmTasks).slice(0, 160));
+check("nobody else sees the chat", !JSON.stringify((await api("GET", "/api/v1/channels", zw.session)).json).includes(dm.json.id));
+
 rmSync(W, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : "ALL OK");
 process.exit(fails ? 1 : 0);

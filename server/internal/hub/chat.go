@@ -31,18 +31,20 @@ type channelView struct {
 	// them; the channel's members edit them.
 	Conventions string `json:"conventions"`
 	// Private: only its members see it, or that it exists; only its creator (CreatedBy) may make it public
-	Private   bool     `json:"private"`
-	CreatedBy string   `json:"created_by"`
-	Archived  bool     `json:"archived"`
-	Created   int64    `json:"created"`
-	Members   []member `json:"members"`
-	LastSeq   int64    `json:"last_seq"`
+	Private   bool   `json:"private"`
+	CreatedBy string `json:"created_by"`
+	// DMAgent: a private chat between its creator and this agent (teamdm.go); its name is the agent's handle
+	DMAgent  string   `json:"dm_agent,omitempty"`
+	Archived bool     `json:"archived"`
+	Created  int64    `json:"created"`
+	Members  []member `json:"members"`
+	LastSeq  int64    `json:"last_seq"`
 }
 
 func (h *Hub) channel(id string) (channelView, bool) {
 	var c channelView
-	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, private, COALESCE(created_by, ''), archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
-		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Private, &c.CreatedBy, &c.Archived, &c.Created)
+	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, private, COALESCE(created_by, ''), COALESCE(dm_agent, ''), archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Private, &c.CreatedBy, &c.DMAgent, &c.Archived, &c.Created)
 	if err != nil {
 		return c, false
 	}
@@ -227,8 +229,14 @@ func (h *Hub) v1ChannelCreate(w http.ResponseWriter, q *request) {
 		Topic   string   `json:"topic"`
 		Members []member `json:"members"`
 		Private bool     `json:"private"`
+		// DMAgent: the private chat with this agent, made now or the one there is (teamdm.go)
+		DMAgent string `json:"dm_agent"`
 	}
 	_ = q.json(&b)
+	if b.DMAgent != "" {
+		h.v1DMOpen(w, q, b.DMAgent)
+		return
+	}
 	name := trimmed(b.Name, 40)
 	if name == "" {
 		errJSON(w, 400, "name required")
@@ -321,6 +329,10 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 		Private *bool `json:"private"`
 	}
 	_ = q.json(&b)
+	if c.DMAgent != "" && (b.Name != nil || b.Private != nil || b.Topic != nil) {
+		errJSON(w, 400, "私聊不能改名、改说明或转公开；要多人一起，新建一个私有频道")
+		return
+	}
 	madePublic := false
 	if b.Private != nil && *b.Private != c.Private {
 		if *b.Private {
@@ -375,6 +387,10 @@ func (h *Hub) v1MemberAdd(w http.ResponseWriter, q *request) {
 		errJSON(w, 404, "not found")
 		return
 	}
+	if c.DMAgent != "" {
+		errJSON(w, 403, "私聊只有你和这个 Agent；要多人一起，新建一个私有频道")
+		return
+	}
 	var m member
 	_ = q.json(&m)
 	if m.Kind == "" {
@@ -407,6 +423,10 @@ func (h *Hub) v1MemberRemove(w http.ResponseWriter, q *request) {
 	c, ok := h.channel(q.r.PathValue("id"))
 	if !ok || !h.canRead(q.who, c.ID) {
 		errJSON(w, 404, "not found")
+		return
+	}
+	if c.DMAgent != "" {
+		errJSON(w, 403, "私聊的成员是固定的")
 		return
 	}
 	m := member{q.r.PathValue("kind"), q.r.PathValue("member")}
@@ -619,6 +639,10 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 		errJSON(w, 403, "先加入这个频道")
 		return
 	}
+	if why := h.dmClosed(c, author); why != "" {
+		errJSON(w, 403, why)
+		return
+	}
 	if b.ClientID != "" {
 		if !clientIDRE.MatchString(b.ClientID) {
 			errJSON(w, 400, "bad client_id")
@@ -670,7 +694,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 			return
 		}
 		agents := 0
-		for _, mm := range h.mentions(text) {
+		for _, mm := range h.postMentions(c, thread == nil, author, text) {
 			if mm.Kind == "agent" {
 				agents++
 			}
@@ -680,7 +704,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 			return
 		}
 	}
-	mentions, _ := json.Marshal(h.mentions(text))
+	mentions, _ := json.Marshal(h.postMentions(c, thread == nil, author, text))
 	att, _ := json.Marshal(files)
 	var clientID any
 	if b.ClientID != "" {
@@ -716,7 +740,8 @@ func (h *Hub) v1Edit(w http.ResponseWriter, q *request) {
 		errJSON(w, 400, "text required")
 		return
 	}
-	mentions, _ := json.Marshal(h.mentions(b.Text))
+	c, _ := h.channel(m.ChannelID)
+	mentions, _ := json.Marshal(h.postMentions(c, m.ThreadID == nil, m.Author, b.Text))
 	h.must(h.db.Exec("UPDATE messages SET text = ?, mentions = ?, edited = ? WHERE id = ?", b.Text, string(mentions), h.nowMs(), m.ID))
 	m, _ = h.message(m.ID)
 	h.broadcastChannel(m.ChannelID, obj{"type": "message_edited", "message": m})

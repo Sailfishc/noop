@@ -90,17 +90,18 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
 }
 
 /** Where a message would send work: each @agent of the channel it mentions, its runtime and machine, and who must confirm. */
-function dispatchLine(t: Team, channelId: string, text: string): { text: string; warn: boolean } | null {
+function dispatchLine(t: Team, channelId: string, text: string, implied?: string): { text: string; warn: boolean } | null {
   const c = t.channels().find((x) => x.id === channelId);
-  const handles = [...new Set([...text.matchAll(/(^|[^\w@])@([a-z][a-z0-9_-]{1,31})/g)].map((m) => m[2]))];
+  const handles = [...new Set([...(implied && text.trim() ? [implied] : []), ...[...text.matchAll(/(^|[^\w@])@([a-z][a-z0-9_-]{1,31})/g)].map((m) => m[2])])];
   const parts: string[] = [];
   let warn = false;
   const en = lang() !== "zh";
   for (const h of handles) {
     const a = t.agents().find((x) => x.handle === h);
     if (!a) continue;
-    const joins = !!c && !isMember(c, "agent", a.id) && a.dispatch === "team";
-    if (!c || (!isMember(c, "agent", a.id) && !joins)) {
+    const inIt = h === implied || (!!c && isMember(c, "agent", a.id));
+    const joins = !!c && !inIt && a.dispatch === "team";
+    if (!inIt && !joins) {
       parts.push(L(`@${h} isn’t in this channel, so it gets no task`, `@${h} 不在这个频道，不会派活`));
       warn = true;
       continue;
@@ -134,7 +135,10 @@ const guessType = (name: string) => {
   return ({ png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" } as Record<string, string>)[ext] ?? "";
 };
 
-export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; asTask?: boolean; onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
+export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; asTask?: boolean;
+  /** A private chat's agent: a top-level message names it without an @. */
+  agent?: string;
+  onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
   // two lines at least, then it grows with the text (a line to spare) up to about ten and scrolls
@@ -155,7 +159,7 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
   const items = computed(() => { const m = mention(); return m ? candidates(t, props.channelId, m.query) : []; });
   const open = () => !!mention();
   effect(() => { items(); pick.set(0); });
-  const preview = () => dispatchLine(t, props.channelId, text());
+  const preview = () => dispatchLine(t, props.channelId, text(), props.threadId ? undefined : props.agent);
   function setText(v: string, at: number, to = at) {
     text.set(v);
     caret = { start: at, end: to };
