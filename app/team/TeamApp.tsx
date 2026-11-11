@@ -6,13 +6,13 @@ import { cleanup, computed, effect, keyboardFrame, keymap, safeArea, Scroll, sig
 import { CLIENT_VERSION } from "../version";
 import { Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
+import { alpha, Avatar, colors, Dot, hovered, Icon, type IconName, radius, Spinner, StateDot } from "../ui";
 import { reminderUp, createTeam, isMember, runtimeLabel, TEAM_KEYS, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
-import { agentState, Avatar, chrome, Dot, FOOTER, StateDot, WIDE } from "./ui";
+import { agentState, chrome, FOOTER, WIDE } from "./ui";
 import { ChannelView, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";

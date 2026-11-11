@@ -1,9 +1,9 @@
 // People asking to join, for admins: approve (the account is made then) or reject. In 待你决定 and 成员与邀请.
 import { signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { colors, radius } from "../ui";
+import { Avatar, Btn, colors, ErrorNote, radius } from "../ui";
 import type { Signup, Team } from "./api";
-import { Avatar, Btn, ErrorNote, failed, time } from "./ui";
+import { failed, time } from "./ui";
 
 export function SignupCard(props: { team: Team; signup: Signup }) {
   const busy = signal<"" | "approve" | "reject">("");

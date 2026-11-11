@@ -2,10 +2,10 @@
 import { effect, List, Scroll, signal, Text, untracked, View, type JSX } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius, Spinner, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, ErrorNote, Field, growing, hovered, Icon, Noted, radius, Spinner, StateDot, Tag, Toggle } from "../ui";
 import { agentHost, errorOf, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team, type Trigger } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, Avatar, Btn, Choice, ErrorNote, failed, Field, growing, Header, Noted, RuntimeBadge, StateDot, Tag, time, unreachable } from "./ui";
+import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";

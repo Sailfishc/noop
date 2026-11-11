@@ -2,10 +2,10 @@
 import { openUrl, signal, Text, View, type JSX } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, radius } from "../ui";
+import { alpha, Btn, colors, ErrorNote, growing, hovered, Icon, radius } from "../ui";
 import { isParty, EXTERNAL_TRIES, repoLabel, type Repo, type Task, type Team } from "./api";
 import { AUTONOMY, DISPATCH } from "./settings";
-import { Btn, ErrorNote, failed, growing, RuntimeBadge, time } from "./ui";
+import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
 
 const minutes = (ms: number) => {

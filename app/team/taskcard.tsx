@@ -2,11 +2,11 @@
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner } from "../ui";
+import { alpha, Btn, colors, ErrorNote, hovered, Icon, type IconName, radius, Spinner, StateDot } from "../ui";
 import { errorOf, isParty, openHandoffs, openQuestions, type Holder, type Output, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
-import { Btn, ErrorNote, RuntimeBadge, StateDot, time } from "./ui";
+import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 
 

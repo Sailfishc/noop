@@ -11,13 +11,13 @@ import { Dialog, Input } from "nsh/base";
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, colors, hovered, Icon, type IconName, radius, Spinner, tints, Toggle } from "../ui";
+import { alpha, Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, growing, hovered, Icon, type IconName, Label, Panel, PickCard, radius, Spinner, StateDot, Tag, tints, Toggle } from "../ui";
 import {
   installCommand, isLoopback, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn,
   type Agent, type Autonomy, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { SignupSection } from "./signups";
-import { agentState, Avatar, chrome, Btn, Choice, Dot, ErrorNote, failed, Field, growing, Label, mono, Panel, PickCard, RuntimeBadge, StateDot, Tag, time, WIDE } from "./ui";
+import { agentState, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
 

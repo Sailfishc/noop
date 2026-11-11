@@ -3,9 +3,9 @@
 import { cleanup, Image, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { LOGO } from "./logo";
-import { colors } from "../ui";
+import { Btn, Choice, colors, ErrorNote, Field } from "../ui";
 import { call, errorOf, type Reply, loginServer, normalizeServer, parseInvite, type Session, TEAM_KEYS } from "./api";
-import { Btn, Choice, ErrorNote, Field, unreachable } from "./ui";
+import { unreachable } from "./ui";
 
 /** Sign in with email + the authenticator's 6 digits, or join with an invite (bind an authenticator first). */
 export function SignIn(props: { url: string; email: string; notice: string; onSession: (s: Session, email: string) => void }) {

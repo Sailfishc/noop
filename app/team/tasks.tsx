@@ -6,11 +6,11 @@
 import { computed, effect, Scroll, signal, Storage, Text, View, windowSize, type JSX } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon } from "../ui";
+import { alpha, Avatar, colors, hovered, Icon, StateDot } from "../ui";
 import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
-import { Avatar, Header, StateDot, time, WIDE } from "./ui";
+import { Header, time, WIDE } from "./ui";
 
 export type TaskLayout = "board" | "list";
 /** The page's quick views: what concerns me (the default), what waits for me, what I asked for, my agents' work, all. */

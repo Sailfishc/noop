@@ -3,9 +3,9 @@
 import { signal, Text, View, type ViewStyle } from "nsh";
 import { Menu, MenuItem } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Icon } from "../ui";
+import { alpha, Btn, colors, hovered, Icon } from "../ui";
 import { reminderUp, type Reminder, type Team } from "./api";
-import { Btn, time } from "./ui";
+import { time } from "./ui";
 
 export const REPEAT: Record<string, () => string> = {
   daily: () => L("every day", "每天"),

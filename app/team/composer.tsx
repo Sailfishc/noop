@@ -3,9 +3,9 @@ import { computed, effect, Image, keymap, Picker, signal, Text, untracked, View,
 import fs from "fs/promises";
 import { Input } from "nsh/base";
 import { L, lang } from "../i18n";
-import { alpha, colors, hovered, Icon, type IconName } from "../ui";
+import { alpha, Avatar, Btn, colors, ErrorNote, growing, hovered, Icon, type IconName, StateDot } from "../ui";
 import { blockedReason, dispatchFor, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
-import { agentState, Avatar, Btn, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, ErrorNote, growing, RuntimeBadge, StateDot, time } from "./ui";
+import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
 
 /** A `file:` URL as a local path ("file:///Users/a/My%20Shot.png" → "/Users/a/My Shot.png"; Windows drive paths too). */

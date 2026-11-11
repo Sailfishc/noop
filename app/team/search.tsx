@@ -2,10 +2,10 @@
 // any three characters, shorter words too). A result opens its channel with its thread.
 import { cleanup, Scroll, signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { colors, hovered, Icon, Spinner } from "../ui";
+import { Avatar, colors, Field, hovered, Icon, Spinner } from "../ui";
 import { channelLabel, type Message, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
-import { authorOf, Avatar, Field, Header, time } from "./ui";
+import { authorOf, Header, time } from "./ui";
 
 export function SearchPage(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void }) {
   const t = props.team;
