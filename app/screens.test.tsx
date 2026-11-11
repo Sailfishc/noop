@@ -73,6 +73,9 @@ describe("screens", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_2");
     await shot(app, "members");
+    await app.press("id:channel-conventions-box");
+    await app.type("id:channel-conventions-input", "- PR 标题用中文");
+    await shot(app, "members-conventions");
   });
 
   test("tasks-board", async () => {
