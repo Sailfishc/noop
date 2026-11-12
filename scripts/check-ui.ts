@@ -28,7 +28,7 @@ const ROOT = join(import.meta.dir, "..");
 const BASELINE = join(ROOT, "scripts/ui-baseline.json");
 
 /** Spacing steps on the scale (Tailwind's 0.5, 1, 1.5, 2, 3, 4, 6), and 0. */
-const STEPS = new Set(Object.values(src.space).concat(0));
+const STEPS = new Set<number>([0, ...Object.values(src.space)]);
 const SPACING_PROPS = "gap|rowGap|columnGap|padding|paddingHorizontal|paddingVertical|paddingTop|paddingBottom|paddingLeft|paddingRight|margin|marginHorizontal|marginVertical|marginTop|marginBottom|marginLeft|marginRight";
 const SPACING = new RegExp(`\\b(${SPACING_PROPS})\\s*:\\s*(-?\\d+(?:\\.\\d+)?)\\b`, "g");
 
