@@ -318,6 +318,30 @@ describe("screens", () => {
     await shot(app, "tasks-page");
   });
 
+  test("triage", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: net() });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:triage-detail");
+    await shot(app, "triage");
+  });
+
+  test("palette", async () => {
+    const app = await start();
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+k");
+    await app.waitFor("id:palette");
+    await shot(app, "palette");
+  });
+
+  test("context-menu", async () => {
+    const app = await start();
+    await app.waitFor("id:channel-pay");
+    await app.rightClick("id:channel-pay");
+    await app.waitFor("id:ctx-open");
+    await shot(app, "context-menu");
+  });
+
   test("inbox-proposals", async () => {
     const prop = (id: string, num: number, title: string, extra: object = {}) => ({ id, channel_id: "c_1", agent_id: "a_1", task_id: "T-0009", title,
       why: "巡查时看到：lodash 4.17.20 有一个已知的原型污染问题，3 个服务在用", plan: "升级到 4.17.21，跑全部测试，锁文件一起提交", key: id, urgent: false, state: "open", num, created: T0, ...extra });

@@ -108,11 +108,11 @@ export const space = {"xxs":2,"xs":4,"sm":6,"md":8,"lg":12,"xl":16,"xxl":24} as 
 /** Corner radii. */
 export const radius = {"sm":6,"md":8,"lg":12,"float":14,"full":999} as const;
 /** Line widths. */
-export const stroke = {"hairline":0.5,"edge":1,"underline":2,"focus":3} as const;
+export const stroke = {"hairline":0.5,"edge":1,"underline":2,"focus":3,"band":3} as const;
 /** Whole-view opacities. */
 export const opacity = {"disabled":0.45,"hoverPrimary":0.9} as const;
 /** The widest a few things get. */
-export const measure = {"note":320,"toast":360,"menu":200,"menuWide":240,"list":320,"dialog":640,"code":52} as const;
+export const measure = {"note":320,"toast":360,"menu":200,"menuWide":240,"list":320,"dialog":640,"code":52,"palette":600,"paletteList":360,"paletteTop":96} as const;
 /** The six moments that move (and the spinner, and state fades). */
 export const motion = {"press":{"scale":0.97,"spring":{"stiffness":500,"damping":30}},"select":{"spring":{"stiffness":420,"damping":28}},"float":{"y":6,"duration":180,"easing":[0.16,1,0.3,1]},"collapse":{"spring":{"stiffness":400,"damping":32},"duration":260},"check":{"spring":{"stiffness":300,"damping":20}},"breathe":{"duration":2400},"progress":{"duration":800},"fade":{"duration":150}} as const;
 /** Shadows, per appearance: floating surfaces and a switch's knob. */

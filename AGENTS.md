@@ -109,6 +109,14 @@ NSH's `nsh/base` gives behavior (focus, keyboard, dismissal, accessibility) and 
 Check a base component exists at the pinned NSH (`app/.nsh/types/nsh/base.d.ts` after `nsh check app`) before
 wrapping it. New icons: take the path from Lucide (ISC) into `app/ui/icons.tsx`.
 
+### One command registry: palette, shortcuts, context menus
+
+`app/team/commands.ts` lists what a person can do from anywhere. The ⌘K palette (`CommandPalette`), the shortcuts
+(eight only: ⌘K, G I, G T, J, K, Return, Escape, C; H in 待你决定) and the context menus (`RowMenu`: a right click, a
+held finger on phones) all read it, so a new action is added there once and gets the same name in all three. Verbs
+match the agent CLI (`remi dispatch` is 派任务). Agent states are five words (`agentState` in `app/team/ui.tsx`,
+`StateMark` in app/ui); only 等你 and 卡住 are colored. Align, decide and accept are `AskCard`s, the only amber surface.
+
 ### Explanations go behind an ⓘ, not under the label
 
 Bad case, repeated (settings pages before #63's fix, then the private channel screens in #69): a label or control

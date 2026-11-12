@@ -19,7 +19,7 @@ const LAYOUT_KEY = "remi.tasks.layout";
 const VIEW_KEY = "remi.tasks.view";
 const VIEWS: TaskView[] = ["related", "needs", "mine", "agents", "all"];
 
-export const toneColor = (t: Tone | string) => tone(t).fg;
+export const toneColor = (t: Tone) => tone(t).fg;
 
 export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false && !x.redacted);
 

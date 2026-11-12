@@ -2,17 +2,17 @@
 // marks what the agent left out as unstated; nothing is hidden and nothing is refused.
 import { Image, signal, View } from "nsh";
 import { L } from "../i18n";
-import { ListRow, Tag, Txt } from "../ui";
+import { ListRow, Tag, type Tone, Txt } from "../ui";
 import type { Evidence, Task, Team } from "./api";
 
 /** A task's acceptance criteria, one per non-empty line, bullets and numbers off (server: criteriaOf). */
 export const criteriaOf = (acceptance?: string) =>
   (acceptance ?? "").split("\n").map((l) => l.replace(/^\s*(?:[-*•]|\d+[.)、]|[（(]?\d+[）)])\s*/, "").trim()).filter(Boolean);
 
-const HOW: Record<Evidence["how"], { label: () => string; tone: "up" | "accent" | "warn" | "danger" }> = {
-  ran: { label: () => L("verified", "已验证"), tone: "up" },
-  saw: { label: () => L("looked", "看过"), tone: "accent" },
-  not_verified: { label: () => L("not verified", "未验证"), tone: "warn" },
+const HOW: Record<Evidence["how"], { label: () => string; tone: Tone }> = {
+  ran: { label: () => L("verified", "已验证"), tone: "ok" },
+  saw: { label: () => L("looked", "看过"), tone: "default" },
+  not_verified: { label: () => L("not verified", "未验证"), tone: "attention" },
   unstated: { label: () => L("not stated", "未说明"), tone: "danger" },
 };
 const checked = (e: Evidence) => e.how === "ran" || e.how === "saw";
@@ -30,7 +30,7 @@ export function evidenceLine(t: Task): { text: string; gap: boolean } | null {
 export function EvidenceLine(props: { task: Task }) {
   return (
     <If when={evidenceLine(props.task)}>
-      {(l) => <Txt testID={`task-${props.task.id}-evidence`} variant="caption" weight="semibold" tone={l().gap ? "warn" : "muted"}>{l().text}</Txt>}
+      {(l) => <Txt testID={`task-${props.task.id}-evidence`} variant="caption" weight="semibold" tone={l().gap ? "attention" : "muted"}>{l().text}</Txt>}
     </If>
   );
 }

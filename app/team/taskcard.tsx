@@ -1,13 +1,14 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, Txt } from "../ui";
+import { AskCard, Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
 import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
 import { TaskFacts } from "./taskfacts";
 import { AlignCard } from "./aligncard";
+import { composeInto } from "./composer";
 import { EvidenceLine, EvidenceList } from "./evidence";
 import { Delegates, waitingFor } from "./delegates";
 import { MoveCard } from "./movecard";
@@ -37,7 +38,7 @@ export function TrackLink(props: { team: Team; task: Task }) {
   );
 }
 
-const toneOf = (t: string) => tone(t).fg;
+const toneOf = (t: Tone) => tone(t).fg;
 
 const HOW: Record<string, () => string> = {
   callback: () => L("woken by a callback", "等回调"),
@@ -236,6 +237,11 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     busy.set("");
     if (!r.ok) error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
   }
+  /** 回复…: the thread's box, with the focus, for what the buttons don't say. */
+  const reply = () => {
+    props.onOpen?.();
+    composeInto.set({ channel: task().channel_id, thread: task().thread_id ?? undefined, text: "", at: Date.now() });
+  };
   const waiting = () => {
     const s = task().state;
     if (s === "pending" && !isOwner()) return L(`Waiting for @${owner()?.handle ?? "?"} to confirm`, `等 @${owner()?.handle ?? "?"} 确认`);
@@ -305,7 +311,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </If>
         </View>
       </If>
-      <If when={needs()}>
+      <If when={task().state === "needs_decision" || task().state === "review" ? null : needs()}>
         {(n) => (
           <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: tone(n().tone).tint }}>
             <Dot tone={n().tone} />
@@ -344,7 +350,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
               <Noted
                 testID={`task-${task().id}-handoff-${x().id}-who`}
                 note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
-                label={<Txt variant="caption" weight="semibold" tone="accent">{x().kind === "delegate"
+                label={<Txt variant="caption" weight="semibold" tone="default">{x().kind === "delegate"
                   ? L(`@${agent()?.handle ?? "?"} suggests delegating a part to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议委派给 @${to()?.handle ?? "?"}`)
                   : L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
               />
@@ -415,14 +421,18 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         )}
       </If>
       <If when={task().state === "needs_decision" && task().decision?.kind === "align" ? task().decision : null}>
-        {(d) => <AlignCard task={task()} decision={d()} party={party()} busy={busy() === "decide"} onGo={(acceptance) => act("decide", acceptance === undefined ? {} : { acceptance })} />}
+        {(d) => <AlignCard task={task()} decision={d()} party={party()} busy={busy() === "decide"} onReply={reply} onGo={(acceptance) => act("decide", acceptance === undefined ? {} : { acceptance })} />}
       </If>
       <If when={task().state === "needs_decision" && task().decision?.kind !== "align" ? task().decision : null}>
         {(d) => (
-          <View style={{ gap: 6 }}>
-            <Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg }}>{d().question}</Text>
-            <If when={party()} else={<Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Its creator or the agent’s owner decides.", "由发起人或 Agent 的主人决定。")}</Text>}>
-              <View style={{ gap: 6 }}>
+          <AskCard
+            testID={`task-${task().id}-ask`}
+            quiet={!party()}
+            kind={needs()?.label ?? L("Needs a decision", "等你决定")}
+            note={party() ? undefined : L("Its creator or the agent’s owner decides.", "由发起人或 Agent 的主人决定。")}
+            onReply={party() ? reply : undefined}
+            actions={
+              <If when={party()}>
                 <Each of={d().options ?? []} key="index">
                   {(o, i) => (
                     <Btn
@@ -435,14 +445,30 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
                     />
                   )}
                 </Each>
-              </View>
-            </If>
-          </View>
+              </If>
+            }
+          >
+            <Txt weight="semibold">{d().question}</Txt>
+          </AskCard>
         )}
       </If>
-      <If when={task().state === "review" && task().evidence?.length}>
-        <EvidenceLine task={task()} />
-        <If when={props.detail}><EvidenceList team={t} task={task()} /></If>
+      <If when={task().state === "review"}>
+        <AskCard
+          testID={`task-${task().id}-review`}
+          quiet={!party()}
+          kind={needs()?.label ?? L("Waits for acceptance", "等验收")}
+          onReply={party() ? reply : undefined}
+          actions={
+            <If when={party()}>
+              <Btn small kind="primary" testID={`task-${task().id}-accept`} label={L("Accept", "验收通过")} busy={busy() === "accept"} onPress={() => act("accept")} />
+            </If>
+          }
+        >
+          <If when={task().evidence?.length}>
+            <EvidenceLine task={task()} />
+            <If when={props.detail}><EvidenceList team={t} task={task()} /></If>
+          </If>
+        </AskCard>
       </If>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <If when={task().state === "pending" && isOwner()}>
@@ -451,9 +477,6 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         </If>
         <If when={task().state === "waiting" && task().wait?.how === "quota" && party()}>
           <Btn small kind="primary" testID={`task-${task().id}-retry`} label={L("Try now", "现在就试")} busy={busy() === "retry"} onPress={() => act("retry")} />
-        </If>
-        <If when={task().state === "review" && party()}>
-          <Btn small kind="primary" testID={`task-${task().id}-accept`} label={L("Accept", "验收通过")} busy={busy() === "accept"} onPress={() => act("accept")} />
         </If>
         <If when={party() && !["done", "closed"].includes(task().state) && !(task().state === "pending" && isOwner())}>
           <Btn small kind="ghost" testID={`task-${task().id}-cancel`} label={task().state === "running" ? L("Stop", "停止") : task().state === "waiting" ? L("Cancel", "取消") : L("Close", "关闭")} busy={busy() === "cancel"} onPress={() => act("cancel")} />

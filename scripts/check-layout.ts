@@ -76,6 +76,7 @@ export function parse(trace: string): App[] {
   let parent = new Map<number, number>(), frame = new Map<number, Box>(), tid = new Map<number, string>();
   let press = new Map<number, { role: string; slop: number[] }>();
   let name = "";
+  let carried = 0;
   const finish = () => {
     if (!name) return;
     const abs = (id: number): Box | null => {
@@ -93,8 +94,11 @@ export function parse(trace: string): App[] {
       const b = abs(id);
       if (b && !ids.has(t)) ids.set(t, b);
     }
-    let width = 0;
+    // a test's later batches (after a press, a right click) only lay out what changed: the window's width is the
+    // widest frame since the test began
+    let width = carried;
     for (const f of frame.values()) width = Math.max(width, f.w);
+    carried = width;
     const small: App["small"] = [];
     for (const [id, p] of press) {
       const f = frame.get(id);
@@ -106,6 +110,7 @@ export function parse(trace: string): App[] {
   };
   for (const line of trace.split("\n")) {
     let m: RegExpMatchArray | null;
+    if (/^[✓✗] .* › /.test(line)) { finish(); name = ""; carried = 0; continue; } // a test ended: the next opens its own window
     if ((m = line.match(/── open\(([^)]*)\)/))) {
       finish();
       name = m[1];

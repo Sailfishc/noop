@@ -140,14 +140,14 @@ export const space = { xxs: 2, xs: 4, sm: 6, md: 8, lg: 12, xl: 16, xxl: 24 } as
 /** Corner radii: small marks, controls, cards, floating surfaces; `full` a pill or a circle. */
 export const radius = { sm: 6, md: 8, lg: 12, float: 14, full: 999 } as const;
 
-/** Line widths: the 0.5 hairline, an input's edge, a selected underline, the focus halo. */
-export const stroke = { hairline: 0.5, edge: 1, underline: 2, focus: 3 } as const;
+/** Line widths: the 0.5 hairline, an input's edge, a selected underline, the focus halo, the band down an ask card's edge. */
+export const stroke = { hairline: 0.5, edge: 1, underline: 2, focus: 3, band: 3 } as const;
 
 /** Whole-view opacities: a disabled control, the primary button under the pointer. */
 export const opacity = { disabled: 0.45, hoverPrimary: 0.9 } as const;
 
 /** The widest a few things get. */
-export const measure = { note: 320, toast: 360, menu: 200, menuWide: 240, list: 320, dialog: 640, code: 52 } as const;
+export const measure = { note: 320, toast: 360, menu: 200, menuWide: 240, list: 320, dialog: 640, code: 52, palette: 600, paletteList: 360, paletteTop: 96 } as const;
 
 // ---- motion: exactly six moments move, and all of them stand still under reduce motion ----------------------------
 

@@ -1,5 +1,5 @@
 import { Text, View, type JSX } from "nsh";
-import { Menu, MenuItem, MenuSeparator } from "nsh/base";
+import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import { colors, floatSurface, hovered, measure, radius, size, space, stroke } from "./theme";
 
@@ -61,4 +61,23 @@ export function MenuLine() {
 /** A small heading over a group of rows in a `PopMenu`. */
 export function MenuHeading(props: { text: string }) {
   return <Text style={{ paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm, fontSize: size.text.caption, fontWeight: "600", color: colors.fg3 }}>{props.text}</Text>;
+}
+
+/**
+ * The menu about a thing (nsh/base's `ContextMenu`): a right click on the desktops, a held finger on phones (as a
+ * sheet from the bottom). The same `MenuRow`s as `PopMenu`, filled from the app's command registry, so a row's right
+ * click and the palette say the same names.
+ */
+export function RowMenu(props: { trigger: JSX.Element; children: JSX.Element }) {
+  return (
+    <ContextMenu
+      offset={space.xs}
+      margin={space.md}
+      popupStyle={[floatSurface(), { minWidth: measure.menuWide, padding: space.xs }]}
+      backdropClass="bg-scrim"
+      trigger={props.trigger}
+    >
+      {props.children}
+    </ContextMenu>
+  );
 }

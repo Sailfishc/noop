@@ -2,7 +2,7 @@
 import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, untracked, View } from "nsh";
 import fs from "fs/promises";
 import { L, lang } from "../i18n";
-import { Avatar, Btn, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
+import { Avatar, Btn, StateMark, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
 import { blockedReason, dispatchFor, machineNow, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
@@ -77,8 +77,7 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
                     {(a) => (
                       <>
                         <RuntimeBadge runtime={a().runtime} />
-                        <Dot tone={st()!.tone} />
-                        <Text style={{ maxWidth: 160, fontSize: 12, color: st()!.blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st()!.label}</Text>
+                        <StateMark state={st()!.state} text={st()!.word} />
                       </>
                     )}
                   </If>
@@ -128,6 +127,12 @@ function dispatchLine(t: Team, channelId: string, text: string, implied?: string
   return parts.length ? { text: parts.join("；"), warn } : null;
 }
 
+/**
+ * Write into a composer from elsewhere (the palette's 派任务, an ask card's 回复…): the composer of `channel` (and
+ * `thread`, for a thread's) takes `text` and the focus. `at` tells one request from the next.
+ */
+export const composeInto = signal<{ channel: string; thread?: string; text: string; at: number } | null>(null);
+
 /** The message box: @ opens a picker of the channel's agents and people; the line under it says where the work goes. */
 /** A file waiting in the composer to go with the next message. */
 type Draft = { id: string; name: string; type: string; size: number; file: Blob; preview?: string };
@@ -162,6 +167,15 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
   const items = computed(() => { const m = mention(); return m ? candidates(t, props.channelId, m.query) : []; });
   const open = () => !!mention();
   effect(() => { items(); pick.set(0); });
+  effect(() => {
+    const w = composeInto();
+    if (!w || w.channel !== props.channelId || (w.thread ?? undefined) !== (props.threadId ?? undefined)) return;
+    untracked(() => {
+      composeInto.set(null);
+      const v = w.text && !untracked(text).startsWith(w.text) ? w.text + untracked(text) : untracked(text);
+      queueMicrotask(() => setText(v, v.length));
+    });
+  });
   const preview = () => dispatchLine(t, props.channelId, text(), props.threadId ? undefined : props.agent);
   function setText(v: string, at: number, to = at) {
     text.set(v);

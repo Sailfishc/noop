@@ -72,7 +72,7 @@ export function IconBtn(props: {
   size?: "sm" | "md";
   selected?: boolean;
   disabled?: boolean;
-  tone?: Tone | "accent";
+  tone?: Tone;
   testID?: string;
 }) {
   const box = () => size.iconButton[props.size ?? "md"];

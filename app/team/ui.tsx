@@ -3,7 +3,8 @@
 import { type JSX, Text, View } from "nsh";
 import { isAvailable as hasWindow, titleBar } from "nsh/desktop";
 import { L, lang } from "../i18n";
-import { colors, Icon, IconBtn, type IconName, Tag } from "../ui";
+import { type AgentStateKind, colors, Icon, IconBtn, type IconName, Tag } from "../ui";
+import { needsMe } from "./taskpeople";
 import { blockedReason, clock, machineNow, insecureRefused, runtimeTrouble, runtimeLabel, type Agent, type Team } from "./api";
 
 export const WIDE = 720;
@@ -69,25 +70,42 @@ export const failed = (r: { status: number; data: any }) =>
 
 /** Which runtime an agent runs: shown wherever an agent is (lists, the @ picker, members, task cards). */
 export function RuntimeBadge(props: { runtime: string; testID?: string }) {
-  return <Tag testID={props.testID} label={runtimeLabel(props.runtime)} tone={props.runtime === "codex" ? "accent" : "muted"} />;
+  return <Tag testID={props.testID} label={runtimeLabel(props.runtime)} tone="muted" />;
 }
 
-/** An agent's status dot (as in Raft): grey offline (no machine, or it is off), orange an error it can't get past by
- * itself (its runtime missing or logged out, or its last run failed), yellow working or waiting for its runtime's quota, green ready. What a task needs
- * from people is on the task, not here. */
-export function agentState(t: Team, a: Agent): { label: string; tone: "up" | "warn" | "danger" | "muted" | "accent"; blocked: boolean } {
+/** The five words of an agent's state. */
+export const STATE_WORD: Record<AgentStateKind, () => string> = {
+  ready: () => L("Ready", "就绪"),
+  working: () => L("Working", "在做"),
+  waiting: () => L("Waiting on you", "等你"),
+  stuck: () => L("Stuck", "卡住"),
+  offline: () => L("Offline", "离线"),
+};
+
+/**
+ * An agent's state in five words (the design's 就绪 / 在做 / 等你 / 卡住 / 离线): offline (no machine, or it is off),
+ * stuck (an error it can't get past by itself: its runtime missing or logged out, its last run failed or blocked),
+ * waiting (one of its tasks waits for me), working (a task runs or queues, or waits for its runtime's quota: it goes
+ * on by itself), ready. `detail` says more where there is room (settings): the reason, the count of tasks.
+ */
+export function agentState(t: Team, a: Agent): { state: AgentStateKind; word: string; detail: string; blocked: boolean } {
   const m = machineNow(t, a); // with several computers: the one its new work goes to
   const why = blockedReason(a, m, lang() !== "zh");
-  if (!a.machine_id || !m || !m.online) return { label: L(`Offline: ${why}`, `离线：${why}`), tone: "muted", blocked: true };
+  const out = (state: AgentStateKind, detail = "") => ({ state, word: STATE_WORD[state](), detail, blocked: state === "offline" || state === "stuck" });
+  if (!a.machine_id || !m || !m.online) return out("offline", why);
   const quota = m.runtime_status?.[a.runtime];
-  if (quota?.state === "quota") return { label: runtimeTrouble(quota, lang() !== "zh"), tone: "warn", blocked: false }; // not broken: it goes on by itself
-  if (why) return { label: L(`Error: ${why}`, `出错：${why}`), tone: "danger", blocked: true };
-  const ts = Object.values(t.tasks()).filter((x) => x.agent_id === a.id);
+  if (quota?.state === "quota") return out("working", runtimeTrouble(quota, lang() !== "zh"));
+  if (why) return out("stuck", why);
+  const ts = Object.values(t.tasks()).filter((x) => x.agent_id === a.id && x.state !== "closed" && x.state !== "done");
+  if (ts.some((x) => needsMe(t, x) && x.state !== "blocked" && x.state !== "failed")) return out("waiting");
+  const last = [...ts].sort((x, y) => y.updated - x.updated)[0];
+  if (last?.state === "failed" || last?.state === "blocked") return out("stuck", last.state === "failed" ? L("its last run failed", "上次运行失败") : L("blocked", "被阻塞"));
   const working = ts.filter((x) => x.state === "running" || x.state === "queued").length;
-  if (working) return { label: L(`Working · ${working} task${working > 1 ? "s" : ""}`, `工作中 · ${working} 个任务`), tone: "warn", blocked: false };
-  const last = ts.filter((x) => x.state !== "closed").sort((x, y) => y.updated - x.updated)[0];
-  if (last?.state === "failed") return { label: L("Error: its last run failed", "出错：上次运行失败"), tone: "danger", blocked: false };
-  return { label: L("Ready", "空闲"), tone: "up", blocked: false };
+  if (working) return out("working", L(`${working} task${working > 1 ? "s" : ""}`, `${working} 个任务`));
+  return out("ready");
 }
+
+/** The state as one line: the word, then what more there is to say. */
+export const stateLine = (s: { word: string; detail: string }) => [s.word, s.detail].filter(Boolean).join(L(": ", "："));
 
 export const mono = { fontFamily: "monospace" } as const;

@@ -10,14 +10,14 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, IconBtn, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, Toggle, Txt } from "../ui";
+import { Avatar, Btn, StateMark, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, IconBtn, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, Toggle, Txt } from "../ui";
 import {
   blockedReason, installCommand, isLoopback, loginQr, machineNow, machinesOf, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn, runtimeTrouble,
   type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
 } from "./api";
 import { momentsLine, outsideLine, statsLine } from "./calls";
 import { SignupSection } from "./signups";
-import { agentState, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
+import { agentState, stateLine, chrome, failed, mono, RuntimeBadge, time, WIDE } from "./ui";
 
 export type SettingsTab = "account" | "general" | "agents" | "machines" | "people" | "git" | "teamconfig" | "metrics";
 
@@ -244,7 +244,7 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
           <View style={{ flex: 1, gap: 3 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Text testID="profile-name" style={{ fontSize: 17, fontWeight: "600", color: colors.fg }}>{me()?.name ?? ""}</Text>
-              <Tag label={me()?.role === "admin" ? L("Admin", "管理员") : L("Member", "成员")} tone={me()?.role === "admin" ? "accent" : "muted"} />
+              <Tag label={me()?.role === "admin" ? L("Admin", "管理员") : L("Member", "成员")} tone={me()?.role === "admin" ? "default" : "muted"} />
             </View>
             <Text style={{ fontSize: 13.5, color: colors.fg2 }}>{`@${me()?.handle ?? ""} · ${me()?.email ?? ""}`}</Text>
           </View>
@@ -447,7 +447,7 @@ function DevicesPanel(props: { team: Team }) {
                   <Text style={{ fontSize: 14.5, color: colors.fg }}>{deviceName(d().ua)}</Text>
                   <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L(`Signed in ${time(d().created)} · last seen ${time(d().last_seen)}`, `${time(d().created)} 登录 · 最近 ${time(d().last_seen)}`)}</Text>
                 </View>
-                <If when={!d().current} else={<Tag label={L("This device", "当前设备")} tone="up" />}>
+                <If when={!d().current} else={<Tag label={L("This device", "当前设备")} tone="ok" />}>
                   <Btn small kind="ghost" testID={`device-remove-${d().id}`} label={L("Remove", "移除")} onPress={() => void remove(d().id)} />
                 </If>
               </View>
@@ -550,10 +550,7 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
                   <RuntimeBadge runtime={a().runtime} />
                   <Text style={{ flex: 1, fontSize: 12.5, color: colors.fg2, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
                 </View>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                  <Dot tone={st().tone} />
-                  <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st().label}</Text>
-                </View>
+                <StateMark testID={`agent-${a().handle}-state`} state={st().state} text={stateLine(st())} />
               </View>
               <If when={narrow()}><Icon name="chevron" size={13} tint={colors.fg3} /></If>
             </View>
@@ -633,7 +630,7 @@ function AgentMachines(props: { team: Team; agent: Agent; onChange: (ids: string
               <View style={{ flex: 1 }}>
                 <If when={at() >= 0}>
                   <Noted testID={`${id()}-status`} note={why() || undefined}
-                    label={<Txt variant="caption" lines={1} tone={why() ? "warn" : "up"}>{at() === 0 && picked().length > 1 ? L("first · ", "第一 · ") : ""}{why() ? L("can’t take work now", "暂时接不了活") : L("can take work", "能接活")}</Txt>} />
+                    label={<Txt variant="caption" lines={1} tone={why() ? "muted" : "ok"}>{at() === 0 && picked().length > 1 ? L("first · ", "第一 · ") : ""}{why() ? L("can’t take work now", "暂时接不了活") : L("can take work", "能接活")}</Txt>} />
                 </If>
               </View>
               <If when={at() >= 0 && picked().length > 1}>
@@ -679,10 +676,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
             <Text style={{ fontSize: 14, color: colors.fg2 }}>@{a().handle}</Text>
             <RuntimeBadge runtime={a().runtime} />
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <Dot tone={st().tone} />
-            <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.fg2 }}>{st().label}</Text>
-          </View>
+          <StateMark state={st().state} text={stateLine(st())} />
         </View>
       </View>
       <AgentText team={t} agent={a()} field="description" label={L("What it does", "职责")} placeholder={L("e.g. writes and fixes tests for the payments backend", "比如：给支付后端补测试、修测试")} />
@@ -1114,7 +1108,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
           <If when={renaming()} else={
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
               <Text testID={`machine-name-${m().id}`} style={{ fontSize: 16, fontWeight: "600", color: colors.fg }}>{m().name}</Text>
-              <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
+              <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="default" /></If>
               <Btn small kind="ghost" testID={`machine-rename-${m().id}`} label={L("Rename", "改名")} onPress={() => { newName.set(m().name); renaming.set(true); }} />
             </View>
           }>
@@ -1178,8 +1172,8 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
               const trouble = () => m().runtime_status?.[r().name];
               // can it take work: its trouble (a quota it waits for, credit, login), else how it is logged in
               const status = (): [string, TextTone] => !info()?.installed ? ["—", "faint"]
-                : trouble() ? [runtimeTrouble(trouble()!, lang() !== "zh"), trouble()!.state === "quota" ? "warn" : "danger"]
-                : info()!.logged_in === false ? [L("not logged in", "未登录"), "warn"]
+                : trouble() ? [runtimeTrouble(trouble()!, lang() !== "zh"), trouble()!.state === "quota" ? "muted" : "danger"]
+                : info()!.logged_in === false ? [L("not logged in", "未登录"), "danger"]
                 : info()!.logged_in === true ? [L("✓ logged in", "✓ 已登录"), "default"] : [L("unknown", "未知"), "default"];
               return (
                 <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.hairline }}>
@@ -1222,7 +1216,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       <If when={(m().skills ?? []).length || (m().mcp ?? []).length} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("None reported.", "没有上报。")}</Text>}>
         <View testID={`machine-${m().id}-tools`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={m().skills ?? []}>{(n) => <Tag label={n()} />}</Each>
-          <Each of={m().mcp ?? []}>{(n) => <Tag label={`MCP ${n()}`} tone="accent" />}</Each>
+          <Each of={m().mcp ?? []}>{(n) => <Tag label={`MCP ${n()}`} tone="muted" />}</Each>
         </View>
       </If>
       <If when={m().team_config}>
@@ -1258,8 +1252,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
               <Text style={{ fontSize: 14, color: colors.fg }}>{a().name} <Text style={{ color: colors.fg2 }}>@{a().handle}</Text></Text>
               <RuntimeBadge runtime={a().runtime} />
               <View style={{ flex: 1 }} />
-              <Dot tone={st().tone} />
-              <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st().label}</Text>
+              <StateMark state={st().state} text={stateLine(st())} />
             </View>
           );
         }}
@@ -1316,7 +1309,7 @@ function PeopleSection(props: { team: Team }) {
                 <Text style={{ fontSize: 14.5, color: colors.fg }}>{u().name} <Text style={{ color: colors.fg2 }}>@{u().handle}</Text></Text>
                 <Text style={{ fontSize: 12.5, color: colors.fg3, numberOfLines: 1 }}>{[u().email, agentsOf(u().id).length ? L(`${agentsOf(u().id).length} agents`, `${agentsOf(u().id).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}</Text>
               </View>
-              <If when={u().role === "admin"}><Tag label={L("Admin", "管理员")} tone="accent" /></If>
+              <If when={u().role === "admin"}><Tag label={L("Admin", "管理员")} tone="default" /></If>
               <If when={admin() && u().id !== t.me()?.id}>
                 <Btn small testID={`login-link-${u().handle}`} label={L("Login link", "登录链接")} onPress={() => void loginLink(u().id, u().name)} />
               </If>
@@ -1589,7 +1582,7 @@ function MetricsSection(props: { team: Team }) {
               <If when={d().mine?.calls}>
                 {row(L("By moment", "按时刻"), momentsLine(d().mine!.by_class) || L("none", "没有"), "metrics-mine-moments")}
               </If>
-              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().mine ?? NO_CALLS), "metrics-mine-outside", d().mine?.outside ? "warn" : undefined)}
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().mine ?? NO_CALLS), "metrics-mine-outside", d().mine?.outside ? "default" : undefined)}
             </Panel>
             <Panel title={L("How fast people answer", "人回复「待你处理」要多久")}>
               {row(L("All", "全部"), waits(d().reply), "metrics-reply")}
@@ -1612,7 +1605,7 @@ function MetricsSection(props: { team: Team }) {
             <Panel testID="metrics-team-calls" title={L("How often people were needed", "全队被找的次数")}
               note={L("Everyone's, without private channels and without names.", "全队合计，不含私有频道，不分人。")}>
               {row(L("All", "全部"), statsLine(d().team ?? NO_CALLS), "metrics-team-calls-all")}
-              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().team ?? NO_CALLS), "metrics-team-outside", d().team?.outside ? "warn" : undefined)}
+              {row(L("Outside the three", "三个时刻之外"), outsideLine(d().team ?? NO_CALLS), "metrics-team-outside", d().team?.outside ? "default" : undefined)}
             </Panel>
             <Panel title={L("Which agents people go to", "大家找哪个 Agent")}>
               <Each of={d().agents.filter((a) => a.tasks > 0)} key={(a) => a.agent_id}>
@@ -1621,7 +1614,7 @@ function MetricsSection(props: { team: Team }) {
                   return (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 3 }}>
                       <Text style={{ width: 120, fontSize: 13.5, color: colors.fg, numberOfLines: 1 }}>{ag() ? `@${ag()!.handle}` : a().agent_id}</Text>
-                      <If when={a().team}><Tag label={L("Team", "团队")} tone="accent" /></If>
+                      <If when={a().team}><Tag label={L("Team", "团队")} tone="default" /></If>
                       <Text style={{ flex: 1, fontSize: 13.5, color: colors.fg2 }}>{L(`${a().tasks} tasks from ${a().people} people (${a().others} not its owner)`, `${a().tasks} 个任务，来自 ${a().people} 个人（${a().others} 个不是主人派的）`)}</Text>
                     </View>
                   );
@@ -1699,7 +1692,7 @@ function TeamConfigSection(props: { team: Team }) {
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Dot on={m().online} />
                 <Text style={{ fontSize: 13.5, color: colors.fg }}>{m().name}</Text>
-                <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
+                <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="default" /></If>
               </View>
               <If when={m().team_config} else={<Text style={{ fontSize: 12.5, color: colors.fg3 }}>{saved() ? L("Not synced yet (or an older daemon).", "还没同步（或者守护进程版本较旧）。") : "—"}</Text>}>
                 {(c) => <TeamConfigLine status={c()} testID={`teamconfig-machine-${m().id}`} />}

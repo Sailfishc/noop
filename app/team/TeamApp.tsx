@@ -5,13 +5,16 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { AccountRow, Avatar, colors, Count, Dot, hovered, Icon, IconBtn, type IconName, MenuHeading, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
+import { AccountRow, Avatar, colors, CommandPalette, Count, Dot, Icon, IconBtn, type IconName, Keys, ListHeading, ListRow, MenuHeading, MenuLine, MenuRow, PopMenu, RowMenu, Spinner, StateMark, titleBarHeight, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
 import { SearchPage } from "./search";
 import { canCheckUpdates, checkNow, UpdateRow } from "./updates";
 import { agentState, chrome, FOOTER, WIDE } from "./ui";
+import { agentCommands, bindShortcuts, channelCommands, paletteCommands, type Cmd, type Nav } from "./commands";
+import { composeInto } from "./composer";
+import { concernsMe } from "./taskpeople";
 import { ChannelView, DMDraft, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
@@ -20,7 +23,7 @@ import { SignIn } from "./signin";
 // ---------------------------------------------------------------- workspace
 
 /** dm: a private chat with the agent not made yet (its first message makes it, and the page becomes the channel). */
-type Page = { kind: "channel"; id: string } | { kind: "dm"; agent: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search" } | { kind: "home" };
+type Page = { kind: "channel"; id: string } | { kind: "dm"; agent: string } | { kind: "new-channel" } | { kind: "inbox" } | { kind: "tasks" } | { kind: "search"; query?: string } | { kind: "home" };
 type SettingsOpen = { tab: SettingsTab | null; agent?: string };
 /** Narrow windows (phones): the tabs along the bottom. */
 type Tab = "chat" | "inbox" | "tasks" | "me";
@@ -97,10 +100,45 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   // system notifications: a press opens what it is about
   watchNotifications(t, (channelId, threadId) => { settings.set(null); open({ kind: "channel", id: channelId }, threadId); });
   keymap.bind("mod+,", () => openSettings(), { when: "always" });
-  keymap.bind("mod+k", () => open({ kind: "search" }), { when: "always" });
+
+  // ⌘K: the command palette over everything, fed by the one command registry (commands.ts)
+  const palette = signal(false);
+  const query = signal("");
+  const openPalette = (q = "") => { query.set(q); palette.set(true); };
+  const openChat = (agentId: string) => {
+    settings.set(null);
+    const c = t.dmWith(agentId);
+    open(c ? { kind: "channel", id: c.id } : { kind: "dm", agent: agentId });
+  };
+  const here = () => { const p = untracked(page); return p.kind === "channel" ? t.channels().find((c) => c.id === p.id) ?? null : null; };
+  const nav: Nav = {
+    team: t,
+    inbox: () => { settings.set(null); open({ kind: "inbox" }); },
+    tasks: () => { settings.set(null); open({ kind: "tasks" }); },
+    channel: (id) => { settings.set(null); if (untracked(page).kind !== "channel" || (untracked(page) as { id: string }).id !== id) open({ kind: "channel", id }); },
+    chat: openChat,
+    newChannel: () => { settings.set(null); open({ kind: "new-channel" }); },
+    settings: (tab) => openSettings(tab ?? undefined),
+    search: (q) => { if (!q) return openPalette(); settings.set(null); open({ kind: "search", query: q }); },
+    here,
+    dispatch: (a) => {
+      const c = here();
+      // in the open channel when it can be asked there (a member, or one that takes the whole team's work)
+      if (c && !c.dm_agent && (isMember(c, "agent", a.id) || a.dispatch === "team")) return composeInto.set({ channel: c.id, text: `@${a.handle} `, at: Date.now() });
+      openChat(a.id);
+    },
+  };
+  bindShortcuts({ palette: openPalette, inbox: nav.inbox, tasks: nav.tasks });
+  keymap.bind("escape", () => { if (untracked(side)) side.set(null); }, { when: "notEditing", passThrough: true });
+  const commands = () => paletteCommands(nav, query());
+  const run = (id: string) => {
+    const c = untracked(commands).find((x) => x.id === id);
+    palette.set(false);
+    c?.run();
+  };
 
   const sidebar = () => (
-    <Sidebar team={t} page={page()} inset={wide()} onOpen={open} onSettings={openSettings} onSignOut={props.onSignOut} />
+    <Sidebar team={t} page={page()} inset={wide()} nav={nav} onOpen={open} onPalette={() => openPalette()} onSettings={openSettings} onSignOut={props.onSignOut} />
   );
   const main = () => {
     const p = page();
@@ -118,8 +156,8 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     }
     if (p.kind === "new-channel") return <NewChannel team={t} back={!wide()} onBack={() => showList.set(true)} onCreated={(id) => open({ kind: "channel", id })} />;
     if (p.kind === "tasks") return <TasksPage team={t} back={false} onBack={() => showList.set(true)} onOpen={(task) => open({ kind: "channel", id: task.channel_id }, task.thread_id)} />;
-    if (p.kind === "search") return <SearchPage team={t} back={!wide()} onBack={() => showList.set(true)} onOpen={(id, threadId) => open({ kind: "channel", id }, threadId)} />;
-    if (p.kind === "inbox") return <Inbox team={t} back={false} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
+    if (p.kind === "search") return <SearchPage team={t} query={p.query} back={!wide()} onBack={() => showList.set(true)} onOpen={(id, threadId) => open({ kind: "channel", id }, threadId)} />;
+    if (p.kind === "inbox") return <Inbox team={t} wide={wide()} back={false} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
         <If when={t.loaded()} else={<Spinner size={20} tint={colors.fg2} />}>
@@ -182,6 +220,18 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     <If when={keyboardFrame().height ? null : tab()}>
       {(x) => <TabBar team={t} active={x()} onTab={openTab} />}
     </If>
+    <CommandPalette
+      testID="palette"
+      open={palette()}
+      onClose={() => palette.set(false)}
+      items={commands()}
+      query={query()}
+      onQuery={query.set}
+      onSelect={run}
+      label={L("Commands", "命令")}
+      placeholder={L("Type a command, or search…", "输入命令，或搜索…")}
+      empty={L("No command by that name", "没有这个命令")}
+    />
     </View>
   );
 }
@@ -189,7 +239,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
 /** Phones: messages, what waits for me, tasks, me. */
 function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
   const t = props.team;
-  const waiting = () => t.inbox().length + t.signups().length + t.proposals().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length;
+  const waiting = () => waitingCount(t);
   const unread = () => Object.values(t.unread()).reduce((n, x) => n + (x || 0), 0);
   const Item = (p: { tab: Tab; icon: IconName; label: string; badge: number }) => {
     const on = () => props.active === p.tab;
@@ -218,7 +268,7 @@ function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
   );
 }
 
-function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Page) => void; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
+function Sidebar(props: { team: Team; page: Page; inset: boolean; nav: Nav; onOpen: (p: Page) => void; onPalette: () => void; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {
   const t = props.team;
   const mine = computed(() => {
     const me = t.me();
@@ -240,93 +290,72 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
   });
   /** Others' agents that take the whole team's work and I have no chat with yet: the + of 私聊 starts one. */
   const moreChats = computed(() => t.agents().filter((a) => a.owner_id !== t.me()?.id && mayBringAgent(a, t.me()) && !chats().some((x) => x.key === a.id)));
-  const openChat = (agentId: string) => {
-    const c = t.dmWith(agentId);
-    props.onOpen(c ? { kind: "channel", id: c.id } : { kind: "dm", agent: agentId });
-  };
   const chatActive = (agentId: string) => {
     const p = props.page;
     return (p.kind === "dm" && p.agent === agentId) || (p.kind === "channel" && t.dmWith(agentId)?.id === p.id);
   };
-  const Row = (p: { testID: string; icon: IconName; label: string; active: boolean; badge?: number; dim?: boolean; onPress: () => void }) => (
-    <View
-      role="button"
-      testID={p.testID}
-      onPress={p.onPress}
-      hoverStyle={hovered()}
-      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: p.active ? colors.selected : "transparent" }}
-    >
-      <Icon name={p.icon} size={15} tint={p.dim ? colors.fg3 : colors.fg2} />
-      <Text style={{ flex: 1, fontSize: 14.5, fontWeight: p.badge ? "600" : "400", color: p.dim ? colors.fg2 : colors.fg, numberOfLines: 1 }}>{p.label}</Text>
-      <Count n={p.badge ?? 0} testID={`${p.testID}-unread`} />
-    </View>
-  );
-  const Section = (p: { label: string; right?: JSX.Element }) => (
-    <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingTop: 14, paddingBottom: 4 }}>
-      <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{p.label}</Text>
-      {p.right}
-    </View>
+  /** My open tasks (what 我的任务 lists first). */
+  const myTasks = () => Object.values(t.tasks()).filter((x) => !["done", "closed"].includes(x.state) && concernsMe(t, x)).length;
+  const menu = (cmds: Cmd[]) => (
+    <Each of={cmds} key={(c) => c.id}>
+      {(c) => <MenuRow testID={`ctx-${c().id}`} icon={c().icon} label={c().label} right={c().keys} onSelect={c().run} />}
+    </Each>
   );
   return (
     <View style={{ flex: 1 }}>
-      <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), flexDirection: "row", alignItems: "center", gap: 9, paddingLeft: props.inset && chrome().left ? chrome().left + 4 : 16, paddingRight: 16 }}>
-        {/* wide: no logo or name for now, the bar stays as the window's drag area and the traffic lights' room */}
+      <View desktop={{ windowDrag: true }} style={{ height: Math.max(titleBarHeight, chrome().height), flexDirection: "row", alignItems: "center", paddingLeft: props.inset && chrome().left ? chrome().left : 0 }}>
+        {/* phones: the page's title and whether it is live */}
         <If when={!props.inset}>
-          <View style={{ flex: 1, gap: 1 }}>
-            <Text style={{ fontSize: 22, fontWeight: "700", color: colors.fg }}>{L("Messages", "消息")}</Text>
+          <View style={{ flex: 1, gap: 1, paddingHorizontal: 16 }}>
+            <Txt variant="display" weight="bold">{L("Messages", "消息")}</Txt>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
               <Dot on={t.conn() === "live"} />
-              <Text testID="conn-top" style={{ fontSize: 12, color: colors.fg2 }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
+              <Txt variant="caption" tone="muted" testID="conn-top">{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Txt>
             </View>
           </View>
         </If>
       </View>
-      <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 2, paddingBottom: 16 }}>
-        <Row testID="open-search" icon="search" label={L("Search", "搜索")} active={props.page.kind === "search"} onPress={() => props.onOpen({ kind: "search" })} />
-        {/* phones have these as tabs */}
+      <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 8, gap: 1, paddingBottom: 16 }}>
+        {/* ⌘K: go anywhere, do anything, search */}
+        <ListRow testID="open-search" title={L("Search", "搜索")} label={L("Search or run a command", "搜索或执行命令")}
+          left={<Icon name="search" size={15} tint={colors.fg2} />} right={<If when={props.inset}><Keys keys={keymap.label("mod+k")} /></If>}
+          selected={props.page.kind === "search"} onPress={props.onPalette} />
+        {/* what needs me first; phones have these as tabs */}
         <If when={props.inset}>
-          <Row testID="open-inbox" icon="bell" label={L("Waiting for you", "待你决定")} badge={t.inbox().length + t.signups().length + t.proposals().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length} active={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
-          <Row testID="open-tasks" icon="lists" label={L("Tasks", "任务")} active={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
+          <ListRow testID="open-inbox" title={L("Waiting for you", "待你决定")} strong={!!waitingCount(t)} left={<Icon name="bell" size={15} tint={colors.fg2} />}
+            right={<Count tone="attention" n={waitingCount(t)} testID="open-inbox-unread" />} selected={props.page.kind === "inbox"} onPress={() => props.onOpen({ kind: "inbox" })} />
+          <ListRow testID="open-tasks" title={L("My tasks", "我的任务")} left={<Icon name="lists" size={15} tint={colors.fg2} />}
+            right={<Count n={myTasks()} testID="open-tasks-count" />} selected={props.page.kind === "tasks"} onPress={() => props.onOpen({ kind: "tasks" })} />
         </If>
-        <Section
-          label={L("CHANNELS", "频道")}
-          right={
-            <View role="button" testID="new-channel" accessibilityLabel={L("New channel", "新建频道")} onPress={() => props.onOpen({ kind: "new-channel" })} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-              <Icon name="plus" size={15} tint={colors.fg2} />
-            </View>
-          }
-        />
+        <ListHeading text={L("Channels", "频道")} right={<IconBtn testID="new-channel" icon="plus" size="sm" tone="muted" label={L("New channel", "新建频道")} onPress={() => props.onOpen({ kind: "new-channel" })} />} />
         <Each of={mine()} key={(x) => x.c.id}>
           {(x) => (
-            <Row
-              testID={`channel-${x().c.slug}`}
-              icon={x().c.private ? "lock" : "chat"}
-              label={x().c.name}
-              dim={!x().member}
-              badge={t.unread()[x().c.id] || 0}
-              active={props.page.kind === "channel" && props.page.id === x().c.id}
-              onPress={() => props.onOpen({ kind: "channel", id: x().c.id })}
-            />
+            <RowMenu trigger={
+              <ListRow
+                testID={`channel-${x().c.slug}`}
+                title={x().c.name}
+                left={<Icon name={x().c.private ? "lock" : "chat"} size={15} tint={x().member ? colors.fg2 : colors.fg3} />}
+                dim={!x().member}
+                strong={!!t.unread()[x().c.id]}
+                right={<Count n={t.unread()[x().c.id] || 0} testID={`channel-${x().c.slug}-unread`} />}
+                selected={props.page.kind === "channel" && props.page.id === x().c.id}
+                onPress={() => props.onOpen({ kind: "channel", id: x().c.id })}
+              />
+            }>{menu(channelCommands(props.nav, x().c))}</RowMenu>
           )}
         </Each>
-        <Section
-          label={L("PRIVATE CHATS", "私聊")}
+        <ListHeading
+          text={L("Private chats", "私聊")}
           right={
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
               <If when={moreChats().length}>
-                <PopMenu
-                  align="end"
-                  wide
-                  maxHeight={360}
-                  trigger={
-                    <IconBtn testID="side-chat-new" icon="plus" label={L("Chat with another agent", "和其他 Agent 私聊")} size="sm" tone="muted" onPress={() => {}} />
-                  }
-                >
+                <PopMenu align="end" wide maxHeight={360}
+                  trigger={<IconBtn testID="side-chat-new" icon="plus" label={L("Chat with another agent", "和其他 Agent 私聊")} size="sm" tone="muted" onPress={() => {}} />}>
                   <MenuHeading text={L("Team agents", "团队的 Agent")} />
                   <Each of={moreChats()} key={(a) => a.id}>
                     {(a) => (
                       <MenuRow testID={`side-chat-new-${a().handle}`} icon="spark" label={a().name}
-                        right={t.users().find((u) => u.id === a().owner_id)?.name ?? ""} onSelect={() => openChat(a().id)} />
+                        right={t.users().find((u) => u.id === a().owner_id)?.name ?? ""} onSelect={() => props.nav.chat(a().id)} />
                     )}
                   </Each>
                 </PopMenu>
@@ -342,38 +371,33 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
             const mine = () => a()?.owner_id === t.me()?.id;
             const owner = () => t.users().find((u) => u.id === a()?.owner_id)?.name ?? "";
             const unread = () => { const c = t.dmWith(x().key); return c ? t.unread()[c.id] || 0 : 0; };
-            return (
-              <View role="button" testID={`side-agent-${x().handle}`} onPress={() => openChat(x().key)} hoverStyle={hovered()}
-                style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: chatActive(x().key) ? colors.selected : "transparent" }}>
-                <Avatar name={a()?.name ?? x().handle} agent size={22} />
-                <View style={{ flex: 1, gap: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: unread() ? "600" : "400", color: a() ? colors.fg : colors.fg2, numberOfLines: 1 }}>{a()?.name ?? `@${x().handle}`}</Text>
+            const row = () => (
+              <ListRow
+                testID={`side-agent-${x().handle}`}
+                title={a()?.name ?? `@${x().handle}`}
+                dim={!a()}
+                strong={!!unread()}
+                left={<Avatar name={a()?.name ?? x().handle} agent size="sm" />}
+                below={
                   <If when={st()} else={<Txt variant="caption" tone="faint">{L("history only", "只能看历史")}</Txt>}>
-                    {(s) => (
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                        <Dot tone={s().tone} />
-                        <Text testID={`side-agent-${x().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: s().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>
-                          {mine() ? `${runtimeLabel(a()!.runtime)} · ${s().label}` : L(`${owner()}’s · ${s().label}`, `${owner()}的 · ${s().label}`)}
-                        </Text>
-                      </View>
-                    )}
+                    {(s) => <StateMark testID={`side-agent-${x().handle}-state`} state={s().state} text={mine() ? `${runtimeLabel(a()!.runtime)} · ${s().word}` : L(`${owner()}’s · ${s().word}`, `${owner()}的 · ${s().word}`)} />}
                   </If>
-                </View>
-                <Count n={unread()} testID={`side-agent-${x().handle}-unread`} />
-              </View>
+                }
+                right={<Count n={unread()} testID={`side-agent-${x().handle}-unread`} />}
+                selected={chatActive(x().key)}
+                onPress={() => props.nav.chat(x().key)}
+              />
             );
+            return <If when={a()} else={row()}>{(ag) => <RowMenu trigger={row()}>{menu(agentCommands(props.nav, ag()))}</RowMenu>}</If>;
           }}
         </Each>
         <If when={!myAgents().length}>
-          <View role="button" testID="side-agent-new" onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ height: 30, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8 }}>
-            <Icon name="plus" size={14} tint={colors.fg3} />
-            <Text style={{ fontSize: 13.5, color: colors.fg2 }}>{L("Create your first agent", "新建你的第一个 Agent")}</Text>
-          </View>
+          <ListRow testID="side-agent-new" title={L("Create your first agent", "新建你的第一个 Agent")} dim left={<Icon name="plus" size={15} tint={colors.fg3} />} onPress={() => props.onSettings("agents")} />
         </If>
       </Scroll>
       {/* phones: me and settings are the Me tab */}
       <If when={props.inset} else={<UpdateRow />}>
-        <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.hairline }}>
+        <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 0.5, borderTopColor: colors.hairline }}>
           <UpdateRow />
           <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
         </View>
@@ -381,6 +405,9 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
     </View>
   );
 }
+
+/** What waits for me: the count on 待你决定 (its tab on phones). */
+export const waitingCount = (t: Team) => t.inbox().length + t.signups().length + t.proposals().length + t.reminders().filter((r) => reminderUp(r, t.me()?.id)).length;
 
 /** Bottom left: me and a gear; opens Settings (⌘,), my agents & machines, sign in on another device, sign out. */
 function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, agent?: string) => void; onSignOut: () => void }) {

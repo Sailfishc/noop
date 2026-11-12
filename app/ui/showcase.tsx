@@ -10,7 +10,10 @@ import { Choice } from "./choice";
 import { Count } from "./count";
 import { Dot } from "./dot";
 import { Empty } from "./empty";
-import { ListRow } from "./list-row";
+import { ListHeading, ListRow } from "./list-row";
+import { AskCard } from "./ask-card";
+import { StateMark } from "./agent-state";
+import { Keys } from "./palette";
 import { AccountRow } from "./account-row";
 import { Tabs } from "./tabs";
 import { ErrorNote } from "./error-note";
@@ -236,6 +239,27 @@ export function Showcase() {
               <Txt>A Card: a group on the raised surface, a hairline edge.</Txt>
               <Row><Btn small kind="primary" label="Save" onPress={() => {}} /></Row>
             </Card>
+          </View>
+        </View>
+      </Section>
+
+      <Section title="AskCard (align, decide, accept: the only amber surface; quiet while it waits on someone else), StateMark (an agent's five words), Keys, ListHeading">
+        <View style={{ flexDirection: touch ? "column" : "row", gap: space.xl, alignItems: touch ? "stretch" : "flex-start" }}>
+          <View style={{ flex: touch ? undefined : 1, gap: space.md }}>
+            <AskCard testID="showcase-ask" kind="等你决定" onReply={() => {}}
+              actions={<><Btn small kind="primary" label="兼容 v1，半年后下线" onPress={() => {}} /><Btn small label="只支持 v2" onPress={() => {}} /></>}>
+              <Txt weight="semibold">退款接口要不要兼容旧版签名？</Txt>
+            </AskCard>
+            <AskCard quiet kind="等王磊验收"><Txt>4 criteria: 2 verified</Txt></AskCard>
+          </View>
+          <View style={{ flex: touch ? undefined : 1, gap: space.md }}>
+            <ListHeading text="Private chats" right={<IconBtn icon="plus" size="sm" tone="muted" label="Add" onPress={() => {}} />} />
+            <StateMark state="ready" text="Codex · 就绪" />
+            <StateMark state="working" text="Codex · 在做" />
+            <StateMark state="waiting" text="Codex · 等你" />
+            <StateMark state="stuck" text="Codex · 卡住：未登录" />
+            <StateMark state="offline" text="离线" />
+            <Row><Keys keys="⌘K" /><Keys keys="G I" /><Keys keys="J K" /><Keys keys="↵" /></Row>
           </View>
         </View>
       </Section>
