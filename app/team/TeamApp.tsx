@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { AccountRow, alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
+import { AccountRow, alpha, Avatar, colors, Count, Dot, hovered, Icon, IconBtn, type IconName, MenuHeading, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -225,13 +225,21 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
     return t.channels().filter((c) => !c.archived && !c.dm_agent).map((c) => ({ c, member: !!me && isMember(c, "user", me.id) }));
   });
   const myAgents = () => t.agents().filter((a) => a.owner_id === t.me()?.id);
-  /** 私聊: every agent I may hand work (mine first), then my chats with agents that are gone or no longer take my work. */
+  /**
+   * 私聊: my agents, then others' agents I have a chat with, then my chats with agents that are gone or no longer take
+   * my work. Others' team-wide agents I haven't talked to stay behind the + (listing them all would put every
+   * teammate's agents and computers in my sidebar).
+   */
   const chats = computed(() => {
     const me = t.me();
-    const live = t.agents().filter((a) => mayBringAgent(a, me)).sort((a, b) => Number(b.owner_id === me?.id) - Number(a.owner_id === me?.id));
+    const page = props.page;
+    const started = (a: Agent) => (page.kind === "dm" && page.agent === a.id) || t.channels().some((c) => c.dm_agent === a.id && c.created_by === me?.id);
+    const live = t.agents().filter((a) => mayBringAgent(a, me) && (a.owner_id === me?.id || started(a))).sort((a, b) => Number(b.owner_id === me?.id) - Number(a.owner_id === me?.id));
     const dead = t.channels().filter((c) => c.dm_agent && c.created_by === me?.id && !live.some((a) => a.id === c.dm_agent));
     return [...live.map((a) => ({ key: a.id, agent: a as Agent | null, handle: a.handle })), ...dead.map((c) => ({ key: c.dm_agent!, agent: null, handle: c.name }))];
   });
+  /** Others' agents that take the whole team's work and I have no chat with yet: the + of 私聊 starts one. */
+  const moreChats = computed(() => t.agents().filter((a) => a.owner_id !== t.me()?.id && mayBringAgent(a, t.me()) && !chats().some((x) => x.key === a.id)));
   const openChat = (agentId: string) => {
     const c = t.dmWith(agentId);
     props.onOpen(c ? { kind: "channel", id: c.id } : { kind: "dm", agent: agentId });
@@ -304,8 +312,26 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
         <Section
           label={L("PRIVATE CHATS", "私聊")}
           right={
-            <View role="button" testID="side-agents" accessibilityLabel={L("Manage agents", "管理 Agent")} onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-              <Icon name="settings" size={14} tint={colors.muted} />
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+              <If when={moreChats().length}>
+                <PopMenu
+                  align="end"
+                  minWidth={220}
+                  maxHeight={360}
+                  trigger={
+                    <IconBtn testID="side-chat-new" icon="plus" label={L("Chat with another agent", "和其他 Agent 私聊")} size="sm" tone="muted" onPress={() => {}} />
+                  }
+                >
+                  <MenuHeading text={L("Team agents", "团队的 Agent")} />
+                  <Each of={moreChats()} key={(a) => a.id}>
+                    {(a) => (
+                      <MenuRow testID={`side-chat-new-${a().handle}`} icon="spark" label={a().name}
+                        right={t.users().find((u) => u.id === a().owner_id)?.name ?? ""} onSelect={() => openChat(a().id)} />
+                    )}
+                  </Each>
+                </PopMenu>
+              </If>
+              <IconBtn testID="side-agents" icon="settings" label={L("Manage agents", "管理 Agent")} size="sm" tone="muted" onPress={() => props.onSettings("agents")} />
             </View>
           }
         />
