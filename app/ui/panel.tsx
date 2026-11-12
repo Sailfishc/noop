@@ -1,15 +1,18 @@
-import { Text, View, type JSX, type ViewStyle } from "nsh";
+import { Text, View, type JSX } from "nsh";
 import { Noted } from "./noted";
-import { colors, scale } from "./theme";
+import { colors, radius, size, space, stroke } from "./theme";
 
-/** A titled section on a surface (a settings group), its note behind the title's ⓘ; `right` at the title's end. */
-export function Panel(props: { title: string; note?: string; testID?: string; children: JSX.Element; right?: JSX.Element; style?: ViewStyle }) {
+/**
+ * A titled section on the raised surface (a settings group), its note behind the title's ⓘ; `right` at the title's
+ * end; `grow` takes the rest of a row. Its edge is a hairline: inside a page, levels of surface separate things, not borders.
+ */
+export function Panel(props: { title: string; note?: string; testID?: string; children: JSX.Element; right?: JSX.Element; grow?: boolean }) {
   return (
-    <View style={[{ gap: 12, padding: 16, borderRadius: scale.radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }, props.style ?? null]}>
+    <View style={[{ gap: space.lg, padding: space.xl, borderRadius: radius.lg, borderWidth: stroke.hairline, borderColor: colors.hairline, backgroundColor: colors.raised, flex: props.grow ? 1 : undefined }]}>
       <Noted
         note={props.note}
         testID={props.testID}
-        label={<Text style={{ fontSize: scale.text.title, fontWeight: "600", color: colors.text }}>{props.title}</Text>}
+        label={<Text style={{ fontSize: size.text.title, fontWeight: "600", color: colors.fg }}>{props.title}</Text>}
         right={props.right}
       />
       {props.children}
@@ -18,12 +21,12 @@ export function Panel(props: { title: string; note?: string; testID?: string; ch
 }
 
 /**
- * A bordered box with no title, for a group of things that belong together (an editor and its buttons, a picked
- * item). `tight` pads 8 instead of 12; `flat` leaves the background out.
+ * A group of things that belong together without a title (an editor and its buttons, a picked item), on the raised
+ * surface with a hairline edge. `tight` pads less; `flat` leaves the surface out (only the hairline).
  */
 export function Card(props: { children: JSX.Element; tight?: boolean; flat?: boolean; testID?: string }) {
   return (
-    <View testID={props.testID} style={{ gap: props.tight ? 6 : 8, padding: props.tight ? 8 : 12, borderRadius: scale.radius.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: props.flat ? "transparent" : colors.surface }}>
+    <View testID={props.testID} style={{ gap: props.tight ? space.sm : space.md, padding: props.tight ? space.md : space.lg, borderRadius: radius.lg, borderWidth: stroke.hairline, borderColor: colors.hairline, backgroundColor: props.flat ? "transparent" : colors.raised }}>
       {props.children}
     </View>
   );

@@ -34,19 +34,19 @@ export const time = clock;
 
 export function Header(props: { title: string; subtitle?: string; back?: boolean; onBack?: () => void; right?: JSX.Element; backLabel?: string; icon?: IconName; iconLabel?: string }) {
   return (
-    <View desktop={{ windowDrag: true }} style={{ height: HEADER, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+    <View desktop={{ windowDrag: true }} style={{ height: HEADER, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: colors.hairline }}>
       <If when={props.back}>
         <IconBtn icon="back" testID="back" label={props.backLabel ?? L("Back", "返回")} onPress={() => props.onBack?.()} />
       </If>
       <View style={{ flex: 1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <If when={props.icon}>
-            {(icon) => <View testID="header-icon" accessibilityLabel={props.iconLabel}><Icon name={icon()} size={14} tint={colors.muted} /></View>}
+            {(icon) => <View testID="header-icon" accessibilityLabel={props.iconLabel}><Icon name={icon()} size={14} tint={colors.fg2} /></View>}
           </If>
-          <Text style={{ flex: 1, fontSize: 16.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{props.title}</Text>
+          <Text style={{ flex: 1, fontSize: 16.5, fontWeight: "600", color: colors.fg, numberOfLines: 1 }}>{props.title}</Text>
         </View>
         <If when={props.subtitle}>
-          <Text style={{ fontSize: 13, color: colors.muted, numberOfLines: 1 }}>{props.subtitle}</Text>
+          <Text style={{ fontSize: 13, color: colors.fg2, numberOfLines: 1 }}>{props.subtitle}</Text>
         </If>
       </View>
       {props.right}

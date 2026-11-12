@@ -2,7 +2,7 @@ import { cleanup, platform, signal, View, WebView } from "nsh";
 import { L } from "../i18n";
 import { scannerPage } from "./qr-scanner-page";
 import { Txt } from "./text";
-import { scale } from "./theme";
+import { radius, space } from "./theme";
 
 /**
  * Whether this platform can show the scanner: a web view whose page may use the camera (`capabilities.webview.media`)
@@ -41,7 +41,7 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
   const wait = setTimeout(() => late.set(true), 3000);
   cleanup(() => clearTimeout(wait));
   return (
-    <View style={{ height: props.height ?? 320, borderRadius: scale.radius.md, overflow: "hidden", backgroundColor: "#000000" }}>
+    <View style={{ height: props.height ?? 320, borderRadius: radius.md, overflow: "hidden", backgroundColor: "#000000" }}>
       <WebView
         testID={props.testID}
         html={scannerPage(text)}
@@ -59,7 +59,7 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
         }}
       />
       <If when={problem()}>
-        <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center", padding: 16, backgroundColor: "#000000" }}>
+        <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center", padding: space.xl, backgroundColor: "#000000" }}>
           <Txt testID={props.testID ? `${props.testID}-problem` : undefined} tone="faint">{problem()}</Txt>
         </View>
       </If>

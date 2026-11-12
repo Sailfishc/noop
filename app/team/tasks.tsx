@@ -5,7 +5,7 @@
 // only answered stays in the conversation.
 import { computed, effect, type JSX, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu } from "../ui";
+import { Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu, tone } from "../ui";
 import { channelLabel, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
@@ -19,7 +19,7 @@ const LAYOUT_KEY = "remi.tasks.layout";
 const VIEW_KEY = "remi.tasks.view";
 const VIEWS: TaskView[] = ["related", "needs", "mine", "agents", "all"];
 
-export const toneColor = (t: Tone | string) => (t === "accent" ? colors.accent : t === "warn" ? colors.warn : t === "danger" ? colors.danger : t === "up" ? colors.up : colors.muted);
+export const toneColor = (t: Tone | string) => tone(t).fg;
 
 export const trackedTasks = (t: Team) => Object.values(t.tasks()).filter((x) => x.tracked !== false && !x.redacted);
 
@@ -33,7 +33,7 @@ export function rememberedLayout(place: string) {
 /** A "needs you" style chip: whom the task waits for. */
 export function WaitsChip(props: { label: string; tone: Tone; testID?: string }) {
   return (
-    <View testID={props.testID} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneColor(props.tone), 0.13) }}>
+    <View testID={props.testID} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5, backgroundColor: tone(props.tone).tint }}>
       <Dot tone={props.tone} />
       <Text style={{ fontSize: 12, fontWeight: "600", color: toneColor(props.tone) }}>{props.label}</Text>
     </View>
@@ -56,25 +56,25 @@ function TaskRow(props: { team: Team; task: Task; showStatus?: boolean; showChan
   };
   return (
     <View role="button" testID={`taskrow-${task().id}`} onPress={() => props.onOpen(task())} hoverStyle={hovered()}
-      style={{ gap: 5, padding: 10, borderRadius: 9, borderWidth: 1, borderColor: waits()?.mine ? alpha(colors.warn, 0.45) : colors.border, backgroundColor: colors.surface }}>
+      style={{ gap: 5, padding: 10, borderRadius: 9, borderWidth: 1, borderColor: waits()?.mine ? colors.attention : colors.hairline, backgroundColor: colors.raised }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Text testID={`taskrow-${task().id}-ref`} style={{ flex: 1, fontSize: 11.5, color: colors.faint, fontVariant: ["tabular-nums"], numberOfLines: 1 }}>{taskRef(t, task(), props.showChannel)}</Text>
+        <Text testID={`taskrow-${task().id}-ref`} style={{ flex: 1, fontSize: 11.5, color: colors.fg3, fontVariant: ["tabular-nums"], numberOfLines: 1 }}>{taskRef(t, task(), props.showChannel)}</Text>
         <If when={props.showStatus}>
           <Text style={{ fontSize: 12, fontWeight: "600", color: toneColor(STATUS[st().status].tone) }}>{STATUS[st().status].label()}</Text>
         </If>
       </View>
-      <Text style={{ fontSize: 13.5, fontWeight: "600", lineHeight: 19, color: colors.text, numberOfLines: 2 }}>{task().title}</Text>
+      <Text style={{ fontSize: 13.5, fontWeight: "600", lineHeight: 19, color: colors.fg, numberOfLines: 2 }}>{task().title}</Text>
       <If when={waits()}>
         {(w) => <WaitsChip testID={`taskrow-${task().id}-waits`} label={w().label} tone={w().tone} />}
       </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Avatar name={agent()?.name ?? "?"} agent size={16} />
-        <Text style={{ flexShrink: 1, fontSize: 12, color: colors.muted, numberOfLines: 1 }}>
+        <Text style={{ flexShrink: 1, fontSize: 12, color: colors.fg2, numberOfLines: 1 }}>
           {[`@${agent()?.handle ?? "?"}`, liveLine(task()) || time(task().updated)].join(" · ")}
         </Text>
         <View style={{ flex: 1 }} />
         <If when={outs()}>
-          <Text testID={`taskrow-${task().id}-outputs`} style={{ fontSize: 12, color: colors.faint, numberOfLines: 1 }}>{outs()}</Text>
+          <Text testID={`taskrow-${task().id}-outputs`} style={{ fontSize: 12, color: colors.fg3, numberOfLines: 1 }}>{outs()}</Text>
         </If>
       </View>
     </View>
@@ -123,7 +123,7 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
   });
   const sorted = () => [...top()].sort((a, b) => Number(needsMe(t, b)) - Number(needsMe(t, a)) || b.updated - a.updated);
   return (
-    <If when={props.tasks.length} else={<Text testID="tasks-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{props.empty ?? L("No tasks yet.", "还没有任务。")}</Text>}>
+    <If when={props.tasks.length} else={<Text testID="tasks-empty" style={{ padding: 24, fontSize: 14.5, color: colors.fg2, textAlign: "center" }}>{props.empty ?? L("No tasks yet.", "还没有任务。")}</Text>}>
       <If when={layout() === "board"} else={
         <Scroll testID="tasks-list" style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 8, maxWidth: 720 }}>
           <Each of={sorted()} key={(x) => x.id}>
@@ -135,15 +135,15 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}>
           <Each of={STATUSES} key={(s) => s}>
             {(s) => (
-              <View testID={`tasks-col-${s()}`} style={{ flex: 1, flexBasis: 0, minWidth: 0, gap: 8, padding: 8, borderRadius: 10, backgroundColor: alpha(colors.text, 0.03) }}>
+              <View testID={`tasks-col-${s()}`} style={{ flex: 1, flexBasis: 0, minWidth: 0, gap: 8, padding: 8, borderRadius: 10, backgroundColor: colors.hover }}>
                 <View role={s() === "done" || s() === "closed" ? "button" : undefined} testID={`tasks-col-${s()}-head`}
                   onPress={s() === "done" || s() === "closed" ? () => unfolded.update((u) => ({ ...u, [s()]: !u[s()] })) : undefined}
                   style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 4 }}>
                   <Dot tone={STATUS[s()].tone} />
-                  <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>{STATUS[s()].label()}</Text>
-                  <Text testID={`tasks-col-${s()}-count`} style={{ flex: 1, fontSize: 12, color: colors.faint }}>{String(byStatus()[s()].length)}</Text>
+                  <Text style={{ fontSize: 13, fontWeight: "600", color: colors.fg }}>{STATUS[s()].label()}</Text>
+                  <Text testID={`tasks-col-${s()}-count`} style={{ flex: 1, fontSize: 12, color: colors.fg3 }}>{String(byStatus()[s()].length)}</Text>
                   <If when={s() === "done" || s() === "closed"}>
-                    <Icon name={folded(s()) ? "chevron" : "chevron-down"} size={12} tint={colors.faint} />
+                    <Icon name={folded(s()) ? "chevron" : "chevron-down"} size={12} tint={colors.fg3} />
                   </If>
                 </View>
                 <If when={!folded(s())}>
@@ -165,8 +165,8 @@ export function TaskBoard(props: { team: Team; tasks: Task[]; layout: TaskLayout
 export function LayoutSwitch(props: { value: TaskLayout; onChange: (v: TaskLayout) => void }) {
   const item = (v: TaskLayout, label: string) => (
     <View role="button" testID={`tasks-layout-${v}`} accessibilityState={{ selected: props.value === v }} onPress={() => props.onChange(v)} hoverStyle={hovered()}
-      style={{ height: 26, justifyContent: "center", paddingHorizontal: 10, borderRadius: 6, backgroundColor: props.value === v ? alpha(colors.text, 0.08) : "transparent" }}>
-      <Text style={{ fontSize: 12.5, fontWeight: props.value === v ? "600" : "400", color: props.value === v ? colors.text : colors.muted }}>{label}</Text>
+      style={{ height: 26, justifyContent: "center", paddingHorizontal: 10, borderRadius: 6, backgroundColor: props.value === v ? colors.selected : "transparent" }}>
+      <Text style={{ fontSize: 12.5, fontWeight: props.value === v ? "600" : "400", color: props.value === v ? colors.fg : colors.fg2 }}>{label}</Text>
     </View>
   );
   return (
@@ -197,9 +197,9 @@ function PickFilter(props: { testID: string; label: string; options: { id: strin
       maxHeight={360}
       trigger={
         <View role="button" testID={props.testID} hoverStyle={hovered()}
-          style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, borderRadius: 7, borderWidth: 1, borderColor: props.picked.length ? colors.accentFill : colors.border, backgroundColor: props.picked.length ? alpha(colors.accent, 0.08) : "transparent" }}>
-          <Text style={{ fontSize: 12.5, color: props.picked.length ? colors.accent : colors.muted }}>{props.picked.length ? `${props.label} ${props.picked.length}` : props.label}</Text>
-          <Icon name="chevron-down" size={11} tint={colors.faint} />
+          style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, borderRadius: 7, borderWidth: 1, borderColor: props.picked.length ? colors.primary : colors.hairline, backgroundColor: props.picked.length ? colors.selected : "transparent" }}>
+          <Text style={{ fontSize: 12.5, color: props.picked.length ? colors.fg : colors.fg2 }}>{props.picked.length ? `${props.label} ${props.picked.length}` : props.label}</Text>
+          <Icon name="chevron-down" size={11} tint={colors.fg3} />
         </View>
       }
     >
@@ -241,9 +241,9 @@ export function TasksPage(props: { team: Team; back: boolean; onBack: () => void
   const count = (v: TaskView) => (v === "needs" ? trackedTasks(t).filter((x) => needsMe(t, x)).length : 0);
   const chip = (v: TaskView) => (
     <View role="button" testID={`tasks-filter-${v}`} accessibilityState={{ selected: view() === v }} onPress={() => setView(v)} hoverStyle={hovered()}
-      style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 14, borderWidth: 1, borderColor: view() === v ? colors.accentFill : colors.border, backgroundColor: view() === v ? alpha(colors.accent, 0.1) : "transparent" }}>
-      <Text style={{ fontSize: 12.5, color: view() === v ? colors.accent : colors.muted }}>{VIEW_LABEL[v]()}</Text>
-      <If when={count(v)}><Text style={{ fontSize: 12, fontWeight: "600", color: colors.warn }}>{String(count(v))}</Text></If>
+      style={{ height: 28, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: 14, borderWidth: 1, borderColor: view() === v ? colors.primary : colors.hairline, backgroundColor: view() === v ? colors.selected : "transparent" }}>
+      <Text style={{ fontSize: 12.5, color: view() === v ? colors.fg : colors.fg2 }}>{VIEW_LABEL[v]()}</Text>
+      <If when={count(v)}><Text style={{ fontSize: 12, fontWeight: "600", color: colors.attention }}>{String(count(v))}</Text></If>
     </View>
   );
   const me = () => t.me();

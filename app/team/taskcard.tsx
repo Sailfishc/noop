@@ -1,7 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { alpha, Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, Txt } from "../ui";
+import { Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, Txt } from "../ui";
 import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -30,14 +30,14 @@ export function TrackLink(props: { team: Team; task: Task }) {
     <If when={isParty(props.task, t.me(), agent()) && props.task.state !== "closed"}>
       <View role="button" testID={`track-${props.task.id}`} onPress={async () => { busy.set(true); await t.act(props.task.id, "track"); busy.set(false); }} hoverStyle={hovered()}
         style={{ alignSelf: "flex-start", height: 24, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6, opacity: busy() ? 0.5 : 1 }}>
-        <Icon name="plus" size={13} tint={colors.faint} />
-        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Convert to task", "转为任务")}</Text>
+        <Icon name="plus" size={13} tint={colors.fg3} />
+        <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Convert to task", "转为任务")}</Text>
       </View>
     </If>
   );
 }
 
-const toneOf = (tone: string) => (tone === "accent" ? colors.accent : tone === "warn" ? colors.warn : tone === "danger" ? colors.danger : tone === "up" ? colors.up : colors.muted);
+const toneOf = (t: string) => tone(t).fg;
 
 const HOW: Record<string, () => string> = {
   callback: () => L("woken by a callback", "等回调"),
@@ -107,7 +107,7 @@ export function OutputCard(props: { team: Team; task: Task; output: Output }) {
     const st = x.status === "ready" ? L("ready", "已就绪") : x.status === "failed" ? L("failed", "失败") : L("in progress", "进行中");
     return [x.service, st, x.note].filter(Boolean).join(" · ");
   };
-  const tone = () => (o().status === "failed" || (o().kind === "pr" && o().note === "failure") ? colors.danger : o().status === "pending" ? colors.warn : colors.muted);
+  const outTone = () => (o().status === "failed" || (o().kind === "pr" && o().note === "failure") ? colors.danger : o().status === "pending" ? colors.attention : colors.fg2);
   const canPreview = () => (o().kind === "file" && (TEXTISH.test(o().mime ?? "") || (o().mime ?? "").startsWith("image/"))) || !!o().preview;
   async function toggle() {
     error.set("");
@@ -134,12 +134,12 @@ export function OutputCard(props: { team: Team; task: Task; output: Output }) {
     else error.set(L("Couldn’t make a link.", "没能生成链接。"));
   }
   return (
-    <View testID={`output-${o().id}`} style={{ gap: 6, padding: 8, borderRadius: 9, borderWidth: 1, borderColor: colors.border }}>
+    <View testID={`output-${o().id}`} style={{ gap: 6, padding: 8, borderRadius: 9, borderWidth: 1, borderColor: colors.hairline }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name={icon()} size={14} tint={colors.muted} />
+        <Icon name={icon()} size={14} tint={colors.fg2} />
         <View style={{ flex: 1, gap: 1 }}>
-          <Text style={{ fontSize: 13.5, fontWeight: "500", color: colors.text, numberOfLines: 1 }}>{o().title}</Text>
-          <Text testID={`output-${o().id}-status`} style={{ fontSize: 12, color: tone(), numberOfLines: 1 }}>{statusText()}</Text>
+          <Text style={{ fontSize: 13.5, fontWeight: "500", color: colors.fg, numberOfLines: 1 }}>{o().title}</Text>
+          <Text testID={`output-${o().id}-status`} style={{ fontSize: 12, color: outTone(), numberOfLines: 1 }}>{statusText()}</Text>
         </View>
         <If when={canPreview()}>
           <Btn small kind="ghost" testID={`output-${o().id}-preview`} label={open() ? L("Hide", "收起") : L("Preview", "预览")} onPress={() => void toggle()} />
@@ -150,8 +150,8 @@ export function OutputCard(props: { team: Team; task: Task; output: Output }) {
       </View>
       <ErrorNote text={error()} />
       <If when={open() && text() !== null}>
-        <Scroll style={{ maxHeight: 320 }} contentStyle={{ padding: 8, borderRadius: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-          <Text testID={`output-${o().id}-text`} style={{ fontSize: 12.5, lineHeight: 18, color: colors.text, fontFamily: "Menlo" }}>{text() ?? ""}</Text>
+        <Scroll style={{ maxHeight: 320 }} contentStyle={{ padding: 8, borderRadius: 7, backgroundColor: colors.hover }}>
+          <Text testID={`output-${o().id}-text`} style={{ fontSize: 12.5, lineHeight: 18, color: colors.fg, fontFamily: "Menlo" }}>{text() ?? ""}</Text>
         </Scroll>
       </If>
       <If when={open() && picture()}>
@@ -257,25 +257,25 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     return "";
   };
   return (
-    <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 560 }}>
+    <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, maxWidth: 560 }}>
       <If when={props.detail} else={
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-          <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.muted : colors.text, numberOfLines: 1 }}>
+          <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
+          <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.fg2 : colors.fg, numberOfLines: 1 }}>
             {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
           </Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <If when={task().state === "running"}>
-              <Spinner size={11} tint={colors.accent} />
+              <Spinner size={11} tint={colors.fg} />
             </If>
             <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
           </View>
         </View>
       }>
-        <Text testID={`task-${task().id}-ref`} style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{taskRef(t, task())}</Text>
+        <Text testID={`task-${task().id}-ref`} style={{ fontSize: 12, color: colors.fg3, fontVariant: ["tabular-nums"] }}>{taskRef(t, task())}</Text>
         <If when={renaming()} else={
           <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-            <Text testID={`task-${task().id}-title`} style={{ flex: 1, fontSize: 16, lineHeight: 22, fontWeight: "600", color: colors.text, numberOfLines: 3 }}>{task().title}</Text>
+            <Text testID={`task-${task().id}-title`} style={{ flex: 1, fontSize: 16, lineHeight: 22, fontWeight: "600", color: colors.fg, numberOfLines: 3 }}>{task().title}</Text>
             <If when={party()}>
               <Btn small kind="ghost" testID={`task-${task().id}-rename`} label={L("Rename", "改标题")} onPress={() => { draft.set(task().title); renaming.set(true); }} />
             </If>
@@ -296,18 +296,18 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           </View>
         </If>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <View testID={`task-${task().id}-state`} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 5, backgroundColor: alpha(toneOf(label().tone), 0.12) }}>
-            <If when={task().state === "running"}><Spinner size={10} tint={colors.accent} /></If>
+          <View testID={`task-${task().id}-state`} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, paddingVertical: 1, borderRadius: 5, backgroundColor: tone(label().tone).tint }}>
+            <If when={task().state === "running"}><Spinner size={10} tint={colors.fg} /></If>
             <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
           </View>
           <If when={!needs() && waiting()}>
-            <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{waiting()}</Text>
+            <Text style={{ flex: 1, fontSize: 12.5, color: colors.fg2, numberOfLines: 1 }}>{waiting()}</Text>
           </If>
         </View>
       </If>
       <If when={needs()}>
         {(n) => (
-          <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: alpha(toneOf(n().tone), 0.12) }}>
+          <View testID={`task-${task().id}-needs`} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, backgroundColor: tone(n().tone).tint }}>
             <Dot tone={n().tone} />
             <Text style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(n().tone) }}>{n().label}</Text>
           </View>
@@ -318,15 +318,15 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           const who = () => t.users().find((u) => u.id === q().user);
           const mine = () => q().user === me()?.id;
           return (
-            <View testID={`task-${task().id}-asked-${q().user}`} style={{ gap: 3, padding: 9, borderRadius: 8, backgroundColor: alpha(colors.accent, 0.08) }}>
-              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.accent }}>
+            <View testID={`task-${task().id}-asked-${q().user}`} style={{ gap: 3, padding: 9, borderRadius: 8, backgroundColor: colors.selected }}>
+              <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg }}>
                 {q().kind === "handoff"
                   ? (mine() ? L(`@${agent()?.handle ?? "?"} handed this to you`, `@${agent()?.handle ?? "?"} 交给你`) : L(`@${agent()?.handle ?? "?"} handed this to @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 交给了 @${who()?.handle ?? "?"}`))
                   : mine() ? L(`@${agent()?.handle ?? "?"} asks you`, `@${agent()?.handle ?? "?"} 问你`) : L(`@${agent()?.handle ?? "?"} asks @${who()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 在问 @${who()?.handle ?? "?"}`)}
               </Text>
-              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.text, numberOfLines: 3 }}>{q().question}</Text>
+              <Text style={{ fontSize: 13.5, lineHeight: 19, color: colors.fg, numberOfLines: 3 }}>{q().question}</Text>
               <If when={mine()}>
-                <Text style={{ fontSize: 12, color: colors.faint }}>{q().kind === "handoff" ? L("Reply in the thread when it’s done; the agent hears it.", "做完在线程里回复一句，Agent 会收到。") : L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
+                <Text style={{ fontSize: 12, color: colors.fg3 }}>{q().kind === "handoff" ? L("Reply in the thread when it’s done; the agent hears it.", "做完在线程里回复一句，Agent 会收到。") : L("Reply in the thread; it keeps working meanwhile.", "在线程里回复就行，它会边做边等你的回答。")}</Text>
               </If>
             </View>
           );
@@ -371,10 +371,10 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       </If>
       <Delegates team={t} task={task()} />
       <If when={props.detail ? task().holder : null}>
-        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.muted }}>{holderText(t, hd(), me()?.id, task())}</Text>}
+        {(hd) => <Text testID={`task-${task().id}-holder`} style={{ fontSize: 12.5, color: colors.fg2 }}>{holderText(t, hd(), me()?.id, task())}</Text>}
       </If>
       <If when={props.detail && (task().mandate?.via?.length || task().mandate?.trigger || task().submits?.length)}>
-        <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.faint }}>
+        <Text testID={`task-${task().id}-origin`} style={{ fontSize: 12.5, color: colors.fg3 }}>
           {[
             task().mandate?.delegated && task().mandate?.via?.length ? L(`Delegated by @${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"}; its result goes back to it`, `@${t.agents().find((a) => a.id === task().mandate!.via!.at(-1))?.handle ?? "?"} 委派的，结果交回给它`)
             : task().mandate?.via?.length ? L(`Handed on via ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")}`, `经 ${task().mandate!.via!.map((id) => "@" + (t.agents().find((a) => a.id === id)?.handle ?? "?")).join(" → ")} 交接而来`) : "",
@@ -386,7 +386,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={!props.detail}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <RuntimeBadge runtime={taskRuntime(task(), agent())} />
-          <Text testID={`task-${task().id}-where`} style={{ flex: 1, fontSize: 12.5, color: colors.muted }}>
+          <Text testID={`task-${task().id}-where`} style={{ flex: 1, fontSize: 12.5, color: colors.fg2 }}>
             {(task().redacted
               // its agent's owner is not in that private channel: who asked and which agent, nothing of what it says
               ? [`@${agent()?.handle ?? "?"}`, L("in a private channel", "在一个私有频道里"), L(`asked by ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`, `发起人 ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`)]
@@ -404,13 +404,13 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
         )}
       </If>
       <If when={props.detail ? "" : conclusion(task())}>
-        {(line) => <Text testID={`task-${task().id}-summary`} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text, numberOfLines: 2 }}>{line()}</Text>}
+        {(line) => <Text testID={`task-${task().id}-summary`} style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg, numberOfLines: 2 }}>{line()}</Text>}
       </If>
       <If when={props.detail ? null : task().pr}>
         {(pr) => (
           <View role="link" testID={`task-${task().id}-pr`} onPress={() => void openUrl(pr().url)} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, borderRadius: 6 }}>
-            <Icon name="merge" size={14} tint={pr().checks === "failure" ? colors.danger : colors.accent} />
-            <Text style={{ fontSize: 13, color: pr().checks === "failure" ? colors.danger : colors.accent }}>{prLine(pr())}</Text>
+            <Icon name="merge" size={14} tint={pr().checks === "failure" ? colors.danger : colors.fg} />
+            <Text style={{ fontSize: 13, color: pr().checks === "failure" ? colors.danger : colors.fg }}>{prLine(pr())}</Text>
           </View>
         )}
       </If>
@@ -420,8 +420,8 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <If when={task().state === "needs_decision" && task().decision?.kind !== "align" ? task().decision : null}>
         {(d) => (
           <View style={{ gap: 6 }}>
-            <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{d().question}</Text>
-            <If when={party()} else={<Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Its creator or the agent’s owner decides.", "由发起人或 Agent 的主人决定。")}</Text>}>
+            <Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg }}>{d().question}</Text>
+            <If when={party()} else={<Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Its creator or the agent’s owner decides.", "由发起人或 Agent 的主人决定。")}</Text>}>
               <View style={{ gap: 6 }}>
                 <Each of={d().options ?? []} key="index">
                   {(o, i) => (
@@ -480,7 +480,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       <ErrorNote text={error()} testID={`task-${task().id}-error`} />
       <If when={props.detail ? lastTakeover() : null}>
         {(x) => (
-          <Text testID={`task-${task().id}-takeover-note`} style={{ fontSize: 12.5, color: colors.muted }}>
+          <Text testID={`task-${task().id}-takeover-note`} style={{ fontSize: 12.5, color: colors.fg2 }}>
             {x().pending
               ? L(`${t.users().find((u) => u.id === x().to)?.name ?? "?"} asked to take it over ${time(x().at)}; waiting for @${owner()?.handle ?? "?"} to say yes`,
                 `${t.users().find((u) => u.id === x().to)?.name ?? "?"} 在 ${time(x().at)} 想接手，等 @${owner()?.handle ?? "?"} 同意`)

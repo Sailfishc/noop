@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { AccountRow, alpha, Avatar, colors, Count, Dot, hovered, Icon, IconBtn, type IconName, MenuHeading, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
+import { AccountRow, Avatar, colors, Count, Dot, hovered, Icon, IconBtn, type IconName, MenuHeading, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -42,8 +42,8 @@ function ResizeHandle(props: { width: () => number; onResize: (w: number) => voi
       onResponderRelease={() => { active.set(false); props.onDone(); }}
       onResponderTerminate={() => { active.set(false); props.onDone(); }}
       onPress={(e) => { if (e.clickCount === 2) props.onReset(); }}
-      hoverStyle={{ backgroundColor: alpha(colors.accent, 0.35) }}
-      style={{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, cursor: "col-resize", backgroundColor: active() ? alpha(colors.accent, 0.5) : "transparent" }}
+      hoverStyle={{ backgroundColor: colors.focus }}
+      style={{ position: "absolute", left: -3, top: 0, bottom: 0, width: 6, cursor: "col-resize", backgroundColor: active() ? colors.fg3 : "transparent" }}
     />
   );
 }
@@ -122,8 +122,8 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     if (p.kind === "inbox") return <Inbox team={t} back={false} onBack={() => showList.set(true)} onOpen={(channelId, threadId) => open({ kind: "channel", id: channelId }, threadId)} />;
     return (
       <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <If when={t.loaded()} else={<Spinner size={20} tint={colors.muted} />}>
-          <Text style={{ fontSize: 15, color: colors.muted, textAlign: "center" }}>{L("Pick a channel, or create one.", "选一个频道，或者新建一个。")}</Text>
+        <If when={t.loaded()} else={<Spinner size={20} tint={colors.fg2} />}>
+          <Text style={{ fontSize: 15, color: colors.fg2, textAlign: "center" }}>{L("Pick a channel, or create one.", "选一个频道，或者新建一个。")}</Text>
         </If>
       </View>
     );
@@ -141,7 +141,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     <If
       when={settings()}
       else={
-        <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background }}>
+        <View style={{ flex: 1, flexDirection: "row", backgroundColor: colors.page }}>
           <If
             when={wide()}
             else={
@@ -156,11 +156,11 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
               </View>
             }
           >
-            <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{sidebar()}</View>
+            <View style={{ width: 248, borderRightWidth: 1, borderRightColor: colors.hairline, backgroundColor: colors.sidebar }}>{sidebar()}</View>
             <View style={{ flex: 1 }}>{main()}</View>
             <If when={sidePane(false)}>
               {(pane) => (
-                <View testID="side-pane" style={{ width: fitSide(sideWidth()), borderLeftWidth: 1, borderLeftColor: colors.border }}>
+                <View testID="side-pane" style={{ width: fitSide(sideWidth()), borderLeftWidth: 1, borderLeftColor: colors.hairline }}>
                   {pane()}
                   <ResizeHandle width={() => fitSide(untracked(sideWidth))} onResize={(w) => sideWidth.set(fitSide(w))} onDone={() => setSide(fitSide(untracked(sideWidth)))} onReset={() => setSide(SIDE_WIDTH)} />
                 </View>
@@ -196,20 +196,20 @@ function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
     return (
       <View role="tab" testID={`tab-${p.tab}`} accessibilityLabel={p.label} accessibilityState={{ selected: on() }} onPress={() => props.onTab(p.tab)}
         style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 3 }}>
-        <View style={{ width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: on() ? alpha(colors.text, 0.08) : "transparent" }}>
-          <Icon name={p.icon} size={22} tint={on() ? colors.text : colors.muted} weight={on() ? 1.8 : 1.5} />
+        <View style={{ width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: on() ? colors.selected : "transparent" }}>
+          <Icon name={p.icon} size={22} tint={on() ? colors.fg : colors.fg2} weight={on() ? 1.8 : 1.5} />
           <If when={p.badge}>
-            <View style={{ position: "absolute", top: -3, left: 33, minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, borderWidth: 2, borderColor: colors.background, alignItems: "center", justifyContent: "center", backgroundColor: colors.accentFill }}>
-              <Text testID={`tab-${p.tab}-badge`} style={{ fontSize: 10.5, fontWeight: "600", color: colors.onAccent }}>{String(p.badge)}</Text>
+            <View style={{ position: "absolute", top: -3, left: 33, minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, borderWidth: 2, borderColor: colors.page, alignItems: "center", justifyContent: "center", backgroundColor: colors.primary }}>
+              <Text testID={`tab-${p.tab}-badge`} style={{ fontSize: 10.5, fontWeight: "600", color: colors.onPrimary }}>{String(p.badge)}</Text>
             </View>
           </If>
         </View>
-        <Text style={{ fontSize: 11, fontWeight: on() ? "600" : "400", color: on() ? colors.text : colors.muted }}>{p.label}</Text>
+        <Text style={{ fontSize: 11, fontWeight: on() ? "600" : "400", color: on() ? colors.fg : colors.fg2 }}>{p.label}</Text>
       </View>
     );
   };
   return (
-    <View testID="tabbar" style={{ flexDirection: "row", paddingTop: 6, paddingBottom: Math.max(6, safeArea().bottom), borderTopWidth: 1, borderTopColor: colors.border, backgroundColor: colors.background }}>
+    <View testID="tabbar" style={{ flexDirection: "row", paddingTop: 6, paddingBottom: Math.max(6, safeArea().bottom), borderTopWidth: 1, borderTopColor: colors.hairline, backgroundColor: colors.page }}>
       <Item tab="chat" icon="bubble" label={L("Messages", "消息")} badge={unread()} />
       <Item tab="inbox" icon="bell" label={L("Waiting", "待你决定")} badge={waiting()} />
       <Item tab="tasks" icon="task" label={L("Tasks", "任务")} badge={0} />
@@ -254,16 +254,16 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
       testID={p.testID}
       onPress={p.onPress}
       hoverStyle={hovered()}
-      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: p.active ? alpha(colors.text, 0.08) : "transparent" }}
+      style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: p.active ? colors.selected : "transparent" }}
     >
-      <Icon name={p.icon} size={15} tint={p.dim ? colors.faint : colors.muted} />
-      <Text style={{ flex: 1, fontSize: 14.5, fontWeight: p.badge ? "600" : "400", color: p.dim ? colors.muted : colors.text, numberOfLines: 1 }}>{p.label}</Text>
+      <Icon name={p.icon} size={15} tint={p.dim ? colors.fg3 : colors.fg2} />
+      <Text style={{ flex: 1, fontSize: 14.5, fontWeight: p.badge ? "600" : "400", color: p.dim ? colors.fg2 : colors.fg, numberOfLines: 1 }}>{p.label}</Text>
       <Count n={p.badge ?? 0} testID={`${p.testID}-unread`} />
     </View>
   );
   const Section = (p: { label: string; right?: JSX.Element }) => (
     <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingTop: 14, paddingBottom: 4 }}>
-      <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{p.label}</Text>
+      <Text style={{ flex: 1, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{p.label}</Text>
       {p.right}
     </View>
   );
@@ -273,10 +273,10 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
         {/* wide: no logo or name for now, the bar stays as the window's drag area and the traffic lights' room */}
         <If when={!props.inset}>
           <View style={{ flex: 1, gap: 1 }}>
-            <Text style={{ fontSize: 22, fontWeight: "700", color: colors.text }}>{L("Messages", "消息")}</Text>
+            <Text style={{ fontSize: 22, fontWeight: "700", color: colors.fg }}>{L("Messages", "消息")}</Text>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
               <Dot on={t.conn() === "live"} />
-              <Text testID="conn-top" style={{ fontSize: 12, color: colors.muted }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
+              <Text testID="conn-top" style={{ fontSize: 12, color: colors.fg2 }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
             </View>
           </View>
         </If>
@@ -292,7 +292,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
           label={L("CHANNELS", "频道")}
           right={
             <View role="button" testID="new-channel" accessibilityLabel={L("New channel", "新建频道")} onPress={() => props.onOpen({ kind: "new-channel" })} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-              <Icon name="plus" size={15} tint={colors.muted} />
+              <Icon name="plus" size={15} tint={colors.fg2} />
             </View>
           }
         />
@@ -316,7 +316,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
               <If when={moreChats().length}>
                 <PopMenu
                   align="end"
-                  minWidth={220}
+                  wide
                   maxHeight={360}
                   trigger={
                     <IconBtn testID="side-chat-new" icon="plus" label={L("Chat with another agent", "和其他 Agent 私聊")} size="sm" tone="muted" onPress={() => {}} />
@@ -344,15 +344,15 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
             const unread = () => { const c = t.dmWith(x().key); return c ? t.unread()[c.id] || 0 : 0; };
             return (
               <View role="button" testID={`side-agent-${x().handle}`} onPress={() => openChat(x().key)} hoverStyle={hovered()}
-                style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: chatActive(x().key) ? alpha(colors.text, 0.08) : "transparent" }}>
+                style={{ minHeight: 40, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, backgroundColor: chatActive(x().key) ? colors.selected : "transparent" }}>
                 <Avatar name={a()?.name ?? x().handle} agent size={22} />
                 <View style={{ flex: 1, gap: 1 }}>
-                  <Text style={{ fontSize: 14, fontWeight: unread() ? "600" : "400", color: a() ? colors.text : colors.muted, numberOfLines: 1 }}>{a()?.name ?? `@${x().handle}`}</Text>
+                  <Text style={{ fontSize: 14, fontWeight: unread() ? "600" : "400", color: a() ? colors.fg : colors.fg2, numberOfLines: 1 }}>{a()?.name ?? `@${x().handle}`}</Text>
                   <If when={st()} else={<Txt variant="caption" tone="faint">{L("history only", "只能看历史")}</Txt>}>
                     {(s) => (
                       <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
                         <Dot tone={s().tone} />
-                        <Text testID={`side-agent-${x().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: s().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
+                        <Text testID={`side-agent-${x().handle}-state`} style={{ flex: 1, fontSize: 11.5, color: s().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>
                           {mine() ? `${runtimeLabel(a()!.runtime)} · ${s().label}` : L(`${owner()}’s · ${s().label}`, `${owner()}的 · ${s().label}`)}
                         </Text>
                       </View>
@@ -366,14 +366,14 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
         </Each>
         <If when={!myAgents().length}>
           <View role="button" testID="side-agent-new" onPress={() => props.onSettings("agents")} hoverStyle={hovered()} style={{ height: 30, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8 }}>
-            <Icon name="plus" size={14} tint={colors.faint} />
-            <Text style={{ fontSize: 13.5, color: colors.muted }}>{L("Create your first agent", "新建你的第一个 Agent")}</Text>
+            <Icon name="plus" size={14} tint={colors.fg3} />
+            <Text style={{ fontSize: 13.5, color: colors.fg2 }}>{L("Create your first agent", "新建你的第一个 Agent")}</Text>
           </View>
         </If>
       </Scroll>
       {/* phones: me and settings are the Me tab */}
       <If when={props.inset} else={<UpdateRow />}>
-        <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.border }}>
+        <View testID="side-footer" style={{ minHeight: FOOTER, justifyContent: "center", paddingHorizontal: 8, paddingVertical: 6, gap: 6, borderTopWidth: 1, borderTopColor: colors.hairline }}>
           <UpdateRow />
           <UserMenu team={t} onSettings={props.onSettings} onSignOut={props.onSignOut} />
         </View>
@@ -392,7 +392,7 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
     <PopMenu
       align="start"
       placement="top"
-      minWidth={240}
+      wide
       trigger={
         <AccountRow
           testID="user-menu"
@@ -408,8 +408,8 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 7 }}>
         <Avatar name={t.me()?.name ?? "?"} size={30} />
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 13.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
-          <Text style={{ fontSize: 12, color: colors.muted, numberOfLines: 1 }}>{t.me()?.email ?? ""}</Text>
+          <Text style={{ fontSize: 13.5, fontWeight: "600", color: colors.fg, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
+          <Text style={{ fontSize: 12, color: colors.fg2, numberOfLines: 1 }}>{t.me()?.email ?? ""}</Text>
         </View>
       </View>
       <MenuLine />
@@ -421,7 +421,7 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
       </If>
       <MenuLine />
       {item("menu-sign-out", "external", L("Sign out", "退出登录"), props.onSignOut, undefined, true)}
-      <Text testID="menu-version" style={{ paddingHorizontal: 8, paddingTop: 6, paddingBottom: 3, fontSize: 11.5, color: colors.faint }}>Remi {CLIENT_VERSION}</Text>
+      <Text testID="menu-version" style={{ paddingHorizontal: 8, paddingTop: 6, paddingBottom: 3, fontSize: 11.5, color: colors.fg3 }}>Remi {CLIENT_VERSION}</Text>
     </PopMenu>
   );
 }
@@ -479,7 +479,7 @@ export function TeamApp() {
     session.set(null);
   }
   return (
-    <View style={{ flex: 1, backgroundColor: colors.background }}>
+    <View style={{ flex: 1, backgroundColor: colors.page }}>
       <If when={ready()}>
         <If when={session()} else={<SignIn url={url()} email={email()} notice={notice()} link={loginLink()} onLinkUsed={() => loginLink.set(null)} onSession={signedIn} />}>
           {(s) => {

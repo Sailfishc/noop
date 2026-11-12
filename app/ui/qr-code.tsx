@@ -1,6 +1,6 @@
 import { Canvas, View } from "nsh";
 import { qrModules } from "./qr";
-import { scale } from "./theme";
+import { radius } from "./theme";
 
 /**
  * `value` as a QR code, `size` points square. Always black on white with a quiet zone, in dark mode too: phone
@@ -13,7 +13,7 @@ export function QrCode(props: { value: string; size?: number; label?: string; te
     <View
       testID={props.testID}
       accessibilityLabel={props.label}
-      style={{ width: size(), height: size(), borderRadius: scale.radius.md, backgroundColor: "#ffffff", overflow: "hidden" }}
+      style={{ width: size(), height: size(), borderRadius: radius.md, backgroundColor: "#ffffff", overflow: "hidden" }}
     >
       <Canvas
         style={{ pointerEvents: "none", width: size(), height: size() }}

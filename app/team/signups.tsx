@@ -18,16 +18,16 @@ export function SignupCard(props: { team: Team; signup: Signup }) {
     if (!r.ok) error.set(failed(r));
   }
   return (
-    <View testID={`signup-${s().handle}`} style={{ gap: 10, padding: 14, borderRadius: radius.control, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+    <View testID={`signup-${s().handle}`} style={{ gap: 10, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Avatar name={s().name} size={30} />
         <View style={{ flex: 1 }}>
-          <Text style={{ fontSize: 14.5, color: colors.text }}>{s().name} <Text style={{ color: colors.muted }}>@{s().handle}</Text></Text>
-          <Text style={{ fontSize: 12.5, color: colors.faint, numberOfLines: 1 }}>{`${s().email} · ${L("asked", "申请于")} ${time(s().created)}`}</Text>
+          <Text style={{ fontSize: 14.5, color: colors.fg }}>{s().name} <Text style={{ color: colors.fg2 }}>@{s().handle}</Text></Text>
+          <Text style={{ fontSize: 12.5, color: colors.fg3, numberOfLines: 1 }}>{`${s().email} · ${L("asked", "申请于")} ${time(s().created)}`}</Text>
         </View>
       </View>
       <If when={s().note}>
-        <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.text }}>{s().note}</Text>
+        <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg }}>{s().note}</Text>
       </If>
       <ErrorNote text={error()} testID={`signup-${s().handle}-error`} />
       <View style={{ flexDirection: "row", gap: 8 }}>
@@ -42,7 +42,7 @@ export function SignupCard(props: { team: Team; signup: Signup }) {
 export function SignupSection(props: { team: Team }) {
   return (
     <If when={props.team.signups().length}>
-      <Text testID="signups-title" style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>
+      <Text testID="signups-title" style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>
         {L(`Asking to join · ${props.team.signups().length}`, `申请加入 · ${props.team.signups().length}`)}
       </Text>
       <Each of={props.team.signups()} key={(s) => s.id}>

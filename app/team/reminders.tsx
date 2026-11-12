@@ -102,11 +102,10 @@ export function RemindMenu(props: { team: Team; messageId: string; m?: Message; 
   return (
     <PopMenu
       align="end"
-      minWidth={180}
       trigger={
         <View role="button" testID={`remind-${props.messageId}`} accessibilityLabel={L("Remind me later", "稍后提醒")} tooltip={<Text>{L("Remind me later", "稍后提醒")}</Text>}
           hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="bell" size={13} tint={colors.faint} />
+          <Icon name="bell" size={13} tint={colors.fg3} />
         </View>
       }
     >
@@ -133,7 +132,7 @@ export function ReminderSections(props: { team: Team; onOpen: (r: Reminder) => v
   const t = props.team;
   const up = () => t.reminders().filter((r) => reminderUp(r, t.me()?.id));
   const later = () => t.reminders().filter((r) => !r.done);
-  const head = (testID: string, s: string) => <Text testID={testID} style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{s}</Text>;
+  const head = (testID: string, s: string) => <Text testID={testID} style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{s}</Text>;
   return (
     <>
       <If when={up().length}>
@@ -167,14 +166,14 @@ function ReminderCard(props: { team: Team; r: Reminder; up?: boolean; onOpen: ()
     return parts.join(" · ");
   };
   return (
-    <View testID={`reminder-${props.r.id}`} style={{ gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: props.up ? colors.accent : colors.border, backgroundColor: colors.surface, opacity: busy() ? 0.6 : 1 }}>
+    <View testID={`reminder-${props.r.id}`} style={{ gap: 8, padding: 12, borderRadius: 12, borderWidth: 1, borderColor: props.up ? colors.fg : colors.hairline, backgroundColor: colors.raised, opacity: busy() ? 0.6 : 1 }}>
       <View role="button" onPress={props.onOpen} hoverStyle={{ opacity: 0.8 }} style={{ gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Icon name="bell" size={13} tint={props.up ? colors.accent : colors.muted} />
-          <Text style={{ fontSize: 12.5, color: colors.muted }}>{props.up ? time(props.r.fired!) : [dueText(props.r), untilText(props.r)].filter(Boolean).join(" · ")}</Text>
-          <Text style={{ fontSize: 12.5, color: colors.faint, numberOfLines: 1, flexShrink: 1 }}>#{channel()} · {who()}</Text>
+          <Icon name="bell" size={13} tint={props.up ? colors.fg : colors.fg2} />
+          <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{props.up ? time(props.r.fired!) : [dueText(props.r), untilText(props.r)].filter(Boolean).join(" · ")}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.fg3, numberOfLines: 1, flexShrink: 1 }}>#{channel()} · {who()}</Text>
         </View>
-        <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.text }}>{props.r.text}</Text>
+        <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.fg }}>{props.r.text}</Text>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         <If when={props.up} else={<>

@@ -1,10 +1,11 @@
 import { signal, Text, View, type InputRef } from "nsh";
 import { Input } from "nsh/base";
-import { colors, scale } from "./theme";
+import { colors, measure, radius, size, space, stroke } from "./theme";
 
 /**
- * A one-line input with an optional label above and one line of hint below. Standard height 40, `small` 30 (inline
- * editors: a title, a repository); `big` is a code (wide letter spacing, centered); `grow` takes the rest of a row.
+ * A one-line input with an optional label above and one line of hint below. Control height `md`, `small` the `sm` one
+ * (inline editors: a title, a repository); `big` is a code (wide letter spacing, centered); `grow` takes the rest of a
+ * row.
  */
 export function Field(props: {
   label?: string;
@@ -21,9 +22,9 @@ export function Field(props: {
   keyboardType?: "email-address" | "number-pad" | "url";
 }) {
   return (
-    <View style={{ gap: 6, flex: props.grow ? 1 : undefined }}>
+    <View style={{ gap: space.sm, flex: props.grow ? 1 : undefined }}>
       <If when={props.label}>
-        <Text style={{ fontSize: scale.text.message, fontWeight: "600", color: colors.text }}>{props.label}</Text>
+        <Text style={{ fontSize: size.text.message, fontWeight: "600", color: colors.fg }}>{props.label}</Text>
       </If>
       <Input
         testID={props.testID}
@@ -33,24 +34,24 @@ export function Field(props: {
         autoCapitalize="none"
         autoCorrect={false}
         placeholder={props.placeholder}
-        class="placeholder:text-faint"
+        class="placeholder:text-fg-3"
         submitBehavior="submit"
         onSubmit={() => props.onSubmit?.()}
         onChange={({ value }) => props.onChange(value)}
         style={{
-          height: props.big ? 52 : props.small ? scale.control.sm : scale.control.md,
-          paddingHorizontal: props.small ? 8 : 12,
-          borderRadius: scale.radius.md,
-          borderWidth: 1,
-          borderColor: colors.fieldBorder,
+          minHeight: props.big ? measure.code : props.small ? size.control.sm : size.control.md,
+          paddingHorizontal: props.small ? space.md : space.lg,
+          borderRadius: radius.md,
+          borderWidth: stroke.edge,
+          borderColor: colors.edge,
           backgroundColor: colors.field,
-          fontSize: props.big ? scale.text.display : props.small ? scale.text.body : scale.text.message,
-          color: colors.text,
-          ...(props.big ? { letterSpacing: 8, textAlign: "center", fontVariant: ["tabular-nums"] } : {}),
+          fontSize: props.big ? size.text.display : props.small ? size.text.body : size.text.message,
+          color: colors.fg,
+          ...(props.big ? { letterSpacing: space.md, textAlign: "center", fontVariant: ["tabular-nums"] } : {}),
         }}
       />
       <If when={props.hint}>
-        <Text style={{ fontSize: scale.text.body, lineHeight: 19, color: colors.muted }}>{props.hint}</Text>
+        <Text style={{ fontSize: size.text.body, lineHeight: size.leading.body, color: colors.fg2 }}>{props.hint}</Text>
       </If>
     </View>
   );
@@ -71,9 +72,6 @@ export function growing(o: { min: number; max: number; pad: number; line: number
   };
 }
 
-/** The line height of a text area's text (message size). */
-const LINE = 20;
-
 /**
  * A multiline input that grows with its text from `min` to `max` points tall (see `growing`), in the message size.
  * Boxed like a `Field` by default; `bare` draws no box, for an input inside a box of its own (the composer). Return
@@ -93,8 +91,8 @@ export function TextArea(props: {
   onSelectionChange?: (e: { start: number; end: number }) => void;
   onPaste?: (e: { files: File[]; uris: string[] }) => void;
 }) {
-  const padTop = 8, padBottom = props.bare ? 4 : 8, border = props.bare ? 0 : 2;
-  const grow = growing({ min: props.min, max: props.max, pad: padTop + padBottom + border, line: LINE });
+  const padTop = space.md, padBottom = props.bare ? space.xs : space.md, border = props.bare ? 0 : 2 * stroke.edge;
+  const grow = growing({ min: props.min, max: props.max, pad: padTop + padBottom + border, line: size.leading.message });
   return (
     <Input
       testID={props.testID}
@@ -104,7 +102,7 @@ export function TextArea(props: {
       autoFocus={props.autoFocus}
       submitBehavior={props.onSubmit ? "submit" : undefined}
       placeholder={props.placeholder}
-      class="placeholder:text-faint"
+      class="placeholder:text-fg-3"
       onChange={({ value }) => props.onChange(value)}
       onSubmit={() => props.onSubmit?.()}
       onSelectionChange={props.onSelectionChange ? ({ start, end }) => props.onSelectionChange!({ start, end }) : undefined}
@@ -112,15 +110,15 @@ export function TextArea(props: {
       onContentSizeChange={grow.onContentSizeChange}
       style={{
         height: grow.height(),
-        paddingHorizontal: 12,
+        paddingHorizontal: space.lg,
         paddingTop: padTop,
         paddingBottom: padBottom,
-        fontSize: scale.text.message,
-        lineHeight: LINE,
-        color: colors.text,
+        fontSize: size.text.message,
+        lineHeight: size.leading.message,
+        color: colors.fg,
         ...(props.bare
           ? { backgroundColor: "transparent", borderWidth: 0 }
-          : { borderRadius: scale.radius.md, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field }),
+          : { borderRadius: radius.md, borderWidth: stroke.edge, borderColor: colors.edge, backgroundColor: colors.field }),
       }}
     />
   );

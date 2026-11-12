@@ -10,7 +10,7 @@ import { Clipboard, computed, effect, type JSX, Scroll, signal, Storage, Text, u
 import { L, lang, LANG_KEY } from "../i18n";
 import { appearance, type Appearance, pickAppearance } from "./appearance";
 import { notifyOn, notifyPermission, setNotify } from "./notify";
-import { alpha, Avatar, Btn, Choice, IconBtn, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, tints, Toggle, Txt } from "../ui";
+import { Avatar, Btn, Choice, colors, Dot, ErrorNote, Field, hovered, Icon, IconBtn, type IconName, Label, Modal, Noted, Panel, PickCard, QrCode, radius, Spinner, Tag, TextArea, type TextTone, Toggle, Txt } from "../ui";
 import {
   blockedReason, installCommand, isLoopback, loginQr, machineNow, machinesOf, modelsOn, repoLabel, RUNTIMES, runtimeLabel, runtimeOn, runtimeTrouble,
   type Agent, type Autonomy, type CallStats, type Device, type Dispatch, type DurationStats, type GitCred, type GitPlatform, type GitSettings, type Machine, type Metrics, type Team, type TeamConfigStatus,
@@ -39,12 +39,12 @@ function DispatchControls(props: { dispatch: Dispatch; confirm: boolean; onDispa
   return (
     <View style={{ gap: 8 }}>
       <Choice testID={props.testID} options={DISPATCH.map((d) => ({ value: d.value, label: d.label() }))} value={props.dispatch} onChange={props.onDispatch} />
-      <Text style={{ fontSize: 12.5, color: colors.faint }}>{DISPATCH.find((d) => d.value === props.dispatch)?.note() ?? ""}</Text>
+      <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{DISPATCH.find((d) => d.value === props.dispatch)?.note() ?? ""}</Text>
       <If when={props.dispatch !== "owner"}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 4 }}>
           <View style={{ flex: 1, gap: 2 }}>
-            <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{L("Needs my confirmation", "需要我确认")}</Text>
-            <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{confirmNote()}</Text>
+            <Text style={{ fontSize: 14, fontWeight: "500", color: colors.fg }}>{L("Needs my confirmation", "需要我确认")}</Text>
+            <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.fg3 }}>{confirmNote()}</Text>
           </View>
           <Toggle testID={`${props.testID}-confirm`} value={props.confirm} label={L("Needs my confirmation", "需要我确认")} onChange={props.onConfirm} />
         </View>
@@ -74,10 +74,10 @@ export function ModelPicker(props: { models: string[]; value: string; onChange: 
       hoverStyle={hovered()}
       style={{
         height: 28, paddingHorizontal: 10, justifyContent: "center", borderRadius: 8, borderWidth: 1,
-        borderColor: props.value === value ? colors.accentFill : colors.fieldBorder, backgroundColor: props.value === value ? tints.accent : "transparent",
+        borderColor: props.value === value ? colors.primary : colors.edge, backgroundColor: props.value === value ? colors.selected : "transparent",
       }}
     >
-      <Text style={{ fontSize: 13, color: colors.text, ...(value ? mono : {}) }}>{label}</Text>
+      <Text style={{ fontSize: 13, color: colors.fg, ...(value ? mono : {}) }}>{label}</Text>
     </View>
   );
   return (
@@ -148,10 +148,10 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
       {/* the back button shares the title bar's row, right of the window's controls */}
       <View desktop={{ windowDrag: true }} style={{ height: Math.max(52, chrome().height), justifyContent: "center", paddingLeft: wide() && chrome().left ? chrome().left : 10, paddingRight: 10 }}>
         {/* phones: this is the Me tab, the tab bar leads back */}
-        <If when={wide()} else={<Text style={{ paddingHorizontal: 6, fontSize: 22, fontWeight: "700", color: colors.text }}>{L("Me", "我")}</Text>}>
+        <If when={wide()} else={<Text style={{ paddingHorizontal: 6, fontSize: 22, fontWeight: "700", color: colors.fg }}>{L("Me", "我")}</Text>}>
           <View role="button" testID="settings-back" onPress={props.onClose} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 32, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, borderRadius: 8 }}>
-            <Icon name="back" size={15} tint={colors.muted} />
-            <Text style={{ fontSize: 14, color: colors.muted }}>{L("Back to workspace", "返回工作区")}</Text>
+            <Icon name="back" size={15} tint={colors.fg2} />
+            <Text style={{ fontSize: 14, color: colors.fg2 }}>{L("Back to workspace", "返回工作区")}</Text>
           </View>
         </If>
       </View>
@@ -159,7 +159,7 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
       <Each of={NAV}>
         {(g) => (
           <View style={{ gap: 2, paddingBottom: 10 }}>
-            <Text style={{ fontSize: 12, fontWeight: "600", color: colors.faint, paddingHorizontal: 10, paddingVertical: 4 }}>{g().group()}</Text>
+            <Text style={{ fontSize: 12, fontWeight: "600", color: colors.fg3, paddingHorizontal: 10, paddingVertical: 4 }}>{g().group()}</Text>
             <Each of={g().items}>
               {(it) => (
                 <View
@@ -168,14 +168,14 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
                   accessibilityState={{ selected: props.tab === it().tab }}
                   onPress={() => props.onTab(it().tab)}
                   hoverStyle={hovered()}
-                  style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: props.tab === it().tab ? alpha(colors.text, 0.08) : "transparent" }}
+                  style={{ height: 34, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, borderRadius: 8, backgroundColor: props.tab === it().tab ? colors.selected : "transparent" }}
                 >
-                  <Icon name={it().icon} size={15} tint={colors.muted} />
-                  <Text style={{ flex: 1, fontSize: 14.5, color: colors.text }}>{it().label()}</Text>
+                  <Icon name={it().icon} size={15} tint={colors.fg2} />
+                  <Text style={{ flex: 1, fontSize: 14.5, color: colors.fg }}>{it().label()}</Text>
                   <If when={mineCount(it().tab)}>
-                    <Text style={{ fontSize: 12.5, color: colors.faint }}>{String(mineCount(it().tab))}</Text>
+                    <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{String(mineCount(it().tab))}</Text>
                   </If>
-                  <If when={!wide()}><Icon name="chevron" size={12} tint={colors.faint} /></If>
+                  <If when={!wide()}><Icon name="chevron" size={12} tint={colors.fg3} /></If>
                 </View>
               )}
             </Each>
@@ -200,19 +200,19 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
   };
 
   return (
-    <View testID="settings" style={{ flex: 1, flexDirection: "row", backgroundColor: colors.background }}>
+    <View testID="settings" style={{ flex: 1, flexDirection: "row", backgroundColor: colors.page }}>
       <If
         when={wide()}
         else={
           <If when={props.tab} else={<View style={{ flex: 1, backgroundColor: colors.sidebar, paddingTop: chrome().left ? chrome().height : 0 }}>{nav()}</View>}>
             {(tab) => (
               <View style={{ flex: 1, paddingTop: chrome().left ? chrome().height : 0 }}>
-                <View style={{ height: 52, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                <View style={{ height: 52, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.hairline }}>
                   {/* an agent's page goes back to the list of agents, a section to the Me tab */}
                   <View role="button" testID="back" accessibilityLabel={L("Back", "返回")} onPress={() => props.onTab(openAgent() ? "agents" : null)} hoverStyle={hovered()} style={{ width: 44, height: 44, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-                    <Icon name="back" size={18} tint={colors.text} />
+                    <Icon name="back" size={18} tint={colors.fg} />
                   </View>
-                  <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{openAgent()?.name ?? TITLES[tab()]()}</Text>
+                  <Text style={{ fontSize: 16.5, fontWeight: "600", color: colors.fg, numberOfLines: 1 }}>{openAgent()?.name ?? TITLES[tab()]()}</Text>
                 </View>
                 <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 16 }}>{content(tab())}</Scroll>
               </View>
@@ -220,9 +220,9 @@ export function SettingsPage(props: { team: Team; tab: SettingsTab | null; agent
           </If>
         }
       >
-        <View style={{ width: 232, borderRightWidth: 1, borderRightColor: colors.border, backgroundColor: colors.sidebar }}>{nav()}</View>
+        <View style={{ width: 232, borderRightWidth: 1, borderRightColor: colors.hairline, backgroundColor: colors.sidebar }}>{nav()}</View>
         <Scroll style={{ flex: 1 }} contentStyle={{ padding: 28, gap: 18, maxWidth: 920 }}>
-          <Text style={{ fontSize: 22, fontWeight: "600", color: colors.text }}>{TITLES[props.tab ?? "account"]()}</Text>
+          <Text style={{ fontSize: 22, fontWeight: "600", color: colors.fg }}>{TITLES[props.tab ?? "account"]()}</Text>
           {content(props.tab ?? "account")}
         </Scroll>
       </If>
@@ -243,10 +243,10 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
           <Avatar name={me()?.name ?? "?"} size={48} />
           <View style={{ flex: 1, gap: 3 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Text testID="profile-name" style={{ fontSize: 17, fontWeight: "600", color: colors.text }}>{me()?.name ?? ""}</Text>
+              <Text testID="profile-name" style={{ fontSize: 17, fontWeight: "600", color: colors.fg }}>{me()?.name ?? ""}</Text>
               <Tag label={me()?.role === "admin" ? L("Admin", "管理员") : L("Member", "成员")} tone={me()?.role === "admin" ? "accent" : "muted"} />
             </View>
-            <Text style={{ fontSize: 13.5, color: colors.muted }}>{`@${me()?.handle ?? ""} · ${me()?.email ?? ""}`}</Text>
+            <Text style={{ fontSize: 13.5, color: colors.fg2 }}>{`@${me()?.handle ?? ""} · ${me()?.email ?? ""}`}</Text>
           </View>
         </View>
       </Panel>
@@ -264,10 +264,10 @@ function AccountSection(props: { team: Team; onSignOut: () => void }) {
       <DevicesPanel team={t} />
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 4 }}>
         <View style={{ flex: 1, gap: 2 }}>
-          <Text style={{ fontSize: 13, color: colors.muted }}>{L("Server", "服务器")}</Text>
-          <Text testID="server-url" style={{ fontSize: 13.5, color: colors.text, ...mono }}>{t.shareUrl()}</Text>
+          <Text style={{ fontSize: 13, color: colors.fg2 }}>{L("Server", "服务器")}</Text>
+          <Text testID="server-url" style={{ fontSize: 13.5, color: colors.fg, ...mono }}>{t.shareUrl()}</Text>
           <If when={t.shareUrl() !== t.url}>
-            <Text testID="server-connected" style={{ fontSize: 12.5, color: colors.faint }}>{L(`This device connects through ${t.url}`, `这台设备通过 ${t.url} 连接`)}</Text>
+            <Text testID="server-connected" style={{ fontSize: 12.5, color: colors.fg3 }}>{L(`This device connects through ${t.url}`, `这台设备通过 ${t.url} 连接`)}</Text>
           </If>
           <LoopbackNote team={t} testID="server-loopback" />
         </View>
@@ -437,15 +437,15 @@ function DevicesPanel(props: { team: Team }) {
   }
   return (
     <Panel title={L("Signed-in devices", "已登录的设备")}>
-      <If when={list()} else={<Spinner size={16} tint={colors.muted} />}>
+      <If when={list()} else={<Spinner size={16} tint={colors.fg2} />}>
         {(l) => (
           <Each of={l()} key={(d) => d.id}>
             {(d) => (
               <View testID={`device-${d().id}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4 }}>
-                <Icon name={/iPhone|Android/.test(d().ua) ? "mobile" : "terminal"} size={18} tint={colors.muted} />
+                <Icon name={/iPhone|Android/.test(d().ua) ? "mobile" : "terminal"} size={18} tint={colors.fg2} />
                 <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 14.5, color: colors.text }}>{deviceName(d().ua)}</Text>
-                  <Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`Signed in ${time(d().created)} · last seen ${time(d().last_seen)}`, `${time(d().created)} 登录 · 最近 ${time(d().last_seen)}`)}</Text>
+                  <Text style={{ fontSize: 14.5, color: colors.fg }}>{deviceName(d().ua)}</Text>
+                  <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L(`Signed in ${time(d().created)} · last seen ${time(d().last_seen)}`, `${time(d().created)} 登录 · 最近 ${time(d().last_seen)}`)}</Text>
                 </View>
                 <If when={!d().current} else={<Tag label={L("This device", "当前设备")} tone="up" />}>
                   <Btn small kind="ghost" testID={`device-remove-${d().id}`} label={L("Remove", "移除")} onPress={() => void remove(d().id)} />
@@ -474,7 +474,7 @@ function GeneralSection() {
     <>
       <Panel title={L("Appearance", "外观")}>
         <Choice testID="appearance" options={LOOKS.map((l) => ({ value: l.value, label: l.label() }))} value={appearance()} onChange={pickAppearance} />
-        <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Dark is graphite; black is true black, easier on OLED screens. Kept on this device.", "深色是石墨灰，黑色是纯黑，适合 OLED 屏幕和暗光环境。只对这台设备生效。")}</Text>
+        <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Dark is graphite; black is true black, easier on OLED screens. Kept on this device.", "深色是石墨灰，黑色是纯黑，适合 OLED 屏幕和暗光环境。只对这台设备生效。")}</Text>
       </Panel>
       <NotifyPanel />
       <Panel title={L("Language", "语言")}>
@@ -502,8 +502,8 @@ function NotifyPanel() {
     <Panel title={L("Notifications", "通知")}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <View style={{ flex: 1, gap: 2 }}>
-          <Text style={{ fontSize: 14, fontWeight: "500", color: colors.text }}>{L("System notifications", "系统通知")}</Text>
-          <Text testID="notify-note" style={{ fontSize: 12.5, lineHeight: 18, color: colors.faint }}>{note()}</Text>
+          <Text style={{ fontSize: 14, fontWeight: "500", color: colors.fg }}>{L("System notifications", "系统通知")}</Text>
+          <Text testID="notify-note" style={{ fontSize: 12.5, lineHeight: 18, color: colors.fg3 }}>{note()}</Text>
           <If when={notifyOn() && notifyPermission() === "default"}>
             <View style={{ flexDirection: "row", paddingTop: 6 }}>
               <Btn testID="notify-allow" small label={L("Allow notifications", "允许通知")} onPress={() => void setNotify(true)} />
@@ -538,24 +538,24 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
               accessibilityState={{ selected: current()?.id === a().id }}
               onPress={() => props.onSelect(a().handle)}
               hoverStyle={hovered()}
-              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: current()?.id === a().id ? colors.accentFill : colors.border, backgroundColor: current()?.id === a().id ? tints.accent : colors.surface }}
+              style={{ flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: current()?.id === a().id ? colors.primary : colors.hairline, backgroundColor: current()?.id === a().id ? colors.selected : colors.raised }}
             >
               <Avatar name={a().name} agent size={34} />
               <View style={{ flex: 1, gap: 3 }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                  <Text style={{ fontSize: 14.5, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
-                  <Text style={{ fontSize: 13, color: colors.muted }}>@{a().handle}</Text>
+                  <Text style={{ fontSize: 14.5, fontWeight: "600", color: colors.fg, numberOfLines: 1 }}>{a().name}</Text>
+                  <Text style={{ fontSize: 13, color: colors.fg2 }}>@{a().handle}</Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                   <RuntimeBadge runtime={a().runtime} />
-                  <Text style={{ flex: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
+                  <Text style={{ flex: 1, fontSize: 12.5, color: colors.fg2, numberOfLines: 1 }}>{machineOf(a())?.name ?? L("no machine", "没有机器")}</Text>
                 </View>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
                   <Dot tone={st().tone} />
-                  <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
+                  <Text testID={`agent-${a().handle}-state`} style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st().label}</Text>
                 </View>
               </View>
-              <If when={narrow()}><Icon name="chevron" size={13} tint={colors.faint} /></If>
+              <If when={narrow()}><Icon name="chevron" size={13} tint={colors.fg3} /></If>
             </View>
           );
         }}
@@ -567,14 +567,14 @@ function AgentsSection(props: { team: Team; selected?: string; onSelect: (handle
     <If when={narrow() ? picked() : undefined} else={
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+        <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.fg2 }}>
           {L("An agent is one runtime on one of your machines. People @ it in channels to hand it work; the repository comes with the task.", "一个 Agent = 你某台机器上的一个 Runtime。大家在频道里 @它派活，仓库跟着任务走。")}
         </Text>
         <Btn small kind="primary" testID="agent-add" icon="plus" label={L("New agent", "新建 Agent")} onPress={props.onNew} />
       </View>
       <If when={mine().length} else={
         <Panel title={L("No agents yet", "还没有 Agent")}>
-          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("Create one: pick the machine it runs on, then the runtime there.", "新建一个：先选它跑在哪台机器上，再选那台机器上的 Runtime。")}</Text>
+          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.fg2 }}>{L("Create one: pick the machine it runs on, then the runtime there.", "新建一个：先选它跑在哪台机器上，再选那台机器上的 Runtime。")}</Text>
         </Panel>
       }>
         <If when={!narrow()} else={list()}>
@@ -675,24 +675,24 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <Avatar name={a().name} agent size={44} />
         <View style={{ flex: 1, gap: 3 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={{ fontSize: 18, fontWeight: "600", color: colors.text }}>{a().name}</Text>
-            <Text style={{ fontSize: 14, color: colors.muted }}>@{a().handle}</Text>
+            <Text style={{ fontSize: 18, fontWeight: "600", color: colors.fg }}>{a().name}</Text>
+            <Text style={{ fontSize: 14, color: colors.fg2 }}>@{a().handle}</Text>
             <RuntimeBadge runtime={a().runtime} />
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <Dot tone={st().tone} />
-            <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.muted }}>{st().label}</Text>
+            <Text style={{ fontSize: 13, color: st().blocked ? colors.danger : colors.fg2 }}>{st().label}</Text>
           </View>
         </View>
       </View>
       <AgentText team={t} agent={a()} field="description" label={L("What it does", "职责")} placeholder={L("e.g. writes and fixes tests for the payments backend", "比如：给支付后端补测试、修测试")} />
       <If when={machine()?.team}>
         <Panel title={L("Team agent", "团队 Agent")}>
-          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.fg2 }}>
             {L(`It runs on the team machine ${machine()!.name}; any admin can change it. Its responsible person answers for it and confirms its work when asked.`, `它跑在团队机器 ${machine()!.name} 上，管理员都能改它的设置。负责人对它负责，需要确认时由负责人确认。`)}
           </Text>
           <Label text={L("Responsible person", "负责人")} />
-          <If when={isAdmin(t)} else={<Text testID={`agent-owner-${a().handle}`} style={{ fontSize: 14, color: colors.text }}>{owner()?.name ?? "—"}</Text>}>
+          <If when={isAdmin(t)} else={<Text testID={`agent-owner-${a().handle}`} style={{ fontSize: 14, color: colors.fg }}>{owner()?.name ?? "—"}</Text>}>
             <Choice testID={`agent-owner-${a().handle}`} options={t.users().filter((u) => !u.disabled).map((u) => ({ value: u.id, label: u.name }))} value={a().owner_id} onChange={(v) => void patch({ owner_id: v })} />
           </If>
         </Panel>
@@ -733,7 +733,7 @@ function AgentDetail(props: { team: Team; agent: Agent; onMachines: () => void }
         <DispatchControls testID={`agent-dispatch-${a().handle}`} dispatch={a().dispatch} confirm={a().confirm} onDispatch={(v) => void patch({ dispatch: v })} onConfirm={(v) => void patch({ confirm: v })} />
         <Label text={L("How much it decides alone", "自主程度")} />
         <Choice testID={`agent-autonomy-${a().handle}`} options={AUTONOMY.map((d) => ({ value: d.value, label: d.label() }))} value={a().autonomy} onChange={(v) => void patch({ autonomy: v })} />
-        <Text style={{ fontSize: 12.5, color: colors.faint }}>{AUTONOMY.find((d) => d.value === a().autonomy)?.note() ?? ""}</Text>
+        <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{AUTONOMY.find((d) => d.value === a().autonomy)?.note() ?? ""}</Text>
       </Panel>
       <ErrorNote text={error()} testID="agent-error" />
       <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
@@ -885,10 +885,10 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
   }
   const step = (n: string, title: string) => (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-      <View style={{ width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: tints.accent }}>
-        <Text style={{ fontSize: 12, fontWeight: "700", color: colors.accent }}>{n}</Text>
+      <View style={{ width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: colors.selected }}>
+        <Text style={{ fontSize: 12, fontWeight: "700", color: colors.fg }}>{n}</Text>
       </View>
-      <Text style={{ fontSize: 15, fontWeight: "600", color: colors.text }}>{title}</Text>
+      <Text style={{ fontSize: 15, fontWeight: "600", color: colors.fg }}>{title}</Text>
     </View>
   );
   return (
@@ -899,7 +899,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
       title={L("New agent", "新建 Agent")}
       footer={
         <View style={{ flex: 1, flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text testID="new-agent-summary" style={{ flex: 1, fontSize: 13.5, color: colors.muted, numberOfLines: 1 }}>{summary()}</Text>
+          <Text testID="new-agent-summary" style={{ flex: 1, fontSize: 13.5, color: colors.fg2, numberOfLines: 1 }}>{summary()}</Text>
           <Btn kind="ghost" label={L("Cancel", "取消")} onPress={props.onClose} />
           <Btn testID="agent-create" kind="primary" label={L("Create agent", "创建 Agent")} busy={busy()} disabled={!cleanHandle() || !rt(runtime()).ok} onPress={create} />
         </View>
@@ -914,7 +914,7 @@ function NewAgentDialog(props: { team: Team; open: boolean; machine?: string; on
 
       {step("2", L("Where it runs", "运行在哪里"))}
       <If when={mine().length} else={
-        <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.warn }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
+        <Text testID="new-agent-no-machine" style={{ fontSize: 13.5, lineHeight: 20, color: colors.attention }}>{L("Add a machine first (My machines), or the agent can’t run anything. You can still create it and pick a machine later.", "先在「我的机器」里添加一台机器，不然 Agent 跑不了任务。也可以先建好，之后再选机器。")}</Text>
       }>
         <Label text={L("Machine", "机器")} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
@@ -1000,16 +1000,16 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
   return (
     <>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+        <Text style={{ flex: 1, fontSize: 13.5, lineHeight: 20, color: colors.fg2 }}>
           {L("A machine is a computer of yours running the Remi daemon. It reports which runtimes it has; one machine can host many agents.", "机器是你一台跑着 Remi 守护进程的电脑。它会上报装了哪些 Runtime；一台机器上可以有多个 Agent。")}
         </Text>
         <Btn small kind="primary" testID="machine-add" icon="plus" label={L("Add machine", "添加机器")} busy={busy() && !manual()} onPress={() => void enroll()} />
       </View>
       <ErrorNote text={code() || manual() ? "" : error()} />
       <If when={code()}>
-        <View style={{ gap: 10, padding: 14, borderRadius: 12, backgroundColor: tints.accent }}>
+        <View style={{ gap: 10, padding: 14, borderRadius: 12, backgroundColor: colors.selected }}>
           <InstallCommand team={t} name={L("that computer", "那台电脑")} code={code()} />
-          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>
+          <Text style={{ fontSize: 13, lineHeight: 19, color: colors.fg2 }}>
             {L("The computer shows up below by itself once it connects, named after its hostname (rename it there). The same command works on more of your computers within the hour; running it again on one reconnects it.", "电脑连上后会自动出现在下面，名字用它的主机名（可以改）。一小时内这条命令可以在你的多台电脑上用；同一台电脑再运行一次，就是重新接入。")}
           </Text>
           <View style={{ flexDirection: "row", gap: 8 }}>
@@ -1030,11 +1030,11 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
       </If>
       <If when={issued()}>
         {(i) => (
-          <View style={{ gap: 8, padding: 14, borderRadius: 12, backgroundColor: tints.accent }}>
-            <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
+          <View style={{ gap: 8, padding: 14, borderRadius: 12, backgroundColor: colors.selected }}>
+            <Text style={{ fontSize: 14, lineHeight: 20, color: colors.fg }}>
               {L(`Token for ${i().name}. It’s shown only once: put this in ~/.noop/data/config.local.toml on that computer, then start its daemon (bun run daemon).`, `${i().name} 的令牌只显示这一次：把下面几行写进那台电脑的 ~/.noop/data/config.local.toml，然后启动那里的守护进程（bun run daemon）。`)}
             </Text>
-            <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, color: colors.text, ...mono }}>{snippet(i().token)}</Text>
+            <Text testID="machine-token" style={{ fontSize: 13, lineHeight: 19, color: colors.fg, ...mono }}>{snippet(i().token)}</Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
               <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(snippet(i().token))} />
               <Btn small kind="ghost" label={L("Done", "完成")} onPress={() => issued.set(null)} />
@@ -1044,7 +1044,7 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
       </If>
       <If when={!mine().length && !adding() && !issued()}>
         <Panel title={L("No machines yet", "还没有机器")}>
-          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.muted }}>{L("Press Add machine and run the command it gives in a terminal on that computer.", "点「添加机器」，在那台电脑的终端里运行给出的命令。")}</Text>
+          <Text style={{ fontSize: 14, lineHeight: 20, color: colors.fg2 }}>{L("Press Add machine and run the command it gives in a terminal on that computer.", "点「添加机器」，在那台电脑的终端里运行给出的命令。")}</Text>
         </Panel>
       </If>
       <Each of={mine()} key={(m) => m.id}>
@@ -1058,7 +1058,7 @@ function MachinesSection(props: { team: Team; onNewAgent: (machineId: string) =>
 function LoopbackNote(props: { team: Team; testID: string }) {
   return (
     <If when={isLoopback(props.team.shareUrl())}>
-      <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: colors.warn }}>
+      <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: colors.attention }}>
         {L(`${props.team.shareUrl()} only works on this computer, so links and install commands for others won’t reach the server. Start the server with -public-url http://<its address>:<port> (or TEAMAGENT_PUBLIC_URL), or sign in here with that address.`,
           `${props.team.shareUrl()} 只在本机能用，发给别人的链接和安装命令会连不上。启动服务端时加上 -public-url http://<服务器地址>:<端口>（或设环境变量 TEAMAGENT_PUBLIC_URL），或者在这里用那个地址重新登录。`)}
       </Text>
@@ -1071,10 +1071,10 @@ function InstallCommand(props: { team: Team; name: string; code: string }) {
   const cmd = () => installCommand(props.team.shareUrl(), props.code);
   return (
     <View style={{ gap: 8 }}>
-      <Text style={{ fontSize: 14, lineHeight: 20, color: colors.text }}>
+      <Text style={{ fontSize: 14, lineHeight: 20, color: colors.fg }}>
         {L(`Run this in a terminal on ${props.name}. It installs the daemon, connects it and keeps it running in the background. The code works once, within an hour.`, `在 ${props.name} 的终端里运行这一行：它会装好守护进程、接入并在后台常驻。接入码一小时内有效，只能用一次。`)}
       </Text>
-      <Text testID="machine-command" style={{ fontSize: 13, lineHeight: 19, color: colors.text, ...mono }}>{cmd()}</Text>
+      <Text testID="machine-command" style={{ fontSize: 13, lineHeight: 19, color: colors.fg, ...mono }}>{cmd()}</Text>
       <LoopbackNote team={props.team} testID="machine-loopback" />
       <View style={{ flexDirection: "row" }}>
         <Btn small icon="copy" testID="machine-command-copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(cmd())} />
@@ -1105,15 +1105,15 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
     join.set(r.data.join);
   }
   const reported = () => !!m().runtime_info?.length || !!m().runtimes.length || m().last_seen !== null;
-  const cell = (s: string, flex = 1, color: string = colors.text) => <Text style={{ flex, fontSize: 13, color, numberOfLines: 1 }}>{s}</Text>;
+  const cell = (s: string, flex = 1, color: string = colors.fg) => <Text style={{ flex, fontSize: 13, color, numberOfLines: 1 }}>{s}</Text>;
   return (
-    <View testID={`machine-${m().id}`} style={{ gap: 12, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+    <View testID={`machine-${m().id}`} style={{ gap: 12, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Icon name="terminal" size={22} tint={colors.muted} />
+        <Icon name="terminal" size={22} tint={colors.fg2} />
         <View style={{ flex: 1 }}>
           <If when={renaming()} else={
             <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <Text testID={`machine-name-${m().id}`} style={{ fontSize: 16, fontWeight: "600", color: colors.text }}>{m().name}</Text>
+              <Text testID={`machine-name-${m().id}`} style={{ fontSize: 16, fontWeight: "600", color: colors.fg }}>{m().name}</Text>
               <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
               <Btn small kind="ghost" testID={`machine-rename-${m().id}`} label={L("Rename", "改名")} onPress={() => { newName.set(m().name); renaming.set(true); }} />
             </View>
@@ -1128,7 +1128,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
           </If>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
             <Dot on={m().online} />
-            <Text style={{ fontSize: 12.5, color: colors.muted }}>
+            <Text style={{ fontSize: 12.5, color: colors.fg2 }}>
               {[m().online ? L("online", "在线") : m().last_seen ? L(`offline · last seen ${time(m().last_seen!)}`, `离线 · 最后在线 ${time(m().last_seen!)}`) : L("never connected", "还没连上过"), [m().os, m().arch].filter(Boolean).join(" "), L(`${m().max_sessions} at a time`, `同时 ${m().max_sessions} 个`)].filter(Boolean).join(" · ")}
             </Text>
           </View>
@@ -1146,14 +1146,14 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </View>
       <ErrorNote text={joinError()} />
       <If when={join() && !m().online}>
-        <View style={{ gap: 8, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
+        <View style={{ gap: 8, padding: 12, borderRadius: radius.md, backgroundColor: colors.selected }}>
           <InstallCommand team={t} name={m().name} code={join()} />
-          <Text style={{ fontSize: 12.5, color: colors.muted }}>{L("Running it gives this machine a new token; the old one stops working.", "运行后这台机器会换一个新令牌，旧令牌失效。")}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L("Running it gives this machine a new token; the old one stops working.", "运行后这台机器会换一个新令牌，旧令牌失效。")}</Text>
         </View>
       </If>
       <If when={confirming()}>
-        <View style={{ gap: 8, padding: 12, borderRadius: radius.control, backgroundColor: tints.danger }}>
-          <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.text }}>
+        <View style={{ gap: 8, padding: 12, borderRadius: radius.md, backgroundColor: colors.dangerTint }}>
+          <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg }}>
             {agents().length
               ? L(`Remove ${m().name}? These agents will have no machine and can’t take work until you move them: ${agents().map((a) => "@" + a.handle).join(" ")}`, `移除 ${m().name}？这些 Agent 会没有机器，换到别的机器前接不了活：${agents().map((a) => "@" + a.handle).join(" ")}`)
               : L(`Remove ${m().name}? Its token stops working.`, `移除 ${m().name}？它的令牌会失效。`)}
@@ -1166,10 +1166,10 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </If>
 
       <Label text="Runtime" />
-      <If when={reported()} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("Start the daemon on that computer; it reports its runtimes when it connects.", "在那台电脑上启动守护进程，连上后会上报它的 Runtime。")}</Text>}>
-        <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: "hidden" }}>
-          <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: alpha(colors.text, 0.04) }}>
-            {cell("Runtime", 1.2, colors.muted)}{cell(L("Version", "版本"), 0.8, colors.muted)}{cell(L("Status", "状态"), 1.6, colors.muted)}{cell(L("Used by", "在用的 Agent"), 1, colors.muted)}
+      <If when={reported()} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("Start the daemon on that computer; it reports its runtimes when it connects.", "在那台电脑上启动守护进程，连上后会上报它的 Runtime。")}</Text>}>
+        <View style={{ borderRadius: 10, borderWidth: 1, borderColor: colors.hairline, overflow: "hidden" }}>
+          <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 7, backgroundColor: colors.hover }}>
+            {cell("Runtime", 1.2, colors.fg2)}{cell(L("Version", "版本"), 0.8, colors.fg2)}{cell(L("Status", "状态"), 1.6, colors.fg2)}{cell(L("Used by", "在用的 Agent"), 1, colors.fg2)}
           </View>
           <Each of={[...RUNTIMES]}>
             {(r) => {
@@ -1182,17 +1182,17 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
                 : info()!.logged_in === false ? [L("not logged in", "未登录"), "warn"]
                 : info()!.logged_in === true ? [L("✓ logged in", "✓ 已登录"), "default"] : [L("unknown", "未知"), "default"];
               return (
-                <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.border }}>
+                <View testID={`machine-${m().id}-runtime-${r().name}`} style={{ flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.hairline }}>
                   <View style={{ flex: 1.2, flexDirection: "row", alignItems: "center", gap: 6 }}>
-                    <Text style={{ fontSize: 13, fontWeight: "500", color: colors.text }}>{r().label}</Text>
+                    <Text style={{ fontSize: 13, fontWeight: "500", color: colors.fg }}>{r().label}</Text>
                     <If when={!r().ready}><Tag label={L("phase 2", "第二阶段")} /></If>
                   </View>
-                  {cell(info()?.installed ? (info()!.version ? `v${info()!.version}` : L("installed", "已安装")) : L("not installed", "未安装"), 0.8, info()?.installed ? colors.text : colors.faint)}
+                  {cell(info()?.installed ? (info()!.version ? `v${info()!.version}` : L("installed", "已安装")) : L("not installed", "未安装"), 0.8, info()?.installed ? colors.fg : colors.fg3)}
                   <View style={{ flex: 1.6 }}>
                     <Noted testID={`machine-${m().id}-runtime-${r().name}-status`} note={trouble()?.note}
                       label={<Txt lines={1} grow tone={status()[1]}>{status()[0]}</Txt>} />
                   </View>
-                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1, colors.muted)}
+                  {cell(users().map((a) => "@" + a.handle).join(" ") || "—", 1, colors.fg2)}
                 </View>
               );
             }}
@@ -1201,7 +1201,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </If>
 
       <Label text={L("Repositories", "仓库")} note={L("Checkouts it found (under ~/code, ~/work and the like, or [teamagent] roots in its config), by remote. Tasks in other repositories get cloned.", "它找到的本地仓库（~/code、~/work 等目录，或配置里 [teamagent] roots 指定的目录），按远端地址识别。其他仓库的任务会自动克隆。")} />
-      <If when={(m().repos ?? []).length} else={<Text testID={`machine-${m().id}-repos-none`} style={{ fontSize: 13, color: colors.faint }}>{reported() ? L("None found yet.", "还没找到。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
+      <If when={(m().repos ?? []).length} else={<Text testID={`machine-${m().id}-repos-none`} style={{ fontSize: 13, color: colors.fg3 }}>{reported() ? L("None found yet.", "还没找到。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
         <View testID={`machine-${m().id}-repos`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={m().repos ?? []} key={(r) => r.remote}>
             {(r) => <Tag label={repoLabel(r().remote)} />}
@@ -1210,7 +1210,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </If>
 
       <Label text={L("Git identity", "Git 身份")} note={L("Who its agents’ pull requests come from (the tokens stay on the machine).", "它的 Agent 开的 PR 以谁的名义提交（令牌不离开机器）。")} />
-      <If when={(m().git ?? []).some((g) => g.configured)} else={<Text testID={`machine-${m().id}-git-none`} style={{ fontSize: 13, color: colors.faint }}>{reported() ? L("No Git credentials: its agents’ branches can’t be pushed.", "没有 Git 凭证：它的 Agent 的分支推不上去。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
+      <If when={(m().git ?? []).some((g) => g.configured)} else={<Text testID={`machine-${m().id}-git-none`} style={{ fontSize: 13, color: colors.fg3 }}>{reported() ? L("No Git credentials: its agents’ branches can’t be pushed.", "没有 Git 凭证：它的 Agent 的分支推不上去。") : L("Reported when the daemon connects.", "守护进程连上后上报。")}</Text>}>
         <View testID={`machine-${m().id}-git`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={(m().git ?? []).filter((g) => g.configured)} key={(g) => g.host}>
             {(g) => <Tag label={`${g().host} · ${g().user || L("unknown user", "未知用户")}`} />}
@@ -1219,7 +1219,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </If>
 
       <Label text={L("Skills and MCP", "技能与 MCP")} note={L("What its agents can use beyond the runtime, by name.", "它的 Agent 除了 Runtime 本身还能用的东西（只显示名字）。")} />
-      <If when={(m().skills ?? []).length || (m().mcp ?? []).length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("None reported.", "没有上报。")}</Text>}>
+      <If when={(m().skills ?? []).length || (m().mcp ?? []).length} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("None reported.", "没有上报。")}</Text>}>
         <View testID={`machine-${m().id}-tools`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={m().skills ?? []}>{(n) => <Tag label={n()} />}</Each>
           <Each of={m().mcp ?? []}>{(n) => <Tag label={`MCP ${n()}`} tone="accent" />}</Each>
@@ -1230,7 +1230,7 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
       </If>
       <If when={!m().team && t.me()?.id === m().owner_id}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <Text testID={`machine-${m().id}-syncconfig-note`} style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.muted }}>
+          <Text testID={`machine-${m().id}-syncconfig-note`} style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: colors.fg2 }}>
             {m().sync_team_config
               ? L("This machine takes the team config repository too: its MCP commands run here, and its skills show up in your own Claude Code, Codex and Pi.", "这台机器也同步团队配置仓库：仓库里的 MCP 命令会在这里执行，skills 会出现在你本机的 Claude Code、Codex 和 Pi 里。")
               : L("Your own machine: the team config repository is not synced here. Turned on, its MCP commands run on this machine and its skills show up in your own Claude Code, Codex and Pi.", "这是你自己的机器，团队配置仓库默认不同步到这里。开启后，仓库里的 MCP 命令会在这台机器上执行，skills 会出现在你本机的 Claude Code、Codex 和 Pi 里。")}
@@ -1255,11 +1255,11 @@ function MachineCard(props: { team: Team; machine: Machine; onNewAgent: () => vo
           return (
             <View role="button" testID={`machine-${m().id}-agent-${a().handle}`} onPress={() => props.onAgent(a().handle)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 4, paddingHorizontal: 4, borderRadius: 8 }}>
               <Avatar name={a().name} agent size={26} />
-              <Text style={{ fontSize: 14, color: colors.text }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
+              <Text style={{ fontSize: 14, color: colors.fg }}>{a().name} <Text style={{ color: colors.fg2 }}>@{a().handle}</Text></Text>
               <RuntimeBadge runtime={a().runtime} />
               <View style={{ flex: 1 }} />
               <Dot tone={st().tone} />
-              <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st().label}</Text>
+              <Text style={{ fontSize: 12.5, color: st().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st().label}</Text>
             </View>
           );
         }}
@@ -1313,8 +1313,8 @@ function PeopleSection(props: { team: Team }) {
             <View testID={`person-${u().handle}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 2 }}>
               <Avatar name={u().name} size={30} />
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 14.5, color: colors.text }}>{u().name} <Text style={{ color: colors.muted }}>@{u().handle}</Text></Text>
-                <Text style={{ fontSize: 12.5, color: colors.faint, numberOfLines: 1 }}>{[u().email, agentsOf(u().id).length ? L(`${agentsOf(u().id).length} agents`, `${agentsOf(u().id).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}</Text>
+                <Text style={{ fontSize: 14.5, color: colors.fg }}>{u().name} <Text style={{ color: colors.fg2 }}>@{u().handle}</Text></Text>
+                <Text style={{ fontSize: 12.5, color: colors.fg3, numberOfLines: 1 }}>{[u().email, agentsOf(u().id).length ? L(`${agentsOf(u().id).length} agents`, `${agentsOf(u().id).length} 个 Agent`) : ""].filter(Boolean).join(" · ")}</Text>
               </View>
               <If when={u().role === "admin"}><Tag label={L("Admin", "管理员")} tone="accent" /></If>
               <If when={admin() && u().id !== t.me()?.id}>
@@ -1324,7 +1324,7 @@ function PeopleSection(props: { team: Team }) {
           )}
         </Each>
       </Panel>
-      <If when={admin()} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("Admins invite people.", "邀请同事由管理员来做。")}</Text>}>
+      <If when={admin()} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("Admins invite people.", "邀请同事由管理员来做。")}</Text>}>
         <Panel title={L("Invite", "邀请")}>
           <Field label={L("Email", "邮箱")} value={email()} onChange={(v) => email.set(v)} onSubmit={invite} placeholder="colleague@corp.com" keyboardType="email-address" testID="invite-email" />
           <Choice testID="invite-role" options={[{ value: "member", label: L("Member", "成员") }, { value: "admin", label: L("Admin", "管理员") }]} value={role()} onChange={(v) => role.set(v)} />
@@ -1335,9 +1335,9 @@ function PeopleSection(props: { team: Team }) {
         </Panel>
       </If>
       <If when={link()}>
-        <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: tints.accent }}>
-          <Text style={{ fontSize: 13.5, color: colors.text }}>{note()}</Text>
-          <Text testID="invite-url" style={{ fontSize: 13, color: colors.text, ...mono }}>{link()}</Text>
+        <View style={{ gap: 6, padding: 12, borderRadius: radius.md, backgroundColor: colors.selected }}>
+          <Text style={{ fontSize: 13.5, color: colors.fg }}>{note()}</Text>
+          <Text testID="invite-url" style={{ fontSize: 13, color: colors.fg, ...mono }}>{link()}</Text>
           <LoopbackNote team={t} testID="invite-loopback" />
           <View style={{ flexDirection: "row" }}>
             <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(link())} />
@@ -1367,10 +1367,10 @@ function WorkspacePanel(props: { team: Team }) {
     <If when={t.workspace()}>
       {(ws) => (
         <Panel title={L("Team", "团队")}>
-          <Text testID="workspace-id" style={{ fontSize: 13, color: colors.muted }}>
-            {L("Team ID ", "团队 ID ")}<Text style={{ color: colors.text, ...mono }}>{ws().id}</Text>
+          <Text testID="workspace-id" style={{ fontSize: 13, color: colors.fg2 }}>
+            {L("Team ID ", "团队 ID ")}<Text style={{ color: colors.fg, ...mono }}>{ws().id}</Text>
           </Text>
-          <If when={admin()} else={<Text style={{ fontSize: 14.5, color: colors.text }}>{ws().name || "Remi"}</Text>}>
+          <If when={admin()} else={<Text style={{ fontSize: 14.5, color: colors.fg }}>{ws().name || "Remi"}</Text>}>
             <Field label={L("Team name", "团队名字")} value={name()} onChange={(v) => name.set(v)} onSubmit={() => void save({ name: name() })} placeholder="Remi" testID="workspace-name" hint={L("Shown on the sign-in screen when people ask to join.", "申请加入的人会在登录页看到它。")} />
             <View style={{ flexDirection: "row" }}>
               <Btn small testID="workspace-save" label={L("Save name", "保存名字")} busy={busy()} disabled={name().trim() === ws().name} onPress={() => void save({ name: name() })} />
@@ -1423,43 +1423,43 @@ function GitSection(props: { team: Team }) {
   }
   const hookUrl = () => `${t.shareUrl()}${data()?.webhook.path ?? "/api/v1/hooks/gitlab"}`;
   return (
-    <If when={data()} else={<View style={{ gap: 8 }}><ErrorNote text={error()} /><If when={!error()}><Spinner size={16} tint={colors.muted} /></If></View>}>
+    <If when={data()} else={<View style={{ gap: 8 }}><ErrorNote text={error()} /><If when={!error()}><Spinner size={16} tint={colors.fg2} /></If></View>}>
       {(d) => (
         <>
-          <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+          <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg2 }}>
             {L("The team’s platforms are set once by an admin. Push credentials never leave the machines: each machine says only whether it has one.", "团队用的 Git 平台由管理员配一次。推送凭证不离开机器：每台机器只上报有没有配好。")}
           </Text>
           <Each of={shown()} key={(p) => `${p.kind}:${p.host}`}>
             {(p, i) => (
-              <View testID={`git-platform-${p().host}`} style={{ gap: 10, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+              <View testID={`git-platform-${p().host}`} style={{ gap: 10, padding: 18, borderRadius: 14, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                  <Icon name={p().kind === "github" ? "github" : "merge"} size={20} tint={colors.text} />
-                  <Text style={{ flex: 1, fontSize: 16, fontWeight: "600", color: colors.text }}>{p().name}</Text>
+                  <Icon name={p().kind === "github" ? "github" : "merge"} size={20} tint={colors.fg} />
+                  <Text style={{ flex: 1, fontSize: 16, fontWeight: "600", color: colors.fg }}>{p().name}</Text>
                   <Tag label={p().kind === "github" ? "GitHub" : L("GitLab-based", "基于 GitLab")} />
                   <If when={admin() && i() < platforms().length}>
                     <Btn small kind="ghost" testID={`git-platform-edit-${i()}`} label={L("Edit", "修改")} onPress={() => editing.set({ index: i(), p: { ...p() } })} />
                   </If>
                 </View>
-                <Text style={{ fontSize: 13, color: colors.muted }}>{`${p().host} · API ${p().api}`}</Text>
+                <Text style={{ fontSize: 13, color: colors.fg2 }}>{`${p().host} · API ${p().api}`}</Text>
                 <If when={p().kind === "gitlab"} else={
-                  <Text style={{ fontSize: 13, lineHeight: 19, color: colors.muted }}>{L("No webhook: each machine checks its PRs and CI every 2 minutes.", "不需要 webhook：机器每 2 分钟查一次 PR 和 CI。")}</Text>
+                  <Text style={{ fontSize: 13, lineHeight: 19, color: colors.fg2 }}>{L("No webhook: each machine checks its PRs and CI every 2 minutes.", "不需要 webhook：机器每 2 分钟查一次 PR 和 CI。")}</Text>
                 }>
-                  <View style={{ gap: 6, padding: 12, borderRadius: radius.control, backgroundColor: alpha(colors.text, 0.04) }}>
-                    <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }}>Webhook</Text>
+                  <View style={{ gap: 6, padding: 12, borderRadius: radius.md, backgroundColor: colors.hover }}>
+                    <Text style={{ fontSize: 13, fontWeight: "600", color: colors.fg }}>Webhook</Text>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <Text testID="git-webhook-url" style={{ flex: 1, fontSize: 12.5, color: colors.text, ...mono }}>{hookUrl()}</Text>
+                      <Text testID="git-webhook-url" style={{ flex: 1, fontSize: 12.5, color: colors.fg, ...mono }}>{hookUrl()}</Text>
                       <Btn small icon="copy" label={L("Copy", "复制")} onPress={() => void Clipboard.writeText(hookUrl())} />
                     </View>
-                    <Text testID="git-webhook-secret" style={{ fontSize: 12.5, color: d().webhook.secret_set ? colors.up : colors.warn }}>
+                    <Text testID="git-webhook-secret" style={{ fontSize: 12.5, color: d().webhook.secret_set ? colors.ok : colors.attention }}>
                       {d().webhook.secret_set ? L("✓ Secret set (TEAMAGENT_GIT_WEBHOOK_SECRET)", "✓ 密钥已设置（TEAMAGENT_GIT_WEBHOOK_SECRET）") : L("No secret: start the server with TEAMAGENT_GIT_WEBHOOK_SECRET, then put the same value in the webhook.", "没设密钥：启动服务端时设 TEAMAGENT_GIT_WEBHOOK_SECRET，再把同样的值填进 webhook。")}
                     </Text>
-                    <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Events: PullRequest (merge request). Without it, machines still notice merges within 2 minutes.", "事件勾选 PullRequest（合并请求）。不配也行，机器 2 分钟内也会发现合并。")}</Text>
+                    <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Events: PullRequest (merge request). Without it, machines still notice merges within 2 minutes.", "事件勾选 PullRequest（合并请求）。不配也行，机器 2 分钟内也会发现合并。")}</Text>
                   </View>
                   <Label text={L("Recent events", "最近收到的事件")} />
-                  <If when={d().events.length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("None yet.", "还没有。")}</Text>}>
+                  <If when={d().events.length} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("None yet.", "还没有。")}</Text>}>
                     <Each of={d().events.slice(0, 5)} key="index">
                       {(e) => (
-                        <Text style={{ fontSize: 12.5, color: colors.muted }}>
+                        <Text style={{ fontSize: 12.5, color: colors.fg2 }}>
                           {[time(e().at), e().project, e().number ? `!${e().number}` : "", e().branch, e().state, e().task ? `→ ${e().task}` : L("not a task", "不是任务分支")].filter(Boolean).join(" · ")}
                         </Text>
                       )}
@@ -1470,7 +1470,7 @@ function GitSection(props: { team: Team }) {
             )}
           </Each>
           <If when={!platforms().some((p) => p.kind === "gitlab")}>
-            <Text style={{ fontSize: 13, color: colors.faint }}>{admin() ? L("Using a GitLab-based platform? Add it so people see its webhook and their machines’ credentials.", "用基于 GitLab 的平台？加上它，大家就能看到 webhook 和自己机器的凭证状态。") : L("An admin adds the team’s GitLab-based platforms.", "基于 GitLab 的平台由管理员添加。")}</Text>
+            <Text style={{ fontSize: 13, color: colors.fg3 }}>{admin() ? L("Using a GitLab-based platform? Add it so people see its webhook and their machines’ credentials.", "用基于 GitLab 的平台？加上它，大家就能看到 webhook 和自己机器的凭证状态。") : L("An admin adds the team’s GitLab-based platforms.", "基于 GitLab 的平台由管理员添加。")}</Text>
           </If>
           <If when={admin() && !editing()}>
             <View style={{ flexDirection: "row" }}>
@@ -1486,11 +1486,11 @@ function GitSection(props: { team: Team }) {
           <ErrorNote text={error()} testID="git-error" />
 
           <Panel title={L("Credentials on my machines", "我的机器上的凭证")}>
-            <If when={myMachines().length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("You have no machines.", "你还没有机器。")}</Text>}>
+            <If when={myMachines().length} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("You have no machines.", "你还没有机器。")}</Text>}>
               <Each of={myMachines()} key={(m) => m.id}>
                 {(m) => (
                   <View style={{ gap: 6, paddingVertical: 4 }}>
-                    <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{m().name}</Text>
+                    <Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg }}>{m().name}</Text>
                     <Each of={shown()} key={(p) => `${p.kind}:${p.host}`}>
                       {(p) => {
                         const c = () => credText(m().git?.find((g) => g.host === p().host), !!m().git);
@@ -1498,16 +1498,16 @@ function GitSection(props: { team: Team }) {
                         return (
                           <View style={{ gap: 4 }}>
                             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                              <Text style={{ width: 120, fontSize: 13, color: colors.muted }}>{p().name}</Text>
-                              <Text testID={`git-cred-${m().id}-${p().host}`} style={{ flex: 1, fontSize: 13, color: c().ok ? colors.up : colors.warn }}>{c().text}</Text>
+                              <Text style={{ width: 120, fontSize: 13, color: colors.fg2 }}>{p().name}</Text>
+                              <Text testID={`git-cred-${m().id}-${p().host}`} style={{ flex: 1, fontSize: 13, color: c().ok ? colors.ok : colors.attention }}>{c().text}</Text>
                               <If when={!c().ok}>
                                 <Btn small kind="ghost" label={L("How to set up", "怎么配")} onPress={() => how.set(how() === key() ? "" : key())} />
                               </If>
                             </View>
                             <If when={how() === key()}>
-                              <View style={{ gap: 4, padding: 10, borderRadius: radius.control, backgroundColor: alpha(colors.text, 0.04) }}>
-                                <Text style={{ fontSize: 12.5, color: colors.muted }}>{L(`In ~/.noop/data/config.local.toml on ${m().name}:`, `写进 ${m().name} 的 ~/.noop/data/config.local.toml：`)}</Text>
-                                <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.text, ...mono }}>{gitSnippet(p())}</Text>
+                              <View style={{ gap: 4, padding: 10, borderRadius: radius.md, backgroundColor: colors.hover }}>
+                                <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L(`In ~/.noop/data/config.local.toml on ${m().name}:`, `写进 ${m().name} 的 ~/.noop/data/config.local.toml：`)}</Text>
+                                <Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.fg, ...mono }}>{gitSnippet(p())}</Text>
                               </View>
                             </If>
                           </View>
@@ -1521,7 +1521,7 @@ function GitSection(props: { team: Team }) {
           </Panel>
 
           <Panel title={L("Fixed rules", "固定规则")}>
-            <Text style={{ fontSize: 13, lineHeight: 20, color: colors.muted }}>
+            <Text style={{ fontSize: 13, lineHeight: 20, color: colors.fg2 }}>
               {L("Machines push only branches named agent/T-xxxx, and only open PRs. Merging is always done by a person; a merged PR finishes its task.", "机器只推 agent/T-xxxx 分支，只开 PR。合并永远由人来做；PR 合并后任务自动完成。")}
             </Text>
           </Panel>
@@ -1575,12 +1575,12 @@ function MetricsSection(props: { team: Team }) {
   );
   return (
     <>
-      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg2 }}>
         {L("Numbers to watch while the team tries working with agents. Apart from your own count, everyone sees the same numbers; nothing here is about what anyone wrote.", "试用期间看这几组数。除了你自己的次数，全队看到的是同一份数字，只统计时间和次数，不涉及谁说了什么。")}
       </Text>
       <Choice testID="metrics-days" options={[{ value: "7", label: L("Last 7 days", "最近 7 天") }, { value: "30", label: L("Last 30 days", "最近 30 天") }]} value={days()} onChange={(v) => days.set(v)} />
       <ErrorNote text={error()} />
-      <If when={data()} else={<If when={!error()}><Spinner size={16} tint={colors.muted} /></If>}>
+      <If when={data()} else={<If when={!error()}><Spinner size={16} tint={colors.fg2} /></If>}>
         {(d) => (
           <>
             <Panel testID="metrics-mine" title={L("How often I was needed", "找我的次数")}
@@ -1597,7 +1597,7 @@ function MetricsSection(props: { team: Team }) {
                 {(k) => row(k().label(), waits(d().reply_by[k().key]))}
               </Each>
               <If when={d().reply.open}>
-                <Text style={{ fontSize: 12.5, color: colors.warn }}>{L(`${d().reply.open} still waiting, the oldest for ${span(d().reply.oldest)}.`, `还有 ${d().reply.open} 件在等，最久的已经等了 ${span(d().reply.oldest)}。`)}</Text>
+                <Text style={{ fontSize: 12.5, color: colors.attention }}>{L(`${d().reply.open} still waiting, the oldest for ${span(d().reply.oldest)}.`, `还有 ${d().reply.open} 件在等，最久的已经等了 ${span(d().reply.oldest)}。`)}</Text>
               </If>
             </Panel>
             <Panel title={L("Runs per task", "每个任务跑了几轮")}>
@@ -1607,7 +1607,7 @@ function MetricsSection(props: { team: Team }) {
             <Panel title={L("Cancelled and asked again", "取消后重来")}>
               {row(L("Cancelled", "被取消"), String(d().cancelled))}
               {row(L("Asked again", "其中重新派了"), String(d().redone), "metrics-redone")}
-              <Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Asked again: the same person asked in the same channel within a day.", "重新派：同一个人在同一个频道一天内又派了一次。")}</Text>
+              <Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Asked again: the same person asked in the same channel within a day.", "重新派：同一个人在同一个频道一天内又派了一次。")}</Text>
             </Panel>
             <Panel testID="metrics-team-calls" title={L("How often people were needed", "全队被找的次数")}
               note={L("Everyone's, without private channels and without names.", "全队合计，不含私有频道，不分人。")}>
@@ -1620,14 +1620,14 @@ function MetricsSection(props: { team: Team }) {
                   const ag = () => t.agents().find((x) => x.id === a().agent_id);
                   return (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 3 }}>
-                      <Text style={{ width: 120, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{ag() ? `@${ag()!.handle}` : a().agent_id}</Text>
+                      <Text style={{ width: 120, fontSize: 13.5, color: colors.fg, numberOfLines: 1 }}>{ag() ? `@${ag()!.handle}` : a().agent_id}</Text>
                       <If when={a().team}><Tag label={L("Team", "团队")} tone="accent" /></If>
-                      <Text style={{ flex: 1, fontSize: 13.5, color: colors.muted }}>{L(`${a().tasks} tasks from ${a().people} people (${a().others} not its owner)`, `${a().tasks} 个任务，来自 ${a().people} 个人（${a().others} 个不是主人派的）`)}</Text>
+                      <Text style={{ flex: 1, fontSize: 13.5, color: colors.fg2 }}>{L(`${a().tasks} tasks from ${a().people} people (${a().others} not its owner)`, `${a().tasks} 个任务，来自 ${a().people} 个人（${a().others} 个不是主人派的）`)}</Text>
                     </View>
                   );
                 }}
               </Each>
-              <If when={!d().agents.some((a) => a.tasks > 0)}><Text style={{ fontSize: 13, color: colors.faint }}>{L("No tasks yet.", "还没有任务。")}</Text></If>
+              <If when={!d().agents.some((a) => a.tasks > 0)}><Text style={{ fontSize: 13, color: colors.fg3 }}>{L("No tasks yet.", "还没有任务。")}</Text></If>
             </Panel>
           </>
         )}
@@ -1640,7 +1640,7 @@ function MetricsSection(props: { team: Team }) {
 function TeamConfigLine(props: { status: TeamConfigStatus; testID: string }) {
   const c = () => props.status;
   return (
-    <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: c().error ? colors.warn : colors.muted }}>
+    <Text testID={props.testID} style={{ fontSize: 12.5, lineHeight: 18, color: c().error ? colors.attention : colors.fg2 }}>
       {[L(`Team config ${c().commit || "?"}, synced ${time(c().synced)}`, `团队配置 ${c().commit || "?"}，${time(c().synced)} 同步`), c().instructions ? "" : L("no AGENTS.md", "没有 AGENTS.md"), c().error ?? ""].filter(Boolean).join(" · ")}
     </Text>
   );
@@ -1669,13 +1669,13 @@ function TeamConfigSection(props: { team: Team }) {
   }
   const line = (path: string, what: string) => (
     <View style={{ flexDirection: "row", gap: 10 }}>
-      <Text style={{ width: 92, fontSize: 13, color: colors.text, ...mono }}>{path}</Text>
-      <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: colors.muted }}>{what}</Text>
+      <Text style={{ width: 92, fontSize: 13, color: colors.fg, ...mono }}>{path}</Text>
+      <Text style={{ flex: 1, fontSize: 13, lineHeight: 19, color: colors.fg2 }}>{what}</Text>
     </View>
   );
   return (
     <>
-      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.muted }}>
+      <Text style={{ fontSize: 13.5, lineHeight: 20, color: colors.fg2 }}>
         {L("One git repository with what every agent in the team should have. Every machine keeps a copy (checked every 10 minutes) and gives it to its agents; editing the team’s ways is a commit there.", "一个 Git 仓库，放全队 Agent 都该有的东西。每台机器都同步一份（每 10 分钟看一次）交给它的 Agent；改团队的规矩就是往这个仓库提交。")}
       </Text>
       <Panel title={L("Repository", "仓库")}>
@@ -1684,7 +1684,7 @@ function TeamConfigSection(props: { team: Team }) {
         <ErrorNote text={error()} />
         <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
           <Btn small kind="primary" testID="teamconfig-save" label={L("Save", "保存")} busy={busy()} disabled={!isAdmin(t) || saved() === null || repo().trim() === saved()} onPress={() => void save()} />
-          <If when={!isAdmin(t)}><Text style={{ fontSize: 12.5, color: colors.faint }}>{L("Only admins change it.", "只有管理员能改。")}</Text></If>
+          <If when={!isAdmin(t)}><Text style={{ fontSize: 12.5, color: colors.fg3 }}>{L("Only admins change it.", "只有管理员能改。")}</Text></If>
         </View>
       </Panel>
       <Panel title={L("What goes in it", "仓库里放什么")}>
@@ -1698,10 +1698,10 @@ function TeamConfigSection(props: { team: Team }) {
             <View style={{ gap: 2, paddingVertical: 3 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Dot on={m().online} />
-                <Text style={{ fontSize: 13.5, color: colors.text }}>{m().name}</Text>
+                <Text style={{ fontSize: 13.5, color: colors.fg }}>{m().name}</Text>
                 <If when={m().team}><Tag label={L("Team machine", "团队机器")} tone="accent" /></If>
               </View>
-              <If when={m().team_config} else={<Text style={{ fontSize: 12.5, color: colors.faint }}>{saved() ? L("Not synced yet (or an older daemon).", "还没同步（或者守护进程版本较旧）。") : "—"}</Text>}>
+              <If when={m().team_config} else={<Text style={{ fontSize: 12.5, color: colors.fg3 }}>{saved() ? L("Not synced yet (or an older daemon).", "还没同步（或者守护进程版本较旧）。") : "—"}</Text>}>
                 {(c) => <TeamConfigLine status={c()} testID={`teamconfig-machine-${m().id}`} />}
               </If>
             </View>

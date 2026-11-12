@@ -1,20 +1,20 @@
 import { Text, View, type JSX } from "nsh";
 import { Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { Icon, type IconName } from "./icons";
-import { alpha, colors, hovered, scale } from "./theme";
+import { colors, floatSurface, hovered, measure, radius, size, space, stroke } from "./theme";
 
 /**
- * A menu of actions that opens from `trigger` (nsh/base's `Menu`: a popup on desktops, a sheet on phones; keys,
- * Escape and a press outside included). Fill it with `MenuRow`, `MenuLine` and `MenuHeading`.
+ * A menu of actions that opens from `trigger` (nsh/base's `Menu`: a floating surface on desktops, a sheet on phones;
+ * keys, Escape and a press outside included); `wide` for a menu of longer rows (the account menu). Fill it with `MenuRow`, `MenuLine` and `MenuHeading`.
  */
-export function PopMenu(props: { trigger: JSX.Element; placement?: "top" | "bottom"; align?: "start" | "end"; minWidth?: number; maxHeight?: number; children: JSX.Element }) {
+export function PopMenu(props: { trigger: JSX.Element; placement?: "top" | "bottom"; align?: "start" | "end"; wide?: boolean; maxHeight?: number; children: JSX.Element }) {
   return (
     <Menu
       align={props.align ?? "start"}
       placement={props.placement}
-      offset={4}
-      margin={8}
-      popupStyle={{ minWidth: props.minWidth ?? 200, maxHeight: props.maxHeight, padding: 4, borderRadius: scale.radius.lg, borderWidth: 1, borderColor: alpha(colors.text, 0.1), backgroundColor: colors.surface, boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
+      offset={space.xs}
+      margin={space.md}
+      popupStyle={[floatSurface(), { minWidth: props.wide ? measure.menuWide : measure.menu, maxHeight: props.maxHeight, padding: space.xs }]}
       backdropClass="bg-scrim"
       trigger={props.trigger}
     >
@@ -35,19 +35,19 @@ export function MenuRow(props: { label: string; onSelect: () => void; icon?: Ico
       checked={props.checked === undefined ? undefined : props.checked}
       hoverStyle={hovered()}
       activeStyle={hovered()}
-      style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingHorizontal: 8, borderRadius: scale.radius.sm }}
+      style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: size.row.menu, paddingHorizontal: space.md, borderRadius: radius.sm }}
     >
       <If when={props.checked !== undefined}>
-        <View style={{ width: 16, alignItems: "center" }}>
-          <If when={props.checked}><Icon name="check" size={14} tint={colors.accent} /></If>
+        <View style={{ width: size.icon.md, alignItems: "center" }}>
+          <If when={props.checked}><Icon name="check" size={size.icon.sm} tint={colors.fg} /></If>
         </View>
       </If>
       <If when={props.icon}>
-        <Icon name={props.icon!} size={16} tint={props.danger ? colors.danger : colors.muted} />
+        <Icon name={props.icon!} size={size.icon.md} tint={props.danger ? colors.danger : colors.fg2} />
       </If>
-      <Text style={{ flex: 1, fontSize: scale.text.body, color: props.danger ? colors.danger : colors.text, numberOfLines: 1 }}>{props.label}</Text>
+      <Text style={{ flex: 1, fontSize: size.text.body, color: props.danger ? colors.danger : colors.fg, numberOfLines: 1 }}>{props.label}</Text>
       <If when={props.right}>
-        <Text style={{ fontSize: scale.text.caption, color: colors.faint }}>{props.right}</Text>
+        <Text style={{ fontSize: size.text.caption, color: colors.fg3 }}>{props.right}</Text>
       </If>
     </MenuItem>
   );
@@ -55,10 +55,10 @@ export function MenuRow(props: { label: string; onSelect: () => void; icon?: Ico
 
 /** A line between groups of rows in a `PopMenu`. */
 export function MenuLine() {
-  return <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 8, backgroundColor: alpha(colors.text, 0.07) }} />;
+  return <MenuSeparator style={{ height: stroke.hairline, marginVertical: space.xs, marginHorizontal: space.md, backgroundColor: colors.hairline }} />;
 }
 
 /** A small heading over a group of rows in a `PopMenu`. */
 export function MenuHeading(props: { text: string }) {
-  return <Text style={{ paddingHorizontal: 8, paddingTop: 4, paddingBottom: 6, fontSize: scale.text.caption, fontWeight: "600", color: colors.faint }}>{props.text}</Text>;
+  return <Text style={{ paddingHorizontal: space.md, paddingTop: space.xs, paddingBottom: space.sm, fontSize: size.text.caption, fontWeight: "600", color: colors.fg3 }}>{props.text}</Text>;
 }

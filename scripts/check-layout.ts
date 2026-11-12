@@ -7,9 +7,17 @@
 //
 //   cd app && nsh test screens.test.tsx --trace > ../.layout-trace.txt 2>&1
 //   bun scripts/check-layout.ts .layout-trace.txt
+//   bun scripts/check-layout.ts .layout-trace.txt --update   lower the hit-target baseline (never raises it; starts one if missing)
 //
 // Add a rule when a layout matters and a test can't say it.
-import { readFileSync } from "node:fs";
+//
+// Hit targets on phones: in every app opened at phone width (the touch density), each pressable (a button, tab,
+// switch, radio, combobox, menu item, link or checkbox) takes presses over at least 44 × 44 points, its frame plus its
+// hitSlop. app/ui's components get there through `slop()`; pages' own pressables that don't yet are listed by testID in
+// scripts/hit-baseline.json (the debt from before the rule), which may only shrink. A pressable without a testID is
+// app/ui's and has no allowance.
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 type Box = { x: number; y: number; w: number; h: number };
 type Rule = { name: string; check: (ids: Map<string, Box>) => string | null };
@@ -53,10 +61,20 @@ export const ACROSS: Rule[] = [
   },
 ];
 
-/** Every app the trace opened: its views with a testID and where they sit in the window. */
-export function parse(trace: string): { name: string; ids: Map<string, Box> }[] {
-  const apps: { name: string; ids: Map<string, Box> }[] = [];
+/** The smallest hit target on touch screens, in points (app/design/tokens.ts, `hit`). */
+const HIT = 44;
+/** Apps no wider than this are phones. */
+const PHONE_WIDTH = 500;
+const PRESSABLE = /^(Button|Tab|Switch|Radio|Combobox|Menuitem|Link|Checkbox)$/;
+
+type App = { name: string; ids: Map<string, Box>; width: number; small: { id: string; w: number; h: number }[] };
+
+/** Every app the trace opened: its views with a testID and where they sit in the window, its width, and its
+ * pressables smaller than a hit target (frame plus hitSlop). */
+export function parse(trace: string): App[] {
+  const apps: App[] = [];
   let parent = new Map<number, number>(), frame = new Map<number, Box>(), tid = new Map<number, string>();
+  let press = new Map<number, { role: string; slop: number[] }>();
   let name = "";
   const finish = () => {
     if (!name) return;
@@ -75,23 +93,37 @@ export function parse(trace: string): { name: string; ids: Map<string, Box> }[] 
       const b = abs(id);
       if (b && !ids.has(t)) ids.set(t, b);
     }
-    apps.push({ name, ids });
+    let width = 0;
+    for (const f of frame.values()) width = Math.max(width, f.w);
+    const small: App["small"] = [];
+    for (const [id, p] of press) {
+      const f = frame.get(id);
+      if (!f || !f.w || !f.h || !PRESSABLE.test(p.role)) continue;
+      const w = f.w + p.slop[1] + p.slop[3], h = f.h + p.slop[0] + p.slop[2];
+      if (w < HIT - 0.5 || h < HIT - 0.5) small.push({ id: tid.get(id) ?? `${p.role} (no testID: app/ui's)`, w, h });
+    }
+    apps.push({ name, ids, width, small });
   };
   for (const line of trace.split("\n")) {
     let m: RegExpMatchArray | null;
     if ((m = line.match(/── open\(([^)]*)\)/))) {
       finish();
       name = m[1];
-      parent = new Map(); frame = new Map(); tid = new Map();
+      parent = new Map(); frame = new Map(); tid = new Map(); press = new Map();
     } else if ((m = line.match(/Insert \{ parent: (\d+), child: (\d+)/))) {
       parent.set(+m[2], +m[1]);
     } else if ((m = line.match(/(?:Remove \{ parent: \d+, child: |Delete \{ id: )(\d+)/))) {
       parent.delete(+m[1]);
-      if (line.includes("Delete")) { frame.delete(+m[1]); tid.delete(+m[1]); }
+      if (line.includes("Delete")) { frame.delete(+m[1]); tid.delete(+m[1]); press.delete(+m[1]); }
     } else if ((m = line.match(/Frame \{ id: (\d+), x: (-?[\d.]+), y: (-?[\d.]+), w: ([\d.]+), h: ([\d.]+)/))) {
       frame.set(+m[1], { x: +m[2], y: +m[3], w: +m[4], h: +m[5] });
-    } else if ((m = line.match(/ViewProps \{ id: (\d+),.*?test_id: Some\("([^"]*)"\)/))) {
-      tid.set(+m[1], m[2]);
+    } else if ((m = line.match(/ViewProps \{ id: (\d+),/))) {
+      const id = +m[1];
+      const t = line.match(/test_id: Some\("([^"]*)"\)/);
+      if (t) tid.set(id, t[1]);
+      const s = line.match(/hit_slop: Edges \{ top: ([\d.]+)pt, right: ([\d.]+)pt, bottom: ([\d.]+)pt, left: ([\d.]+)pt/);
+      const r = line.match(/\brole: (\w+)/);
+      if (s && r) press.set(id, { role: r[1], slop: [+s[1], +s[2], +s[3], +s[4]] });
     }
   }
   finish();
@@ -117,6 +149,24 @@ if (import.meta.main) {
     const err = rule.check(all);
     if (err) { failed++; console.error(`✗ ${rule.name}: ${err}`); }
   }
-  console.log(`check-layout: ${apps.length} apps, ${seen} views with a testID, ${RULES.length + ACROSS.length} rules, ${failed} failures`);
+  // hit targets on phones, against the pages' baseline
+  const BASE = join(import.meta.dir, "hit-baseline.json");
+  let allowed: string[] = [];
+  let started = true;
+  try { allowed = JSON.parse(readFileSync(BASE, "utf8")).allowed; } catch { started = false; /* none yet: --update starts one */ }
+  const small = new Map<string, string>();
+  for (const app of apps.filter((a) => a.width && a.width <= PHONE_WIDTH))
+    for (const s of app.small) if (!small.has(s.id)) small.set(s.id, `${s.id} (${s.w} × ${s.h}, in ${app.name})`);
+  const over = [...small.keys()].filter((id) => !allowed.includes(id));
+  const fixed = allowed.filter((id) => !small.has(id));
+  if (process.argv.includes("--update")) {
+    const keep = (started ? allowed.filter((id) => small.has(id)) : [...small.keys()]).sort();
+    writeFileSync(BASE, JSON.stringify({ $comment: "Pages' pressables smaller than 44 x 44 on phones, from before the rule: this list only shrinks (scripts/check-layout.ts --update).", allowed: keep }, null, 2) + "\n");
+    console.log(`check-layout: hit baseline written (${keep.length})`);
+  } else {
+    for (const id of over) { failed++; console.error(`✗ hit target under ${HIT} × ${HIT} on a phone: ${small.get(id)} (use app/ui's components, or give it hitSlop through slop())`); }
+    if (fixed.length) { failed++; console.error(`✗ fewer small hit targets than scripts/hit-baseline.json lists, good: lock it in with --update (${fixed.join(", ")})`); }
+  }
+  console.log(`check-layout: ${apps.length} apps, ${seen} views with a testID, ${RULES.length + ACROSS.length + 1} rules, ${small.size} small hit targets on phones (${allowed.length} allowed), ${failed} failures`);
   process.exit(failed ? 1 : 0);
 }

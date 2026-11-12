@@ -9,8 +9,9 @@ import { acha, m1, mac, msg, ops, pay, r1, rem, SESSION, server, newLog, T0, tas
 // - `scripts/check-layout.ts` reads the `--trace` of a headless run and checks the layouts
 //   that tests can't see (the task board's columns side by side).
 //
-// Desktop at 1280×800, and the phone layout (bottom tabs, one page at a time) at 390×844 in Chinese.
-const SIZE = { width: 1280, height: 800 };
+// Desktop at 1280×800 as macOS (the pointer density), and the phone layout (bottom tabs, one page at a time, the
+// touch density) at 390×844 in Chinese.
+const SIZE = { width: 1280, height: 800, platform: "macos" as const };
 
 async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
   try {
@@ -127,17 +128,31 @@ const engineNet = (t: ReturnType<typeof task>) => server(newLog(), {
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, [t, ...tasks.slice(1)]);
 
-// The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
+// The component showcase (app/ui/showcase.tsx): every component and its states, light and dark, desktop (pointer
+// density) and phone (touch density), and its Tokens tab, every token listed from the generated file.
+const DESK_SHOW = { width: 1280, height: 1700, platform: "macos" as const };
+const PHONE_SHOW = { width: 390, height: 2600 };
 describe("showcase", () => {
   for (const scheme of ["light", "dark"] as const) {
     test(`showcase-${scheme}`, async () => {
-      const app = await open("./Showcase.tsx", { width: 1280, height: 1700, colorScheme: scheme });
+      const app = await open("./Showcase.tsx", { ...DESK_SHOW, colorScheme: scheme });
       await app.waitFor("id:showcase");
       await shot(app, `showcase-${scheme}`);
     });
+    test(`showcase-phone-${scheme}`, async () => {
+      const app = await open("./Showcase.tsx", { ...PHONE_SHOW, colorScheme: scheme });
+      await app.waitFor("id:showcase");
+      await shot(app, `showcase-phone-${scheme}`);
+    });
+    test(`showcase-tokens-${scheme}`, async () => {
+      const app = await open("./Showcase.tsx", { ...DESK_SHOW, height: 2000, colorScheme: scheme });
+      await app.press("id:showcase-page-tokens");
+      await app.waitFor("id:showcase-tokens");
+      await shot(app, `showcase-tokens-${scheme}`);
+    });
   }
   test("showcase-overlays", async () => {
-    const app = await open("./Showcase.tsx", { width: 1280, height: 1700 });
+    const app = await open("./Showcase.tsx", DESK_SHOW);
     await app.waitFor("id:showcase");
     await app.press("id:showcase-label-info");
     await app.waitFor("id:showcase-label-note");
@@ -536,7 +551,7 @@ const privNet = () => ({
 });
 
 describe("private", () => {
-  const privStart = (size = SIZE) => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...size, network: privNet() });
+  const privStart = (size: { width: number; height: number; platform?: "macos" } = SIZE) => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...size, network: privNet() });
 
   test("private-channel, its members panel, the inbox", async () => {
     const app = await privStart();
