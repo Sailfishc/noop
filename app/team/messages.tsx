@@ -171,7 +171,7 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           <If when={props.m.text.trim()}>
             <CopyButton id={props.m.id} text={props.m.text} />
           </If>
-          <RemindMenu team={props.team} messageId={props.m.id} onError={(e) => note.set(e)} />
+          <RemindMenu team={props.team} messageId={props.m.id} m={props.m} onError={(e) => note.set(e)} />
         </View>
         <If when={note()}>
           <Text testID={`msg-${props.m.id}-note`} style={{ fontSize: 12.5, color: colors.danger }}>{note()}</Text>

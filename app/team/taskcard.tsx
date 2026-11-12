@@ -12,6 +12,7 @@ import { EvidenceLine, EvidenceList } from "./evidence";
 import { Delegates, waitingFor } from "./delegates";
 import { MoveCard } from "./movecard";
 import { EngineCard } from "./enginecard";
+import { ReminderTag } from "./reminders";
 
 
 /** A run shows as a task card when people track it, or while it needs a person (an owner's OK, a decision, …). A
@@ -392,6 +393,15 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
               : [`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()]).filter(Boolean).join(" · ")}
           </Text>
         </View>
+      </If>
+      <If when={!task().redacted && task().reminders?.length ? task().reminders : null}>
+        {(rs) => (
+          <View testID={`task-${task().id}-reminders`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+            <Each of={rs()} key={(r) => r.id}>
+              {(r) => <ReminderTag team={t} r={r()} onError={(e) => error.set(e)} />}
+            </Each>
+          </View>
+        )}
       </If>
       <If when={props.detail ? "" : conclusion(task())}>
         {(line) => <Text testID={`task-${task().id}-summary`} style={{ fontSize: 13.5, lineHeight: 20, color: colors.text, numberOfLines: 2 }}>{line()}</Text>}

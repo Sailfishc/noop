@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { URL, SESSION, T0, zw, wl, mac, acha, pay, ops, msg, m1, r1, type Log, task, server, newLog } from "./fixtures";
+import { URL, SESSION, T0, zw, wl, mac, acha, pay, ops, msg, m1, r1, type Log, task, server, newLog, rem } from "./fixtures";
 
 describe("team sign in", () => {
   test("an invite link: name and @handle, then the workspace", async () => {
@@ -1426,6 +1426,72 @@ describe("passing the ball", () => {
     expect(app.shows("id:trigger-readonly-trg_3")).toBe(true); // read-only unless switched off
     await app.press("id:trigger-limits-trg_3-info");
     await app.waitFor("text:每天最多 3 次"); // a PR is never skipped for an open task
+  });
+
+  test("a trigger's words and time can be changed", async () => {
+    const log = newLog();
+    const daily = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 2, created: T0, max_per_day: 10, skipped: 0, readonly: true };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [daily] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.press("id:trigger-edit-trg_1");
+    await app.press("id:trigger-edit-trg_1-repeat-every");
+    await app.clear("id:trigger-edit-trg_1-every");
+    await app.type("id:trigger-edit-trg_1-every", "30m");
+    await app.clear("id:trigger-edit-trg_1-text");
+    await app.type("id:trigger-edit-trg_1-text", "汇总告警和慢查询");
+    await app.press("id:trigger-edit-trg_1-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ trigger: "trg_1", text: "汇总告警和慢查询", repeat: "30m", when: "" });
+    await app.waitFor("text:汇总告警和慢查询");
+    expect(app.shows("id:trigger-edit-trg_1-save")).toBe(false);
+  });
+
+  test("a repeating reminder for an agent: on its task card, paused and cancelled there; the ⏰ message stops it; the channel lists it", async () => {
+    const log = newLog();
+    const r = rem();
+    const t1 = task({ id: "T-0001", state: "done", tracked: true, title: "汇报 MR 进展", created_by: "u_1", reminders: [r] });
+    const fired = msg({ id: "msg_9", seq: 3, thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: `⏰ @acha ${r.text}` });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log, { __reminders: [r] }, [t1]),
+      [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1, fired] } },
+    } });
+    await app.waitFor("id:reminder-tag-rem_1");
+    expect(app.shows("text:/每 10 分钟 · 下次/")).toBe(true); // on the card even when the task is done
+    await app.press("id:reminder-tag-rem_1");
+    await app.waitFor("text:/自动结束/"); // when it stops by itself, on top of its menu
+    await app.press("id:reminder-tag-rem_1-pause");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ reminder: "rem_1", paused: true });
+    await app.waitFor("text:每 10 分钟 · 已暂停");
+
+    await app.press("id:channel-members");
+    await app.waitFor("id:temporary-rem_1"); // the channel's 临时 duties
+    await app.press("id:channel-members");
+
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:msg-msg_9");
+    await app.press("id:remind-msg_9");
+    await app.press("id:remind-msg_9-stop");
+    await app.waitUntil(() => log.acts.includes("rem_1 cancel"));
+  });
+
+  test("a scheduled repeating reminder in 待你决定 can be paused", async () => {
+    const log = newLog();
+    let list = [rem({ target: { kind: "user", id: "u_1" }, by_agent: null, repeat: "daily", text: "交日报" })];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log),
+      [`GET ${URL}/api/v1/reminders`]: () => ({ body: { reminders: list } }),
+      [`PATCH ${URL}/api/v1/reminders/*`]: (q: { body?: string | null }) => { list = [{ ...list[0]!, paused: JSON.parse(q.body!).paused }]; log.patches.push(JSON.parse(q.body!)); return { body: list[0] }; },
+    } });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:reminder-rem_1");
+    expect(app.shows("text:/每天 · 下次 .* · .*自动结束/")).toBe(true);
+    await app.press("id:reminder-rem_1-pause");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ paused: true });
+    await app.waitFor("text:/每天 · 已暂停/");
+    expect(app.shows("text:恢复")).toBe(true);
   });
 
   test("a duty: its triggers in one group with how the week went, one switch pauses them all, its history", async () => {

@@ -23,7 +23,7 @@ const remindersSchema = `
 CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, by_user TEXT NOT NULL, by_agent TEXT,
   target_kind TEXT NOT NULL, target_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_id TEXT, message_id TEXT,
   text TEXT NOT NULL, due INTEGER NOT NULL, repeat TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
-  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0, until INTEGER);
+  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0, until INTEGER, paused INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders (done, due);
 `
 
@@ -117,10 +117,11 @@ type reminderView struct {
 	Seen      *int64  `json:"seen"`            // the last time its person dismissed it
 	Done      bool    `json:"done"`            // nothing more scheduled
 	Until     *int64  `json:"until,omitempty"` // it stops by itself after this (an agent's interval reminder)
+	Paused    bool    `json:"paused"`          // a repeating one, on hold: it does not go off, and until keeps counting
 }
 
 const reminderCols = `id, by_user, by_agent, target_kind, target_id, channel_id, thread_id, message_id, text, due, repeat, created,
-	fired, seen, done, until`
+	fired, seen, done, until, paused`
 
 func scanReminders(rows *sql.Rows, err error) []reminderView {
 	if err != nil {
@@ -131,7 +132,7 @@ func scanReminders(rows *sql.Rows, err error) []reminderView {
 	for rows.Next() {
 		var r reminderView
 		if err := rows.Scan(&r.ID, &r.By, &r.ByAgent, &r.Target.Kind, &r.Target.ID, &r.ChannelID, &r.ThreadID, &r.MessageID, &r.Text,
-			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done, &r.Until); err != nil {
+			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done, &r.Until, &r.Paused); err != nil {
 			panic(err)
 		}
 		out = append(out, r)
@@ -516,13 +517,42 @@ func oneLine(s string) string {
 	return truncRunes(s, 80)
 }
 
-// remindersChanged tells the people concerned (who set it, who gets it) to look again.
+// remindersChanged tells the people concerned (who set it, who gets it) to look again. One that brings an agent back
+// is also the channel's (its 临时 duties) and its task's (the ⏰ on the card).
 func (h *Hub) remindersChanged(r reminderView) {
 	b, _ := json.Marshal(obj{"type": "reminder", "reminder": r})
 	h.socks.send("u:"+r.By, b)
 	if r.Target.Kind == "user" && r.Target.ID != r.By {
 		h.socks.send("u:"+r.Target.ID, b)
 	}
+	if r.Target.Kind == "agent" && r.Repeat != "" {
+		h.broadcastChannel(r.ChannelID, obj{"type": "channel_reminder", "reminder": r})
+		if r.ThreadID != nil {
+			var id string
+			if h.db.QueryRow("SELECT id FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? ORDER BY created DESC LIMIT 1", *r.ThreadID, r.Target.ID).Scan(&id) == nil {
+				h.taskChanged(id)
+			}
+		}
+	}
+}
+
+// taskReminders: the repeating reminders that bring t's agent back to t's thread (the ⏰ on its card), still on.
+func (h *Hub) taskReminders(t taskView) []reminderView {
+	return scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE done = 0 AND repeat != ''
+		AND target_kind = 'agent' AND target_id = ? AND thread_id = ? ORDER BY due`, t.AgentID, t.ThreadID))
+}
+
+// mayStop: who may pause or cancel it. One for a person: who set it and who gets it. One for an agent, as with its
+// triggers: who set it, the agent's owner (its computer and quota) and an admin, while they can read the channel.
+func (h *Hub) mayStop(r reminderView, me string) bool {
+	if r.By == me || (r.Target.Kind == "user" && r.Target.ID == me) {
+		return true
+	}
+	if r.Target.Kind != "agent" || !h.userCanRead(me, r.ChannelID) {
+		return false
+	}
+	a, ok := h.agent(r.Target.ID)
+	return (ok && a.OwnerID == me) || h.isAdmin(me)
 }
 
 // ---------------------------------------------------------------- firing
@@ -538,6 +568,14 @@ func (h *Hub) fireReminders() {
 		next, done := nextDue(time.UnixMilli(r.Due).In(now.Location()), r.Repeat, now), r.Repeat == ""
 		if r.Until != nil && next.UnixMilli() > *r.Until {
 			done = true
+		}
+		if r.Paused { // on hold: its times pass without it, and it still ends on time
+			h.must(h.db.Exec("UPDATE reminders SET due = ?, done = ? WHERE id = ?", next.UnixMilli(), done, r.ID))
+			if done {
+				r, _ = h.reminder(r.ID)
+				h.remindersChanged(r)
+			}
+			continue
 		}
 		every := interval(r.Repeat) > 0
 		if every && r.Target.Kind == "agent" && r.ThreadID != nil && h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?
@@ -625,9 +663,19 @@ func (h *Hub) myReminder(w http.ResponseWriter, q *request) (reminderView, bool)
 	return r, true
 }
 
-// v1ReminderDelete: cancel it (whoever set it or gets it).
+// stoppable: the reminder in the path, if this person may pause or cancel it (mayStop).
+func (h *Hub) stoppable(w http.ResponseWriter, q *request) (reminderView, bool) {
+	r, ok := h.reminder(q.r.PathValue("id"))
+	if !ok || !h.mayStop(r, q.who.userID) {
+		errJSON(w, 404, "not found")
+		return r, false
+	}
+	return r, true
+}
+
+// v1ReminderDelete: cancel it (mayStop).
 func (h *Hub) v1ReminderDelete(w http.ResponseWriter, q *request) {
-	r, ok := h.myReminder(w, q)
+	r, ok := h.stoppable(w, q)
 	if !ok {
 		return
 	}
@@ -635,6 +683,59 @@ func (h *Hub) v1ReminderDelete(w http.ResponseWriter, q *request) {
 	r.Done = true
 	h.remindersChanged(r)
 	writeJSON(w, 200, obj{"ok": true})
+}
+
+// v1ReminderPatch: {paused}: hold a repeating one, or let it go on (mayStop). A reminder's words and times are not
+// changed: cancel it and set another.
+func (h *Hub) v1ReminderPatch(w http.ResponseWriter, q *request) {
+	r, ok := h.stoppable(w, q)
+	if !ok {
+		return
+	}
+	var b struct {
+		Paused *bool `json:"paused"`
+	}
+	if q.json(&b) != nil || b.Paused == nil {
+		errJSON(w, 400, "paused: true or false")
+		return
+	}
+	if problem := h.setPaused(r, *b.Paused); problem != "" {
+		errJSON(w, 409, problem)
+		return
+	}
+	r, _ = h.reminder(r.ID)
+	writeJSON(w, 200, r)
+}
+
+// setPaused holds a repeating reminder or lets it go on; "" or why not.
+func (h *Hub) setPaused(r reminderView, paused bool) string {
+	if r.Done {
+		return "这个提醒已经结束了"
+	}
+	if r.Repeat == "" {
+		return "只有重复的提醒能暂停；一次性的取消就好"
+	}
+	h.must(h.db.Exec("UPDATE reminders SET paused = ? WHERE id = ?", paused, r.ID))
+	r, _ = h.reminder(r.ID)
+	h.remindersChanged(r)
+	return ""
+}
+
+// v1ChannelReminders: the repeating reminders that bring an agent back in a channel (?channel=…): its 临时 duties,
+// next to its triggers, for its members.
+func (h *Hub) v1ChannelReminders(w http.ResponseWriter, q *request) {
+	c, ok := h.channel(q.query("channel"))
+	if !ok || !h.canRead(q.who, c.ID) {
+		errJSON(w, 404, "没有这个频道")
+		return
+	}
+	if !h.memberOrAdmin(c.ID, q.who.userID) {
+		errJSON(w, 403, "先加入这个频道")
+		return
+	}
+	rs := scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE channel_id = ? AND done = 0 AND repeat != ''
+		AND target_kind = 'agent' ORDER BY due LIMIT 200`, c.ID))
+	writeJSON(w, 200, obj{"reminders": rs})
 }
 
 // v1ReminderSeen: its person dealt with it; with {when}, remind again then (once).
@@ -767,6 +868,9 @@ func (h *Hub) reminderLine(r reminderView, a agentView) string {
 	if r.Until != nil {
 		line += "  until " + time.UnixMilli(*r.Until).In(loc).Format("2006-01-02 15:04")
 	}
+	if r.Paused {
+		line += "  paused"
+	}
 	set := "you"
 	if r.ByAgent == nil || *r.ByAgent != a.ID {
 		set = "@" + r.By
@@ -798,13 +902,23 @@ func (h *Hub) v1AgentReminders(w http.ResponseWriter, q *request) {
 // v1AgentRemindCancel: `remi remind cancel ID…` or `remi remind cancel --here` (the repeating and scheduled ones for
 // the agent itself in this task's thread). Only ones remi reminders lists.
 func (h *Hub) v1AgentRemindCancel(w http.ResponseWriter, q *request) {
+	h.agentRemindAct(w, q, "cancel")
+}
+
+// v1AgentRemindPause, v1AgentRemindResume: `remi remind pause|resume ID…|--here`, repeating ones only.
+func (h *Hub) v1AgentRemindPause(w http.ResponseWriter, q *request) { h.agentRemindAct(w, q, "pause") }
+func (h *Hub) v1AgentRemindResume(w http.ResponseWriter, q *request) {
+	h.agentRemindAct(w, q, "resume")
+}
+
+func (h *Hub) agentRemindAct(w http.ResponseWriter, q *request, act string) {
 	t, a, ok := h.reader(w, q)
 	if !ok {
 		return
 	}
 	words := strings.Fields(string(q.body))
 	if len(words) == 0 {
-		errJSON(w, 400, "说一下取消哪个：remi remind cancel ID（remi reminders 里看），或 remi remind cancel --here")
+		errJSON(w, 400, "说一下是哪个：remi remind "+act+" ID（remi reminders 里看），或 remi remind "+act+" --here")
 		return
 	}
 	mine := map[string]reminderView{}
@@ -815,7 +929,7 @@ func (h *Hub) v1AgentRemindCancel(w http.ResponseWriter, q *request) {
 	for _, wd := range words {
 		if wd == "--here" {
 			for _, r := range mine {
-				if r.Target == (member{"agent", a.ID}) && r.ThreadID != nil && *r.ThreadID == t.ThreadID {
+				if r.Target == (member{"agent", a.ID}) && r.ThreadID != nil && *r.ThreadID == t.ThreadID && (act == "cancel" || r.Repeat != "") {
 					stop = append(stop, r)
 				}
 			}
@@ -839,8 +953,18 @@ func (h *Hub) v1AgentRemindCancel(w http.ResponseWriter, q *request) {
 			continue
 		}
 		done[r.ID] = true
-		h.endReminder(r)
-		b.WriteString("cancelled " + h.reminderLine(r, a) + "\n")
+		switch act {
+		case "cancel":
+			h.endReminder(r)
+			b.WriteString("cancelled " + h.reminderLine(r, a) + "\n")
+		default:
+			if problem := h.setPaused(r, act == "pause"); problem != "" {
+				b.WriteString(r.ID + ": " + problem + "\n")
+				continue
+			}
+			r, _ = h.reminder(r.ID)
+			b.WriteString(map[string]string{"pause": "paused ", "resume": "resumed "}[act] + h.reminderLine(r, a) + "\n")
+		}
 	}
 	writeText(w, b.String())
 }

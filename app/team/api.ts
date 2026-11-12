@@ -141,6 +141,8 @@ export type Task = {
   calls?: Call[] | null;
   /** The tasks its agent delegated (remi delegate), oldest first. */
   delegates?: Delegate[] | null;
+  /** The repeating reminders that bring its agent back to its thread (the ⏰ on its card); older servers send none. */
+  reminders?: Reminder[] | null;
 };
 /** A task its agent delegated, as the parent lists it. */
 export type Delegate = { task: string; agent: string; state: string; status: string; redos?: number };
@@ -230,8 +232,17 @@ export type Message = {
 /** A reminder: set from a message ("remind me later"), by /remind, or by an agent (remi remind). */
 export type Reminder = {
   id: string; by: string; by_agent?: string | null; target: Member; channel_id: string; thread_id: string | null; message_id: string | null;
-  text: string; due: number; repeat: "" | "daily" | "weekdays" | "weekly"; created: number; fired: number | null; seen: number | null; done: boolean;
+  /** repeat: "" (once), daily, weekdays, weekly, or an interval ("10m", "2h"). */
+  text: string; due: number; repeat: string; created: number; fired: number | null; seen: number | null; done: boolean;
+  /** It stops by itself after this (an agent's interval reminder). */
+  until?: number | null;
+  /** A repeating one on hold: it does not go off; until keeps counting. */
+  paused?: boolean;
 };
+/** Who may pause or cancel it: who set it and who gets it; for an agent, also its owner and an admin (as triggers). */
+export const mayStopReminder = (r: Reminder, me: User | null, agent: Agent | undefined) =>
+  !!me && (me.id === r.by || (r.target.kind === "user" && r.target.id === me.id) ||
+    (r.target.kind === "agent" && (me.id === agent?.owner_id || me.role === "admin")));
 /** It went off and waits for this person. */
 export const reminderUp = (r: Reminder, meId: string | undefined) => r.target.kind === "user" && r.target.id === meId && !!r.fired && (!r.seen || r.seen < r.fired);
 /** A file on a message: what the server knows of it, and a link (15 minutes) to show or download it. */
@@ -549,6 +560,9 @@ export function createTeam(s: Session) {
       case "reminder":
         if (f.reminder) putReminder(f.reminder as Reminder);
         break;
+      case "channel_reminder": // one that brings an agent back here: the channel's 临时 duties
+        if (f.reminder) putChannelReminder(f.reminder as Reminder);
+        break;
       case "task":
         if (f.task) {
           putTasks([f.task as Task]);
@@ -619,7 +633,49 @@ export function createTeam(s: Session) {
   }
   async function cancelReminder(id: string) {
     const r = await api("DELETE", `/api/v1/reminders/${id}`);
-    if (r.ok) reminders.update((rs) => rs.filter((x) => x.id !== id));
+    if (r.ok) {
+      reminders.update((rs) => rs.filter((x) => x.id !== id));
+      channelReminders.update((x) => Object.fromEntries(Object.entries(x).map(([c, rs]) => [c, rs.filter((y) => y.id !== id)])));
+      onTaskCards(id, null);
+    }
+    return r;
+  }
+  /** The ⏰ on the task cards that show it, at once (their task frame follows). null: it is gone. */
+  function onTaskCards(id: string, r: Reminder | null) {
+    tasks.update((x) => Object.fromEntries(Object.entries(x).map(([k, t]) => [k, t.reminders?.some((y) => y.id === id)
+      ? { ...t, reminders: r ? t.reminders.map((y) => (y.id === id ? r : y)) : t.reminders.filter((y) => y.id !== id) } : t])));
+  }
+  /** Hold a repeating one, or let it go on. */
+  async function pauseReminder(id: string, paused: boolean) {
+    const r = await api("PATCH", `/api/v1/reminders/${id}`, { paused });
+    if (r.ok) {
+      if (untracked(reminders).some((x) => x.id === id)) putReminder(r.data as Reminder); // mine (an owner's pause is not)
+      putChannelReminder(r.data as Reminder);
+      onTaskCards(id, r.data as Reminder);
+    }
+    return r;
+  }
+  /** A channel's repeating reminders for agents (its 临时 duties), by channel. */
+  const channelReminders = signal<Record<string, Reminder[]>>({});
+  async function loadChannelReminders(channelId: string) {
+    const r = await api("GET", `/api/v1/reminders/channel?channel=${encodeURIComponent(channelId)}`);
+    if (r.ok) channelReminders.update((x) => ({ ...x, [channelId]: r.data.reminders as Reminder[] }));
+  }
+  function putChannelReminder(r: Reminder) {
+    if (r.target.kind !== "agent" || !r.repeat) return;
+    channelReminders.update((x) => {
+      if (!x[r.channel_id]) return x;
+      const rest = x[r.channel_id]!.filter((y) => y.id !== r.id);
+      return { ...x, [r.channel_id]: r.done ? rest : [...rest, r].sort((a, b) => a.due - b.due) };
+    });
+  }
+  /** The repeating reminder a ⏰ message came from: one for an agent in its thread, with its words. */
+  function reminderOfMessage(m: Message): Reminder | undefined {
+    if (m.author.kind !== "user" || !m.text.startsWith("⏰")) return undefined;
+    const thread = m.thread_id ?? m.id;
+    const known = [...Object.values(untracked(tasks)).filter((x) => x.thread_id === thread).flatMap((x) => x.reminders ?? []),
+      ...(untracked(channelReminders)[m.channel_id] ?? [])];
+    return known.find((r) => r.thread_id === thread && r.by === m.author.id && m.text.endsWith(r.text));
   }
 
   async function load() {
@@ -917,7 +973,8 @@ export function createTeam(s: Session) {
   const pauseDuty = (body: { channel_id: string; agent_id: string; duty: string; enabled: boolean }) => api("POST", "/api/v1/triggers/duty", body);
   /** A trigger with a check command is confirmed with the command as shown (409 when it changed meanwhile). */
   const confirmTrigger = (id: string, checkCmd?: string) => api("POST", `/api/v1/triggers/${id}/confirm`, checkCmd ? { check_cmd: checkCmd } : {});
-  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string }) => api("PATCH", `/api/v1/triggers/${id}`, body);
+  /** A schedule's repeat and time (when: "" with an interval is from now) and what it asks can change too. */
+  const patchTrigger = (id: string, body: { enabled?: boolean; max_per_day?: number; duty?: string; readonly?: boolean; check_cmd?: string; text?: string; repeat?: string; when?: string }) => api("PATCH", `/api/v1/triggers/${id}`, body);
   const deleteTrigger = (id: string) => api("DELETE", `/api/v1/triggers/${id}`);
   const saveTeamConfig = (repo: string) => api("PUT", "/api/v1/team/config", { repo });
 
@@ -978,7 +1035,7 @@ export function createTeam(s: Session) {
 
   return {
     preferences, savePreferences, digest, saveDigest, proposals, answerProposal, answerBatch, openDM, dmWith,
-    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
+    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, pauseReminder, channelReminders, loadChannelReminders, reminderOfMessage, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, triggerRuns, pauseDuty, logout, dispose, applyFrame, catchUp,
     userById, agentById,

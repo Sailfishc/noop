@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { acha, m1, mac, msg, ops, pay, r1, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
+import { acha, m1, mac, msg, ops, pay, r1, rem, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
 //
@@ -26,7 +26,8 @@ const tasks = [
     holder: { kind: "user", id: "u_2", why: "handoff_card" }, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" },
     handoffs: [{ id: "ho_1", to: "a_2", what: "加完索引后跑一遍压测，把 P99 贴回线程", message: "msg_5", at: Date.now(), state: "proposed" }],
     checkpoint: { at: T0, checked: T0 + 600_000, machine: "m_1", repos: [{ repo: "github.com/acme/pay", branch: "agent/T-0001-wip", commit: "a".repeat(40), head: "b".repeat(40) }] },
-    calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }] }),
+    calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }],
+    reminders: [rem()] }),
   task({ id: "T-0002", thread_id: "msg_t2", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
   task({ id: "T-0003", thread_id: "msg_t3", state: "review", tracked: true, title: "写周报", created_by: "u_1",
     pr: { provider: "github", url: "https://github.com/acme/pay/pull/3", number: 3, state: "open", checks: "success" } }),
@@ -169,6 +170,9 @@ describe("screens", () => {
     await app.waitFor("text:收到，在看"); // the reply, not the spinner
     expect(app.shows("id:task-T-0001-checkpoint-at")).toBe(true); // where it got to, a line with its ⓘ
     await shot(app, "thread");
+    await app.press("id:reminder-tag-rem_1 >> nth=1"); // the ⏰ on its card (in the thread): pause or cancel it there
+    await app.waitFor("id:reminder-tag-rem_1-pause");
+    await shot(app, "thread-reminder-menu");
   });
 
   test("thread-align: the align card, its criteria editable", async () => {
@@ -243,7 +247,7 @@ describe("screens", () => {
   });
 
   test("members", async () => {
-    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: { ...net(), [`GET ${URL}/api/v1/triggers?*`]: { body: { triggers: [
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: { ...net({ __reminders: [rem(), rem({ id: "rem_2", by_agent: null, repeat: "2h", text: "看一下告警有没有新的", paused: true })] }), [`GET ${URL}/api/v1/triggers?*`]: { body: { triggers: [
       { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总一下昨晚的告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 4, created: T0, max_per_day: 10, skipped: 2, skipped_run: 2, skip_reason: "busy", last_task: "T-0003" },
       { id: "trg_2", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "pr", text: "review 这个 PR", repo: "github.com/acme/pay", confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0, max_per_day: 10, skipped: 0 },
       { id: "trg_3", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "看主干最新一次 CI，红了就查原因", repeat: "daily", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 40, created: T0, max_per_day: 24, skipped: 0,
@@ -259,6 +263,10 @@ describe("screens", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_2");
     await shot(app, "members");
+    await app.scroll("id:channel-temporary", 900); // the channel's 临时 duties: reminders that bring an agent back
+    await app.waitFor("id:temporary-rem_2");
+    await shot(app, "members-temporary");
+    await app.scroll("id:channel-temporary", -900);
     await app.press("id:duty-trg_3-history");
     await app.waitFor("id:duty-trg_3-runs");
     await shot(app, "members-duty");

@@ -44,6 +44,8 @@ test("remi turns each command into the right request", async () => {
   await remi("reminders");
   await remi("remind", "cancel", "rem_1", "rem_2");
   await remi("remind", "cancel", "--here");
+  await remi("remind", "pause", "--here");
+  await remi("remind", "resume", "rem_1");
   const usage = await remi("bogus");
   server.stop(true);
   rmSync(W, { recursive: true, force: true });
@@ -55,7 +57,10 @@ test("remi turns each command into the right request", async () => {
     "POST /api/v1/agent/remind", "POST /api/v1/agent/handoff", "POST /api/v1/agent/ask", "POST /api/v1/agent/submit",
     "GET /api/v1/agent/who", "POST /api/v1/agent/delegate", "POST /api/v1/agent/propose",
     "GET /api/v1/agent/reminders", "POST /api/v1/agent/remind/cancel", "POST /api/v1/agent/remind/cancel",
+    "POST /api/v1/agent/remind/pause", "POST /api/v1/agent/remind/resume",
   ]);
+  expect(seen[19]).toMatchObject({ body: "--here" });
+  expect(seen[20]).toMatchObject({ body: "rem_1" });
   expect(seen[17]).toMatchObject({ type: "text/plain; charset=utf-8", body: "rem_1 rem_2" });
   expect(seen[18]).toMatchObject({ body: "--here" }); // not a curl option
   expect(Object.fromEntries(new URLSearchParams(seen[15].body))).toEqual({ title: "主干 红了", why: "@ci 第 3 次失败 & 没人看", plan: "修好测试，主干变绿", key: "ci-main-red", urgent: "1" });
