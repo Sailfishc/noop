@@ -14,9 +14,13 @@ export function filePath(uri: string): string {
 }
 
 /** Someone the @ picker offers. */
-type Candidate = { kind: "agent" | "user"; id: string; handle: string; name: string; note: string; agent?: Agent };
+type Candidate = { kind: "agent" | "user"; id: string; handle: string; name: string; note: string; agent?: Agent; here?: boolean };
 
-/** What the people and agents of a channel the composer can @, best first: its agents, then its people, then everyone else. */
+/**
+ * Whom the composer can @ in a channel: its agents, then team-wide agents from elsewhere (an @ brings them in), then
+ * its people. People outside it are left out: a message reaches only the channel's members, so an @ would never get
+ * to them (and a private channel's words must not).
+ */
 function candidates(t: Team, channelId: string, query: string): Candidate[] {
   const c = t.channels().find((x) => x.id === channelId);
   const meId = t.me()?.id;
@@ -28,12 +32,11 @@ function candidates(t: Team, channelId: string, query: string): Candidate[] {
   const agents = t.agents()
     .filter((a) => (here(a) || a.dispatch === "team") && hit(a.handle, a.name))
     .sort((a, b) => Number(here(b)) - Number(here(a)))
-    .map((a): Candidate => ({ kind: "agent", id: a.id, handle: a.handle, name: a.name, agent: a,
-      note: [L(`${ownerName(a.owner_id)}’s agent`, `${ownerName(a.owner_id)}的 Agent`), here(a) ? a.description : L("joins this channel when called", "被 @ 时会加入这个频道")].filter(Boolean).join(" · ") }));
+    .map((a): Candidate => ({ kind: "agent", id: a.id, handle: a.handle, name: a.name, agent: a, here: here(a),
+      note: [L(`${ownerName(a.owner_id)}’s agent`, `${ownerName(a.owner_id)}的 Agent`), here(a) ? a.description : ""].filter(Boolean).join(" · ") }));
   const people = t.users()
-    .filter((u) => !u.disabled && u.id !== meId && hit(u.handle, u.name))
-    .sort((a, b) => Number(!!c && isMember(c, "user", b.id)) - Number(!!c && isMember(c, "user", a.id)))
-    .map((u): Candidate => ({ kind: "user", id: u.id, handle: u.handle, name: u.name, note: c && isMember(c, "user", u.id) ? "" : L("not in this channel", "不在这个频道") }));
+    .filter((u) => !u.disabled && u.id !== meId && !!c && isMember(c, "user", u.id) && hit(u.handle, u.name))
+    .map((u): Candidate => ({ kind: "user", id: u.id, handle: u.handle, name: u.name, note: "" }));
   return [...agents, ...people].slice(0, 8);
 }
 
@@ -45,6 +48,7 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
   );
   const head = (s: string) => <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.faint, paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2 }}>{s}</Text>;
   const firstUser = () => props.items.findIndex((c) => c.kind === "user");
+  const firstOther = () => props.items.findIndex((c) => c.kind === "agent" && !c.here);
   return (
     <View testID="mention-picker" role="menu" style={{ gap: 1, padding: 4, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, boxShadow: "0 6px 24px rgba(0,0,0,0.12)" }}>
       <If when={props.items.length} else={<Text style={{ padding: 10, fontSize: 13, color: colors.muted }}>{L("No one by that name", "没有找到")}</Text>}>
@@ -53,7 +57,8 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
             const st = () => (c().agent ? agentState(t, c().agent!) : null);
             return (
               <>
-                <If when={i() === 0 && c().kind === "agent"}>{head(L("AGENTS · THIS CHANNEL", "Agent · 本频道"))}</If>
+                <If when={i() === 0 && c().kind === "agent" && c().here}>{head(L("AGENTS · THIS CHANNEL", "Agent · 本频道"))}</If>
+                <If when={i() === firstOther()}>{head(L("OTHER AGENTS · JOIN WHEN CALLED", "其他 Agent · 被 @ 时加入"))}</If>
                 <If when={i() === firstUser()}>{head(L("PEOPLE", "人"))}</If>
                 <View
                   role="menuitem"

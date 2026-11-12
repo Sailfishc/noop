@@ -864,10 +864,22 @@ describe("channel v2", () => {
     await app.waitFor("id:team-composer");
     await app.type("id:team-composer", "@ro");
     await app.waitFor("id:mention-roam");
-    expect(app.shows("text:/joins this channel when called/")).toBe(true);
+    expect(app.shows("text:/OTHER AGENTS · JOIN WHEN CALLED/")).toBe(true);
+    expect(app.shows("text:/AGENTS · THIS CHANNEL/")).toBe(false); // it isn't in this one
     await app.submit("id:team-composer");
     await app.type("id:team-composer", "看下");
     await app.waitFor("text:/To 游侠 · Codex · 张伟的 Mac, starts without confirmation, and it joins this channel/");
+  });
+
+  test("the picker offers only the channel's people: an @ never reaches someone outside it", async () => {
+    const lin = { ...wl, id: "u_3", handle: "linfang", name: "林芳", email: "lf@example.com" };
+    const net = { ...server(newLog()), [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl, lin] } } };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: net });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@");
+    await app.waitFor("id:mention-wanglei"); // in #支付后端
+    expect(app.shows("id:mention-linfang")).toBe(false); // not in it
+    expect(app.shows("text:/not in this channel/")).toBe(false);
   });
 
   test("an agent that can't take work says why: its runtime isn't logged in", async () => {
@@ -1599,7 +1611,7 @@ describe("private channels", () => {
     expect(log.patches[0]).toEqual({ private: false });
   });
 
-  test("私聊: the agents I may hand work are listed; the first message makes the chat, and needs no @", async () => {
+  test("私聊: my agents and my chats are listed, others' team-wide agents behind the +; the first message makes the chat, and needs no @", async () => {
     const log = newLog();
     const made: any[] = [];
     const chat = { id: "c_9", slug: "p-9f9f9f9f", name: "helper", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_3",
@@ -1610,11 +1622,15 @@ describe("private channels", () => {
       [`GET ${URL}/api/v1/channels/c_9/messages?*`]: () => ({ body: { messages: log.posts.map((p, i) => msg({ id: `msg_9${i}`, seq: i + 1, channel_id: "c_9", text: p.text })), more: false } }),
     }) });
     await app.waitFor("id:side-agent-acha");
-    expect(app.shows("id:side-agent-helper")).toBe(true); // 王磊's, takes the whole team's work
+    expect(app.shows("id:side-agent-helper")).toBe(false); // 王磊's: not listed until I start a chat with it
     expect(app.shows("id:side-agent-bei")).toBe(false); // 王磊's, his channels' only
-    expect(app.shows("text:/^王磊的 · /")).toBe(true);
-    await app.press("id:side-agent-helper");
+    await app.press("id:side-chat-new");
+    await app.waitFor("id:side-chat-new-helper"); // takes the whole team's work
+    expect(app.shows("id:side-chat-new-bei")).toBe(false);
+    await app.press("id:side-chat-new-helper");
     await app.waitFor("id:dm-draft-helper");
+    expect(app.shows("id:side-agent-helper")).toBe(true); // the chat being started
+    expect(app.shows("text:/^王磊的 · /")).toBe(true);
     expect(app.shows("text:私聊 · 运行在王磊的电脑上")).toBe(true);
     expect(made.length).toBe(0); // nothing made by opening it
     await app.type("id:team-composer", "整理一下菜谱");
