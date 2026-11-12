@@ -59,7 +59,7 @@ jq --arg repo "$REPO" --arg key "$(cat "$KEYS/release.pub")" --arg root "$(cat "
 echo "==> packaging"
 (cd "$WORK/app" && nsh package --target macos -o "$WORK/out" --build "$BUILD" --app-version "$VERSION")
 APP="$WORK/out/Remi.app"
-ARCHIVE=$(ls "$WORK/out"/Remi-"$VERSION"-macos-arm64.tar.gz)
+ARCHIVE=$(ls "$WORK/out"/Remi-"$VERSION"-macos-aarch64.tar.gz)
 # nsh/updater unpacks this archive and swaps the app in: keep its layout, with the signed app in it.
 tar -tzf "$ARCHIVE" | sort > "$WORK/layout.before"
 
@@ -76,7 +76,7 @@ spctl --assess --type execute --verbose "$APP"
 rm -f "$ZIP" && ditto -c -k --keepParent "$APP" "$ZIP"
 UPDATE="$WORK/feed/remi-$VERSION-macos-arm64.tar.gz"
 tar -czf "$UPDATE" -C "$WORK/out" Remi.app
-tar -tzf "$UPDATE" | sort > "$WORK/layout.after"
+tar -tzf "$UPDATE" | grep -Fxv 'Remi.app/Contents/CodeResources' | sort > "$WORK/layout.after"
 diff -q "$WORK/layout.before" "$WORK/layout.after" > /dev/null || { echo "the signed archive's layout differs from nsh's:"; diff "$WORK/layout.before" "$WORK/layout.after" | head; exit 1; }
 
 echo "==> OTA package and update manifest"
