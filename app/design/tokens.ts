@@ -19,8 +19,12 @@ export type Oklch = { l: number; c: number; h: number };
 
 /** The three color inputs. */
 export const input = {
-  /** The warm gray every surface and text is made of: a hue toward yellow-red and a whisper of chroma. */
-  base: { h: 75, c: 0.006 },
+  /**
+   * The warm gray every surface and text is made of: a hue toward yellow-red and a whisper of chroma, per look.
+   * `c` tints the surfaces, `fg` the text. Light keeps it near neutral (gray-white with a faint warm cast, not paper);
+   * dark carries a little more, where warmth reads as gray rather than beige.
+   */
+  base: { h: 75, c: { light: 0.003, dark: 0.006 }, fg: { light: 0.003, dark: 0.012 } },
   /** The attention color, amber, taken from the logo's cup: the only accent, used for "waiting on you" only. */
   attention: { h: 66, c: 0.15 },
   /** How far apart the surface levels and the text strengths sit: 1 is the default; more is a high-contrast theme. */

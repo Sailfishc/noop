@@ -132,11 +132,12 @@ function palette(mode: Mode): Record<string, Color> {
   const { base, attention, contrast } = src.input;
   const step = src.ladder[mode];
   const look = mode === "light" ? "light" : "dark";
-  const at = (l: number) => oklch(l, base.c, base.h);
+  const warm = base.c[look];
+  const at = (l: number) => oklch(l, warm, base.h);
   // surface levels spread around the page by the contrast
   const lv = (k: keyof typeof step) => step.page + (step[k] - step.page) * contrast;
   const fgL = step.fg;
-  const fg = solid(oklch(fgL, base.c * 2, base.h));
+  const fg = solid(oklch(fgL, base.fg[look], base.h));
   const s = src.strength;
   const of = (a: number) => ({ rgb: fg.rgb, a: Math.min(1, a * contrast) });
   const markL = src.markLightness[look];
@@ -161,20 +162,20 @@ function palette(mode: Mode): Record<string, Color> {
     hairline: of(s.hairline),
     edge: of(s.edge),
     track: of(s.track),
-    knob: solid(look === "light" ? WHITE : oklch(0.98, base.c, base.h)),
+    knob: solid(look === "light" ? WHITE : oklch(0.98, warm, base.h)),
     focus: of(s.focus),
     focusHalo: of(s.focusHalo),
     primary: solid(fg.rgb),
     onPrimary: solid(at(look === "light" ? 1 : step.page)),
     attention: amber,
     attentionTint: tint(amber),
-    onAttention: solid(look === "light" ? WHITE : oklch(0.2, base.c, base.h)),
+    onAttention: solid(look === "light" ? WHITE : oklch(0.2, warm, base.h)),
     danger: mark(src.status.danger.h, src.status.danger.c),
     ok: mark(src.status.ok.h, src.status.ok.c),
     info: mark(src.status.info.h, src.status.info.c),
     link: mark(src.status.info.h, src.status.info.c),
     scrim: { rgb: BLACK, a: src.scrim[look] },
-    onIdentity: solid(look === "light" ? WHITE : oklch(0.2, base.c, base.h)),
+    onIdentity: solid(look === "light" ? WHITE : oklch(0.2, warm, base.h)),
   };
   out.dangerTint = tint(out.danger);
   out.okTint = tint(out.ok);
