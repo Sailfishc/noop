@@ -59,6 +59,11 @@ export function dueText(r: Reminder): string {
   return r.repeat ? `${repeatLabel(r.repeat)} · ${L("next", "下次")} ${when}` : when;
 }
 
+/** "11/13 10:02 自动结束": when one stops by itself (an agent's interval reminder), or "". */
+export function untilText(r: Reminder): string {
+  return r.until ? L(`ends by itself ${time(r.until)}`, `${time(r.until)} 自动结束`) : "";
+}
+
 /** A repeating reminder for an agent, small, where it shows up (a task card, the channel's 临时 duties): its next
  * time, grey while paused, and a menu to pause, resume or cancel it for whoever may. */
 export function ReminderTag(props: { team: Team; r: Reminder; onError?: (e: string) => void }) {
@@ -69,6 +74,7 @@ export function ReminderTag(props: { team: Team; r: Reminder; onError?: (e: stri
   return (
     <If when={may()} else={<Tag testID={`reminder-tag-${id()}`} label={`⏰ ${dueText(props.r)}`} />}>
       <TagMenu testID={`reminder-tag-${id()}`} icon="bell" tone={props.r.paused ? "muted" : "accent"} label={dueText(props.r)}>
+        <If when={untilText(props.r)}>{(s) => <MenuHeading text={s()} />}</If>
         <If when={props.r.paused} else={<MenuRow testID={`reminder-tag-${id()}-pause`} icon="pause" label={L("Pause", "暂停")} onSelect={async () => done(await t.pauseReminder(id(), true))} />}>
           <MenuRow testID={`reminder-tag-${id()}-resume`} icon="play" label={L("Resume", "恢复")} onSelect={async () => done(await t.pauseReminder(id(), false))} />
         </If>
@@ -165,7 +171,7 @@ function ReminderCard(props: { team: Team; r: Reminder; up?: boolean; onOpen: ()
       <View role="button" onPress={props.onOpen} hoverStyle={{ opacity: 0.8 }} style={{ gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           <Icon name="bell" size={13} tint={props.up ? colors.accent : colors.muted} />
-          <Text style={{ fontSize: 12.5, color: colors.muted }}>{props.up ? time(props.r.fired!) : dueText(props.r)}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.muted }}>{props.up ? time(props.r.fired!) : [dueText(props.r), untilText(props.r)].filter(Boolean).join(" · ")}</Text>
           <Text style={{ fontSize: 12.5, color: colors.faint, numberOfLines: 1, flexShrink: 1 }}>#{channel()} · {who()}</Text>
         </View>
         <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.text }}>{props.r.text}</Text>

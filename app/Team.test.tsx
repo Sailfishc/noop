@@ -1459,6 +1459,7 @@ describe("passing the ball", () => {
     await app.waitFor("id:reminder-tag-rem_1");
     expect(app.shows("text:/每 10 分钟 · 下次/")).toBe(true); // on the card even when the task is done
     await app.press("id:reminder-tag-rem_1");
+    await app.waitFor("text:/自动结束/"); // when it stops by itself, on top of its menu
     await app.press("id:reminder-tag-rem_1-pause");
     await app.waitUntil(() => log.patches.length === 1);
     expect(log.patches[0]).toEqual({ reminder: "rem_1", paused: true });
@@ -1485,7 +1486,7 @@ describe("passing the ball", () => {
     } });
     await app.press("id:open-inbox");
     await app.waitFor("id:reminder-rem_1");
-    expect(app.shows("text:/每天 · 下次 /")).toBe(true);
+    expect(app.shows("text:/每天 · 下次 .* · .*自动结束/")).toBe(true);
     await app.press("id:reminder-rem_1-pause");
     await app.waitUntil(() => log.patches.length === 1);
     expect(log.patches[0]).toEqual({ paused: true });
