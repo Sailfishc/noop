@@ -166,7 +166,7 @@ func (h *Hub) v1AgentSay(w http.ResponseWriter, q *request) {
 		errJSON(w, 429, "5 分钟内只能说一次；结果在最后一并报告")
 		return
 	}
-	m := h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, trimmed(b.Text, 2000))
+	m := h.insertTaskMessage(t, &t.ThreadID, member{"agent", a.ID}, trimmed(b.Text, 2000))
 	writeText(w, "said: msg="+m.ID+"\n")
 }
 

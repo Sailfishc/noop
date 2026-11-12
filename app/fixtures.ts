@@ -165,6 +165,11 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`GET ${URL}/api/v1/updates?*`]: { body: { messages: [], more: false } },
     [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [m1], more: false } },
     [`GET ${URL}/api/v1/channels/c_2/messages?*`]: { body: { messages: [], more: false } },
+    [`GET ${URL}/api/v1/channels/*/outputs`]: (r: { url: string }) => {
+      const cid = r.url.match(/channels\/([^/]+)\/outputs/)![1];
+      const outs = [...live.values()].filter((t) => t.channel_id === cid).flatMap((t) => (t.outputs ?? []).map((o: any) => ({ task_id: t.id, thread_id: t.thread_id, ...o })));
+      return { body: { outputs: outs } };
+    },
     [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
     [`POST ${URL}/api/v1/channels/*/messages`]: (r: { url: string; body?: string | null }) => {
       const b = JSON.parse(r.body!);
@@ -200,7 +205,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     [`PATCH ${URL}/api/v1/channels/c_1`]: (r: { body?: string | null }) => {
       const b = JSON.parse(r.body!);
       log.patches.push({ channel: b });
-      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, ""), conventions: b.conventions ?? "" } };
+      return { body: { ...pay, repo: String(b.repo ?? "").replace(/^https?:\/\//, ""), conventions: b.conventions ?? "", ...(b.tl !== undefined ? { tl: b.tl } : {}) } };
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },

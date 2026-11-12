@@ -3,8 +3,6 @@
   "allowed": [
     "agent-model-acha-default",
     "channel-members",
-    "channel-tab-chat",
-    "channel-tab-tasks",
     "settings-nav-account",
     "settings-nav-agents",
     "settings-nav-general",

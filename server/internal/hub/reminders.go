@@ -23,9 +23,25 @@ const remindersSchema = `
 CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, by_user TEXT NOT NULL, by_agent TEXT,
   target_kind TEXT NOT NULL, target_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_id TEXT, message_id TEXT,
   text TEXT NOT NULL, due INTEGER NOT NULL, repeat TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
-  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0, until INTEGER, paused INTEGER NOT NULL DEFAULT 0);
+  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0, until INTEGER, paused INTEGER NOT NULL DEFAULT 0,
+  checks INTEGER NOT NULL DEFAULT 0, no_change INTEGER NOT NULL DEFAULT 0, last_outcome TEXT NOT NULL DEFAULT '',
+  last_note TEXT NOT NULL DEFAULT '', last_task TEXT);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders (done, due);
 `
+
+const reminderRunsSchema = `
+CREATE TABLE IF NOT EXISTS reminder_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, reminder_id TEXT NOT NULL, at INTEGER NOT NULL,
+  outcome TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', task_id TEXT);
+CREATE INDEX IF NOT EXISTS reminder_runs_reminder ON reminder_runs (reminder_id, id);
+CREATE INDEX IF NOT EXISTS reminder_runs_task ON reminder_runs (task_id);
+`
+
+type reminderRunView struct {
+	At      int64  `json:"at"`
+	Outcome string `json:"outcome"`
+	Note    string `json:"note,omitempty"`
+	TaskID  string `json:"task_id,omitempty"`
+}
 
 const (
 	maxReminderText     = 500
@@ -102,26 +118,32 @@ func repeatText(repeat string) string {
 }
 
 type reminderView struct {
-	ID        string  `json:"id"`
-	By        string  `json:"by"`                 // the person it is set in the name of
-	ByAgent   *string `json:"by_agent,omitempty"` // the agent that set it, if one did
-	Target    member  `json:"target"`             // who is reminded
-	ChannelID string  `json:"channel_id"`
-	ThreadID  *string `json:"thread_id"`
-	MessageID *string `json:"message_id"`
-	Text      string  `json:"text"`
-	Due       int64   `json:"due"`    // the next time it fires (unix ms)
-	Repeat    string  `json:"repeat"` // "" | daily | weekdays | weekly | an interval: 10m, 2h
-	Created   int64   `json:"created"`
-	Fired     *int64  `json:"fired"`           // the last time it fired
-	Seen      *int64  `json:"seen"`            // the last time its person dismissed it
-	Done      bool    `json:"done"`            // nothing more scheduled
-	Until     *int64  `json:"until,omitempty"` // it stops by itself after this (an agent's interval reminder)
-	Paused    bool    `json:"paused"`          // a repeating one, on hold: it does not go off, and until keeps counting
+	ID          string            `json:"id"`
+	By          string            `json:"by"`                 // the person it is set in the name of
+	ByAgent     *string           `json:"by_agent,omitempty"` // the agent that set it, if one did
+	Target      member            `json:"target"`             // who is reminded
+	ChannelID   string            `json:"channel_id"`
+	ThreadID    *string           `json:"thread_id"`
+	MessageID   *string           `json:"message_id"`
+	Text        string            `json:"text"`
+	Due         int64             `json:"due"`    // the next time it fires (unix ms)
+	Repeat      string            `json:"repeat"` // "" | daily | weekdays | weekly | an interval: 10m, 2h
+	Created     int64             `json:"created"`
+	Fired       *int64            `json:"fired"`           // the last time it fired
+	Seen        *int64            `json:"seen"`            // the last time its person dismissed it
+	Done        bool              `json:"done"`            // nothing more scheduled
+	Until       *int64            `json:"until,omitempty"` // it stops by itself after this (an agent's interval reminder)
+	Paused      bool              `json:"paused"`          // a repeating one, on hold: it does not go off, and until keeps counting
+	Checks      int64             `json:"checks,omitempty"`
+	NoChange    int64             `json:"no_change,omitempty"`
+	LastOutcome string            `json:"last_outcome,omitempty"`
+	LastNote    string            `json:"last_note,omitempty"`
+	Runs        []reminderRunView `json:"runs,omitempty"`
+	lastTask    *string
 }
 
 const reminderCols = `id, by_user, by_agent, target_kind, target_id, channel_id, thread_id, message_id, text, due, repeat, created,
-	fired, seen, done, until, paused`
+	fired, seen, done, until, paused, checks, no_change, last_outcome, last_note, last_task`
 
 func scanReminders(rows *sql.Rows, err error) []reminderView {
 	if err != nil {
@@ -132,7 +154,7 @@ func scanReminders(rows *sql.Rows, err error) []reminderView {
 	for rows.Next() {
 		var r reminderView
 		if err := rows.Scan(&r.ID, &r.By, &r.ByAgent, &r.Target.Kind, &r.Target.ID, &r.ChannelID, &r.ThreadID, &r.MessageID, &r.Text,
-			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done, &r.Until, &r.Paused); err != nil {
+			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done, &r.Until, &r.Paused, &r.Checks, &r.NoChange, &r.LastOutcome, &r.LastNote, &r.lastTask); err != nil {
 			panic(err)
 		}
 		out = append(out, r)
@@ -444,10 +466,12 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 		return reminderView{}, 403, "先加入这个频道"
 	}
 	if thread != "" {
-		if r, ok := h.message(thread); !ok || r.ChannelID != c.ID {
+		if r, ok := h.message(thread); ok && r.ChannelID == c.ID {
+			if r.ThreadID != nil {
+				thread = *r.ThreadID
+			}
+		} else if h.count("SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND channel_id = ?", thread, c.ID) == 0 {
 			return reminderView{}, 400, "没有这个线程"
-		} else if r.ThreadID != nil {
-			thread = *r.ThreadID
 		}
 	}
 	if text == "" {
@@ -464,6 +488,23 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 	}
 	if target.Kind == "user" && target.ID != by && !h.isMember(c.ID, "user", target.ID) {
 		return reminderView{}, 403, "@" + who + " 不在这个频道"
+	}
+	if target.Kind == "agent" && byAgent == "" {
+		a, ok := h.agent(target.ID)
+		if !ok {
+			return reminderView{}, 404, "没有 @" + who
+		}
+		if !h.isMember(c.ID, "agent", a.ID) {
+			if c.Private && a.OwnerID != by {
+				return reminderView{}, 403, "@" + a.Handle + " 不在这个私有频道里：请频道成员先把它加进来"
+			}
+			if !h.mayBringAgent(by, a) {
+				return reminderView{}, 403, "@" + a.Handle + " 不在这个频道"
+			}
+		}
+		if a.Dispatch == "owner" && by != a.OwnerID {
+			return reminderView{}, 403, "@" + a.Handle + " 只接主人派的活"
+		}
 	}
 	if byAgent != "" && target.Kind == "agent" && target.ID != byAgent {
 		return reminderView{}, 400, "Agent 不能用提醒把事交给另一个 Agent：用 remi handoff @" + who + " 交给它的事（由人点一下确认）"
@@ -525,8 +566,10 @@ func (h *Hub) remindersChanged(r reminderView) {
 	if r.Target.Kind == "user" && r.Target.ID != r.By {
 		h.socks.send("u:"+r.Target.ID, b)
 	}
-	if r.Target.Kind == "agent" && r.Repeat != "" {
-		h.broadcastChannel(r.ChannelID, obj{"type": "channel_reminder", "reminder": r})
+	if r.Target.Kind == "agent" && (r.Repeat != "" || r.Checks > 0) {
+		if r.Repeat != "" {
+			h.broadcastChannel(r.ChannelID, obj{"type": "channel_reminder", "reminder": r})
+		}
 		if r.ThreadID != nil {
 			var id string
 			if h.db.QueryRow("SELECT id FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? ORDER BY created DESC LIMIT 1", *r.ThreadID, r.Target.ID).Scan(&id) == nil {
@@ -536,10 +579,79 @@ func (h *Hub) remindersChanged(r reminderView) {
 	}
 }
 
-// taskReminders: the repeating reminders that bring t's agent back to t's thread (the ⏰ on its card), still on.
+func (h *Hub) noteReminderRun(reminderID, outcome, note, taskID string) {
+	h.must(h.db.Exec("INSERT INTO reminder_runs (reminder_id, at, outcome, note, task_id) VALUES (?, ?, ?, ?, ?)",
+		reminderID, h.nowMs(), outcome, clip(oneLine(note), 120), nilIfEmpty(taskID)))
+	h.must(h.db.Exec(`DELETE FROM reminder_runs WHERE reminder_id = ? AND id NOT IN
+		(SELECT id FROM reminder_runs WHERE reminder_id = ? ORDER BY id DESC LIMIT ?)`, reminderID, reminderID, keepTriggerRuns))
+}
+
+func (h *Hub) reminderRuns(reminderID string, limit int) []reminderRunView {
+	rows, err := h.db.Query("SELECT at, outcome, note, COALESCE(task_id, '') FROM reminder_runs WHERE reminder_id = ? ORDER BY id DESC LIMIT ?", reminderID, limit)
+	if err != nil {
+		panic(err)
+	}
+	defer rows.Close()
+	out := []reminderRunView{}
+	for rows.Next() {
+		var r reminderRunView
+		if err := rows.Scan(&r.At, &r.Outcome, &r.Note, &r.TaskID); err != nil {
+			panic(err)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func (h *Hub) reminderRunEnded(t taskView, state, summary string) {
+	rows, err := h.db.Query("SELECT DISTINCT reminder_id FROM reminder_runs WHERE task_id = ? AND outcome = ?", t.ID, runRunning)
+	if err != nil {
+		panic(err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+	outcome := runSpoke
+	switch state {
+	case "nothing":
+		outcome = runNothing
+	case taskFailed, taskBlocked:
+		outcome = runFailed
+	}
+	note := clip(oneLine(summary), 120)
+	noChange := 0
+	if outcome == runNothing {
+		noChange = 1
+	}
+	for _, id := range ids {
+		h.must(h.db.Exec("UPDATE reminder_runs SET outcome = ?, note = ? WHERE task_id = ? AND reminder_id = ? AND outcome = ?",
+			outcome, note, t.ID, id, runRunning))
+		h.must(h.db.Exec("UPDATE reminders SET checks = checks + 1, no_change = no_change + ?, last_outcome = ?, last_note = ? WHERE id = ?",
+			noChange, outcome, note, id))
+		if r, ok := h.reminder(id); ok {
+			h.remindersChanged(r)
+		}
+	}
+}
+
+// taskReminders: the reminders on t's thread for t's agent: active repeating ones (the ⏰ on its card) and any that
+// checked the thread (the collapsible check summary in the thread).
 func (h *Hub) taskReminders(t taskView) []reminderView {
-	return scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE done = 0 AND repeat != ''
+	rs := scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE ((done = 0 AND repeat != '') OR checks > 0)
 		AND target_kind = 'agent' AND target_id = ? AND thread_id = ? ORDER BY due`, t.AgentID, t.ThreadID))
+	for i := range rs {
+		if rs[i].Checks > 0 {
+			rs[i].Runs = h.reminderRuns(rs[i].ID, showTriggerRuns)
+		}
+	}
+	return rs
 }
 
 // mayStop: who may pause or cancel it. One for a person: who set it and who gets it. One for an agent, as with its
@@ -578,18 +690,31 @@ func (h *Hub) fireReminders() {
 			continue
 		}
 		every := interval(r.Repeat) > 0
-		if every && r.Target.Kind == "agent" && r.ThreadID != nil && h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?
-			AND state IN (?, ?, ?)`, *r.ThreadID, r.Target.ID, taskPending, taskQueued, taskRunning) > 0 {
-			h.must(h.db.Exec("UPDATE reminders SET due = ?, done = ? WHERE id = ?", next.UnixMilli(), done, r.ID))
-			continue
+		if every && r.Target.Kind == "agent" {
+			busy := false
+			if r.ThreadID != nil {
+				busy = h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?
+					AND state IN (?, ?, ?)`, *r.ThreadID, r.Target.ID, taskPending, taskQueued, taskRunning) > 0
+			} else if r.lastTask != nil {
+				busy = h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE id = ? AND state IN (?, ?, ?)`,
+					*r.lastTask, taskPending, taskQueued, taskRunning) > 0
+			}
+			if busy {
+				h.must(h.db.Exec("UPDATE reminders SET due = ?, done = ? WHERE id = ?", next.UnixMilli(), done, r.ID))
+				continue
+			}
 		}
 		fired := now.UnixMilli()
 		if r.Target.Kind == "agent" {
-			m, ok := h.remindAgent(r)
+			th, taskID, ok := h.remindAgent(r)
 			if !ok {
 				done = true // its person left the channel, or the agent is gone: it stops
-			} else if every && r.ThreadID == nil {
-				h.must(h.db.Exec("UPDATE reminders SET thread_id = ? WHERE id = ?", m, r.ID))
+			} else {
+				h.noteReminderRun(r.ID, runRunning, "", taskID)
+				if every && r.ThreadID == nil && th != "" {
+					h.must(h.db.Exec("UPDATE reminders SET thread_id = ? WHERE id = ?", th, r.ID))
+				}
+				h.must(h.db.Exec("UPDATE reminders SET last_task = ? WHERE id = ?", nilIfEmpty(taskID), r.ID))
 			}
 		}
 		h.must(h.db.Exec("UPDATE reminders SET fired = ?, due = ?, done = ? WHERE id = ?", fired, next.UnixMilli(), done, r.ID))
@@ -608,22 +733,72 @@ func (h *Hub) otherAgent(text, self string) string {
 	return ""
 }
 
-// remindAgent @s the agent where the reminder was set, in its person's name; dispatch takes it from there. It
-// returns the message's id.
-func (h *Hub) remindAgent(r reminderView) (string, bool) {
+// remindAgent wakes the agent silently where the reminder was set, without posting a message in any person's name
+// (ADR 0003). It returns the thread id and task id.
+func (h *Hub) remindAgent(r reminderView) (string, string, bool) {
 	a, ok := h.agent(r.Target.ID)
 	if !ok || !h.isMember(r.ChannelID, "user", r.By) {
-		return "", false
+		return "", "", false
 	}
-	if c, ok := h.channel(r.ChannelID); !ok || c.Archived {
-		return "", false
+	c, ok := h.channel(r.ChannelID)
+	if !ok || c.Archived {
+		return "", "", false
 	}
 	if r.ByAgent != nil && h.otherAgent(r.Text, *r.ByAgent) != "" { // set before agents' reminders were checked for this
-		return "", false
+		return "", "", false
 	}
-	m := h.insertMessage(r.ChannelID, r.ThreadID, member{"user", r.By}, "⏰ @"+a.Handle+" "+r.Text)
-	h.onPosted(m, false)
-	return m.ID, true
+	if a.Dispatch == "owner" && r.By != a.OwnerID {
+		return "", "", false
+	}
+	joined := false
+	if !h.isMember(r.ChannelID, "agent", a.ID) {
+		if (c.Private && a.OwnerID != r.By) || !h.mayBringAgent(r.By, a) {
+			return "", "", false
+		}
+		h.addMember(r.ChannelID, member{"agent", a.ID})
+		h.channelChanged(r.ChannelID)
+		joined = true
+	}
+	fv := &firingView{Kind: "reminder", ID: r.ID, Text: r.Text}
+	if r.ThreadID != nil {
+		ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ? AND agent_id = ? ORDER BY num DESC LIMIT 1", *r.ThreadID, a.ID))
+		if len(ts) > 0 {
+			t := ts[0]
+			if t.State == taskClosed {
+				return "", "", false
+			}
+			switch {
+			case t.State == taskWaiting:
+				w := t.Wait
+				if w == nil {
+					w = &waitView{}
+				}
+				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "_silent": true})
+				h.wakeTask(t.ID, w, "timer", r.Text, "")
+			case t.State == taskRunning:
+				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "news": 1, "_silent": true})
+				if t.ClaimedBy != nil {
+					b, _ := json.Marshal(obj{"type": "steer", "task_id": t.ID})
+					h.socks.send("m:"+*t.ClaimedBy, b)
+				}
+				h.taskChanged(t.ID)
+			case t.State == taskPending || t.State == taskQueued:
+				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "_silent": true})
+				h.taskChanged(t.ID)
+			case stoppedStates[t.State]:
+				fv.PrevState = t.State
+				h.setTask(t.ID, map[string]any{"state": taskQueued, "step": "", "firing": jsonOrNil(fv), "_silent": true})
+				h.taskChanged(t.ID)
+			}
+			return *r.ThreadID, t.ID, true
+		}
+		m := messageView{ID: *r.ThreadID, ChannelID: r.ChannelID, Author: member{"user", r.By}, Text: r.Text}
+		id := h.createTaskWith(m, *r.ThreadID, a.ID, joined, false, taskOrigin{By: r.By, Reminder: r.ID, Firing: fv})
+		return *r.ThreadID, id, true
+	}
+	m := messageView{ID: newID("msg_"), ChannelID: r.ChannelID, Author: member{"user", r.By}, Text: r.Text}
+	id := h.createTaskWith(m, m.ID, a.ID, joined, false, taskOrigin{By: r.By, Reminder: r.ID, Held: r.Text, Firing: fv})
+	return m.ID, id, true
 }
 
 // ---------------------------------------------------------------- API
@@ -680,6 +855,7 @@ func (h *Hub) v1ReminderDelete(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.must(h.db.Exec("DELETE FROM reminders WHERE id = ?", r.ID))
+	h.must(h.db.Exec("DELETE FROM reminder_runs WHERE reminder_id = ?", r.ID))
 	r.Done = true
 	h.remindersChanged(r)
 	writeJSON(w, 200, obj{"ok": true})

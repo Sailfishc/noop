@@ -1,6 +1,7 @@
 import { Text, View, type JSX } from "nsh";
+import { Button } from "nsh/base";
 import { Noted } from "./noted";
-import { colors, radius, size, space, stroke } from "./theme";
+import { colors, focusRing, hovered, radius, size, slop, space, stroke } from "./theme";
 
 /**
  * A titled section on the raised surface (a settings group), its note behind the title's ⓘ; `right` at the title's
@@ -29,5 +30,22 @@ export function Card(props: { children: JSX.Element; tight?: boolean; flat?: boo
     <View testID={props.testID} style={{ gap: props.tight ? space.sm : space.md, padding: props.tight ? space.md : space.lg, borderRadius: radius.lg, borderWidth: stroke.hairline, borderColor: colors.hairline, backgroundColor: props.flat ? "transparent" : colors.raised }}>
       {props.children}
     </View>
+  );
+}
+
+/** A pressable header row inside a card (such as a task card's title row that opens the workspace panel). */
+export function CardHead(props: { label: string; onPress: () => void; testID?: string; children: JSX.Element }) {
+  return (
+    <Button
+      testID={props.testID}
+      accessibilityLabel={props.label}
+      onPress={props.onPress}
+      hitSlop={slop(size.control.sm)}
+      hoverStyle={hovered()}
+      focusStyle={focusRing("inset")}
+      style={{ minHeight: size.control.sm, flexDirection: "row", alignItems: "center", gap: space.md, borderRadius: radius.sm }}
+    >
+      {props.children}
+    </Button>
   );
 }

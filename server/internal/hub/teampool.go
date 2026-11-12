@@ -118,6 +118,9 @@ func (h *Hub) canTake(machineID, runtime string) bool {
 // pickable: whether machineID is the computer for this task now, as far as the agent's list goes: the one holding it,
 // or, for a task no computer holds, the first in the list that can take it (those above it cannot). Why not, else.
 func (h *Hub) pickable(t taskView, a agentView, machineID string) (bool, string) {
+	if h.convRunningBefore(t) {
+		return false, "同一段对话的上一句还在处理"
+	}
 	if hold := h.holder(t); hold != "" {
 		if hold != machineID {
 			return false, "这个任务在另一台电脑上进行，留在那台"

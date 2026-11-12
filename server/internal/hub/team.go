@@ -841,6 +841,7 @@ func (h *Hub) v1AgentDelete(w http.ResponseWriter, q *request) {
 		errJSON(w, 403, "forbidden")
 		return
 	}
+	h.clearAgentTL(a.ID)
 	h.must(h.db.Exec("DELETE FROM agents WHERE id = ?", a.ID))
 	h.must(h.db.Exec("DELETE FROM agent_machines WHERE agent_id = ?", a.ID))
 	h.must(h.db.Exec("DELETE FROM channel_members WHERE kind = 'agent' AND member_id = ?", a.ID))

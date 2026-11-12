@@ -109,6 +109,7 @@ await api("POST", `/api/v1/tasks/${askTask.id}/confirm`, wl.session);
 const claim2 = await api("POST", `/api/v1/tasks/${askTask.id}/claim`, token);
 const found = await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim2.json.read_token}` } })).text();
 check("asked by an outsider elsewhere, it finds nothing there", !found.includes("zebra"), found.slice(0, 160));
+await api("POST", `/api/v1/tasks/${askTask.id}/report`, token, { state: "review", summary: "没有找到", answer: true, run: claim2.json.task.runs });
 
 // 「我的偏好」 travel with the tasks their writer asks for; an agent's memory is read only by its owner, and a
 // private channel of someone else's leaves it alone.

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -63,4 +64,99 @@ func TestTaskOutputs(t *testing.T) {
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"pr": map[string]any{"provider": "github", "url": "https://github.com/acme/pay/pull/3", "number": 3, "state": "open", "checks": "pending"}})
 	os = e.task(id)["outputs"].([]any)
 	check(t, "the PR first", len(os) == 4 && os[0].(map[string]any)["kind"] == "pr" && os[0].(map[string]any)["title"] == "PR #3")
+}
+
+func TestMessageOutputs(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	// Plain untracked conversation answer carrying a file output attaches the output directly to the agent's message.
+	asTask := false
+	m := e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, map[string]any{"text": "@acha 出一份简短总结文档", "as_task": &asTask}).body
+	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+
+	r := e.do("POST", "/api/v1/tasks/"+id+"/outputs/file?name=summary.md", e.token, bytes.NewBufferString("# 总结 v1"))
+	check(t, "uploaded v1", r.status == 200, r)
+	fid := r.body["id"].(string)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/outputs/file?name=summary.md", e.token, bytes.NewBufferString("# 总结 v2"))
+	check(t, "uploaded v2", r.status == 200 && r.body["id"] == fid, r)
+
+	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "answer": true, "summary": "总结文档已生成", "run": 1})
+	check(t, "plain answer reported", r.status == 200, r)
+
+	msgs := e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, nil).body["messages"].([]any)
+	var reply map[string]any
+	for _, raw := range msgs {
+		msg := raw.(map[string]any)
+		if msg["text"] == "总结文档已生成" {
+			reply = msg
+			break
+		}
+	}
+	check(t, "top-level answer posted", reply != nil && reply["thread_id"] == nil, resp{raw: []byte(fmt.Sprint(msgs))})
+	outs, _ := reply["outputs"].([]any)
+	check(t, "output attached to answer message", len(outs) == 1, resp{raw: []byte(fmt.Sprint(reply))})
+	fo := outs[0].(map[string]any)
+	check(t, "output has version metadata", fo["id"] == fid && fo["version"] == float64(2) && fo["message_id"] == reply["id"], resp{raw: []byte(fmt.Sprint(fo))})
+	vers, _ := fo["versions"].([]any)
+	check(t, "two version entries", len(vers) == 2, resp{raw: []byte(fmt.Sprint(fo))})
+}
+
+func TestChannelOutputsAndTaskPlan(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	m := e.post(e.wl.session, "@acha 排查慢查询并出一份报告", "")
+	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+
+	// Runtime checklist plan updates in place on the task without posting chat messages.
+	r := e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{
+		"track": true,
+		"step":  "加索引",
+		"plan": []any{
+			map[string]any{"text": "排查慢查询", "status": "done"},
+			map[string]any{"text": "加索引", "status": "in_progress"},
+			map[string]any{"text": "压测验证", "status": "pending"},
+		},
+	})
+	check(t, "plan reported", r.status == 200, r)
+	tk := e.task(id)
+	plan, _ := tk["plan"].([]any)
+	check(t, "three plan items persisted", len(plan) == 3 &&
+		plan[0].(map[string]any)["status"] == "done" &&
+		plan[1].(map[string]any)["text"] == "加索引" &&
+		plan[1].(map[string]any)["status"] == "in_progress", resp{raw: []byte(fmt.Sprint(tk))})
+
+	// Upload a file output, report an external output and a PR, then finish.
+	r = e.do("POST", "/api/v1/tasks/"+id+"/outputs/file?name=bench.md", e.token, bytes.NewBufferString("# 压测结果"))
+	check(t, "file uploaded", r.status == 200, r)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{
+		"state":   "review",
+		"summary": "压测和 PR 已就绪",
+		"run":     1,
+		"outputs": []any{map[string]any{"kind": "external", "title": "火焰图", "service": "Perf", "external_id": "fg-1", "status": "ready", "url": "https://perf.example.com/1"}},
+		"pr":      map[string]any{"provider": "github", "url": "https://github.com/acme/pay/pull/8", "number": 8, "state": "open", "checks": "success"},
+	})
+	check(t, "task finished with outputs", r.status == 200, r)
+
+	// Channel files endpoint aggregates file, external, and PR outputs with thread_id and task_id.
+	co := e.do("GET", "/api/v1/channels/"+e.cid+"/outputs", e.ll.session, nil)
+	check(t, "channel outputs ok", co.status == 200, co)
+	list, _ := co.body["outputs"].([]any)
+	check(t, "three channel outputs aggregated", len(list) == 3, co)
+	kinds := map[string]bool{}
+	for _, raw := range list {
+		o := raw.(map[string]any)
+		kinds[o["kind"].(string)] = true
+		check(t, "carries task_id and thread_id", o["task_id"] == id && o["thread_id"] == m["id"], resp{raw: []byte(fmt.Sprint(o))})
+	}
+	check(t, "includes file, external, and pr", kinds["file"] && kinds["external"] && kinds["pr"], resp{raw: []byte(fmt.Sprint(list))})
+
+	// Private channel outputs return 404 to non-members (including admins not in the private channel).
+	priv := e.do("POST", "/api/v1/channels", e.wl.session, map[string]any{
+		"name":    "私有排查",
+		"private": true,
+		"members": []any{map[string]any{"kind": "agent", "id": e.aid}},
+	}).body["id"].(string)
+	check(t, "outsider gets 404 on private channel outputs", e.do("GET", "/api/v1/channels/"+priv+"/outputs", e.ll.session, nil).status == 404)
+	check(t, "non-member admin also gets 404", e.do("GET", "/api/v1/channels/"+priv+"/outputs", e.zw.session, nil).status == 404)
+	check(t, "member gets 200 on private channel outputs", e.do("GET", "/api/v1/channels/"+priv+"/outputs", e.wl.session, nil).status == 200)
 }

@@ -2,12 +2,12 @@
 import { Clipboard, Image, openUrl, signal, Text, View } from "nsh";
 import { TextView, type MarkdownExtension } from "nsh/base";
 import { L } from "../i18n";
-import { Avatar, colors, hovered, Icon, IconBtn, Link } from "../ui";
-import { type Attachment, type Mention, type Message, type Team } from "./api";
+import { Avatar, colors, FoldLine, hovered, Icon, IconBtn, Link, OutputRow } from "../ui";
+import { type Attachment, type Mention, type Message, type Output, type Team } from "./api";
 import { RemindMenu } from "./reminders";
 import { authorOf, RuntimeBadge, time } from "./ui";
 import { fileSize } from "./composer";
-import { TaskCard, TrackLink, shownAsTask } from "./taskcard";
+import { outputMeta, TaskCard, TrackLink, shownAsTask } from "./taskcard";
 
 /** @handles in a message: a custom node, shown in the accent color when it names someone. */
 const MENTION: MarkdownExtension[] = [{ name: "mention", pattern: "@[a-z][a-z0-9_-]{1,31}" }];
@@ -150,10 +150,15 @@ function CopyButton(props: { id: string; text: string }) {
   );
 }
 
-export function MessageRow(props: { team: Team; m: Message; onThread?: () => void; noTask?: boolean }) {
+const FOLD_LINES = 12;
+
+export function MessageRow(props: { team: Team; m: Message; onThread?: () => void; onOpenOutput?: (o: Output) => void; noTask?: boolean; flat?: boolean; foldable?: boolean; expanded?: boolean; onToggleExpand?: () => void }) {
   const a = () => authorOf(props.team, props.m.author);
   const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
   const note = signal("");
+  const lines = () => props.m.text.split("\n");
+  const canFold = () => !!props.foldable && props.m.author.kind === "agent" && lines().length > FOLD_LINES;
+  const shownText = () => (canFold() && !props.expanded ? lines().slice(0, FOLD_LINES).join("\n") : props.m.text);
   return (
     <View testID={`msg-${props.m.id}`} style={{ flexDirection: "row", gap: 10, paddingHorizontal: 16, paddingVertical: 8 }}>
       <Avatar name={a().name} agent={a().agent} />
@@ -174,10 +179,39 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           <Text testID={`msg-${props.m.id}-note`} style={{ fontSize: 12.5, color: colors.danger }}>{note()}</Text>
         </If>
         <If when={props.m.text.trim()}>
-          <MessageText text={props.m.text} mentions={props.m.mentions} />
+          <MessageText text={shownText()} mentions={props.m.mentions} />
+          <If when={canFold()}>
+            <FoldLine
+              testID={`expand-${props.m.id}`}
+              label={props.expanded ? L("Collapse", "收起") : L(`Show all (${lines().length} lines)`, `展开全文（共 ${lines().length} 行）`)}
+              open={!!props.expanded}
+              onToggle={() => props.onToggleExpand?.()}
+            />
+          </If>
         </If>
         <If when={props.m.attachments?.length ? props.m.id : null}>
           {(id) => <MessageFiles team={props.team} messageId={id()} />}
+        </If>
+        <If when={props.m.outputs?.length ? props.m.outputs : null}>
+          {(outs) => (
+            <View testID={`msg-outputs-${props.m.id}`} style={{ gap: 4, marginTop: 2, maxWidth: 480 }}>
+              <Each of={outs()} key={(o) => o.id}>
+                {(o) => {
+                  const meta = () => outputMeta(o());
+                  return (
+                    <OutputRow
+                      testID={`msg-output-${o().id}`}
+                      icon={meta().icon}
+                      title={o().title}
+                      meta={meta().meta}
+                      tone={meta().tone}
+                      onPress={() => props.onOpenOutput?.(o())}
+                    />
+                  );
+                }}
+              </Each>
+            </View>
+          )}
         </If>
         <If when={reactionGroups(props.team, props.m).length ? reactionGroups(props.team, props.m) : null}>
           {(groups) => (
@@ -195,10 +229,10 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
         </If>
         <If when={!props.noTask}>
           <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
-            {(task) => <If when={shownAsTask(task())} else={<TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} /></If>}
+            {(task) => <If when={shownAsTask(task())} else={props.flat ? undefined : <TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} onCardPress={props.onThread} /></If>}
           </Each>
         </If>
-        <If when={props.onThread}>
+        <If when={props.onThread && (!props.flat || !!props.m.reply_count || props.team.taskOfThread(props.m.id).some(shownAsTask))}>
           <Link testID={`thread-${props.m.id}`} icon="reply" tone={props.m.reply_count ? "default" : "faint"} onPress={() => props.onThread!()}
             label={props.m.reply_count ? L(`${props.m.reply_count} replies`, `${props.m.reply_count} 条回复`) : L("Reply in thread", "在线程里回复")} />
         </If>

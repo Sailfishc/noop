@@ -459,7 +459,8 @@ func (h *Hub) v1TriggerDelete(w http.ResponseWriter, q *request) {
 func (h *Hub) fire(t triggerView, extra string) string {
 	a, ok := h.agent(t.AgentID)
 	c, okc := h.channel(t.ChannelID)
-	if !ok || !okc || c.Archived || !h.isMember(c.ID, "user", t.CreatedBy) || !h.isMember(c.ID, "agent", a.ID) {
+	if !ok || !okc || c.Archived || !h.isMember(c.ID, "user", t.CreatedBy) || !h.isMember(c.ID, "agent", a.ID) ||
+		(a.Dispatch == "owner" && t.CreatedBy != a.OwnerID && (t.ConfirmedBy == nil || *t.ConfirmedBy != a.OwnerID)) {
 		h.must(h.db.Exec("UPDATE triggers SET enabled = 0 WHERE id = ?", t.ID))
 		return "off"
 	}
@@ -486,18 +487,15 @@ func (h *Hub) fire(t triggerView, extra string) string {
 		h.noteTriggerRun(t.ID, runSkipped, map[string]string{"busy": "上一个任务还没结束", "limit": "今天的次数到上限了"}[reason], "")
 		return "skipped"
 	}
-	text := "⚡ @" + a.Handle + " " + t.Text
+	text := t.Text
 	if extra != "" {
 		text += "\n\n" + extra
 	}
-	var id string
-	if t.Readonly { // a patrol: its message goes up only when the agent first speaks; untracked until it delivers something
-		m := messageView{ID: newID("msg_"), ChannelID: c.ID, Author: member{"user", t.CreatedBy}, Text: text}
-		id = h.createTaskWith(m, m.ID, a.ID, false, false, taskOrigin{Trigger: t.ID, Confirmed: true, Readonly: true, Held: text})
-	} else {
-		m := h.insertMessage(c.ID, nil, member{"user", t.CreatedBy}, text)
-		id = h.createTaskWith(m, m.ID, a.ID, false, true, taskOrigin{Trigger: t.ID, Confirmed: true})
-	}
+	m := messageView{ID: newID("msg_"), ChannelID: c.ID, Author: member{"user", t.CreatedBy}, Text: text}
+	id := h.createTaskWith(m, m.ID, a.ID, false, false, taskOrigin{
+		Trigger: t.ID, Confirmed: true, Readonly: t.Readonly, Held: text,
+		Firing: &firingView{Kind: "trigger", ID: t.ID, Text: text},
+	})
 	h.noteTriggerRun(t.ID, runRunning, "", id)
 	h.must(h.db.Exec("UPDATE triggers SET fired = ?, fires = fires + 1, last_task = ?, day = ?, day_fires = ?, skipped_run = 0, skip_reason = '' WHERE id = ?",
 		h.nowMs(), id, today, fires+1, t.ID))

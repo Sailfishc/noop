@@ -182,6 +182,7 @@ func (h *Hub) v1TaskMove(w http.ResponseWriter, q *request) {
 		m.At, m.Since = t.Move.At, t.Move.Since
 	}
 	h.setMove(t.ID, &m)
+	h.convDetach(t)
 	h.setTask(t.ID, map[string]any{"claimed_by": to, "session": "", "moves": t.Moves + 1, "state": taskQueued, "step": "", "news": 0, "failures": 0})
 	names := map[string]string{}
 	for _, id := range []string{from, to} {

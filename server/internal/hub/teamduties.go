@@ -84,9 +84,7 @@ func (h *Hub) dutyRunEnded(t taskView, state, summary string) {
 	outcome := runSpoke
 	switch state {
 	case "nothing":
-		if t.held != "" {
-			outcome = runNothing
-		}
+		outcome = runNothing
 	case taskFailed, taskBlocked:
 		outcome = runFailed
 	}
@@ -94,28 +92,38 @@ func (h *Hub) dutyRunEnded(t taskView, state, summary string) {
 		outcome, clip(oneLine(summary), 120), t.ID, runRunning))
 }
 
-// heldMessage: the first message of a patrol's thread as it will be posted (the run reads it before it is).
+// heldMessage: the prompt text of a quiet firing before any message is posted (the run reads it when claimed).
 func (h *Hub) heldMessage(t taskView) messageView {
 	return messageView{ID: t.ThreadID, ChannelID: t.ChannelID, Author: member{"user", t.CreatedBy}, Text: t.held,
 		Mentions: h.mentions(t.held), Attachments: []string{}, Created: t.Created, Reactions: []reaction{}}
 }
 
-// postHeld: something is about to be posted in this thread; if it is a patrol's whose first message waits, that goes
-// up now, under its id, in the name of the person who set the trigger up.
-func (h *Hub) postHeld(threadID string) {
-	var id, held, by, channelID string
-	if h.db.QueryRow("SELECT id, held, created_by, channel_id FROM tasks_v1 WHERE thread_id = ? AND held IS NOT NULL LIMIT 1", threadID).
-		Scan(&id, &held, &by, &channelID) != nil {
-		return
+// postFirstFiring: a quiet task (opened by a trigger or reminder without posting any person's message) speaks for the
+// first time. Its own words open the thread as the root message under threadID, never a fake user message (ADR 0003).
+func (h *Hub) postFirstFiring(channelID, threadID string, author member, text string) (messageView, bool) {
+	var id, mandateStr string
+	if h.db.QueryRow("SELECT id, COALESCE(mandate, '') FROM tasks_v1 WHERE thread_id = ? AND held IS NOT NULL LIMIT 1", threadID).
+		Scan(&id, &mandateStr) != nil {
+		return messageView{}, false
 	}
 	h.must(h.db.Exec("UPDATE tasks_v1 SET held = NULL WHERE thread_id = ?", threadID))
-	mentions, _ := json.Marshal(h.mentions(held))
-	h.must(h.db.Exec(`INSERT OR IGNORE INTO messages (id, channel_id, thread_id, author_kind, author_id, text, mentions, attachments, created)
-		VALUES (?, ?, NULL, 'user', ?, ?, ?, '[]', ?)`, threadID, channelID, by, held, string(mentions), h.nowMs()))
-	if m, ok := h.message(threadID); ok {
-		h.broadcastChannel(channelID, obj{"type": "message", "message": m})
+	mentions, _ := json.Marshal(h.mentions(text))
+	h.must(h.db.Exec(`INSERT INTO messages (id, channel_id, thread_id, author_kind, author_id, text, mentions, attachments, created)
+		VALUES (?, ?, NULL, ?, ?, ?, ?, '[]', ?)`, threadID, channelID, author.Kind, author.ID, text, string(mentions), h.nowMs()))
+	if mandateStr != "" {
+		var m mandateView
+		if json.Unmarshal([]byte(mandateStr), &m) == nil && m.Reminder != "" {
+			if r, ok := h.reminder(m.Reminder); ok && r.ThreadID == nil && interval(r.Repeat) > 0 {
+				h.must(h.db.Exec("UPDATE reminders SET thread_id = ? WHERE id = ? AND thread_id IS NULL", threadID, r.ID))
+				r, _ = h.reminder(r.ID)
+				h.remindersChanged(r)
+			}
+		}
 	}
+	msg, _ := h.message(threadID)
+	h.broadcastChannel(channelID, obj{"type": "message", "message": msg})
 	h.taskChanged(id)
+	return msg, true
 }
 
 // triggerRecent: how the last recentDays went, by outcome.

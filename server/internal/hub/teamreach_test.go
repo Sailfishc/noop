@@ -25,7 +25,7 @@ func TestWhoList(t *testing.T) {
 	check(t, "and whether it can work now", strings.Contains(lines[0], "cannot take work now") && strings.Contains(lines[0], "0 running"), r)
 
 	// the claim brings the same list for the start prompt
-	m := e.post(e.zw.session, "@acha 再看一下对账", "")
+	m := e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, map[string]any{"text": "@acha 再看一下对账", "as_task": true}).body
 	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
 	c := e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 	check(t, "in the claim", strings.HasPrefix(c.body["agents"].(string), "@bei"), c)

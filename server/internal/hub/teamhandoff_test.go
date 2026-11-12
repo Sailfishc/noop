@@ -225,7 +225,13 @@ func TestTriggers(t *testing.T) {
 	stuckNotes := func(task string) int {
 		th := e.task(task)["thread_id"].(string)
 		n := 0
-		replies, _ := e.do("GET", "/api/v1/messages/"+th+"/thread", e.zw.session, nil).body["replies"].([]any) // a quiet patrol's: none yet
+		body := e.do("GET", "/api/v1/messages/"+th+"/thread", e.zw.session, nil).body
+		if root, ok := body["root"].(map[string]any); ok {
+			if txt, _ := root["text"].(string); strings.Contains(txt, "没有机器接手") && strings.Contains(txt, "@zhangwei") {
+				n++
+			}
+		}
+		replies, _ := body["replies"].([]any)
 		for _, m := range replies {
 			if txt := m.(map[string]any)["text"].(string); strings.Contains(txt, "没有机器接手") && strings.Contains(txt, "@zhangwei") {
 				n++

@@ -1,8 +1,8 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { AskCard, Btn, Card, feelDone, Link, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
-import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
+import { AskCard, Btn, Card, CardHead, feelDone, Link, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
+import { blockedReason, errorOf, isParty, machinesOf, planSummary, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
 import { RuntimeBadge, time } from "./ui";
@@ -89,8 +89,31 @@ export function outputsOf(task: Task): Output[] {
   return pr ? [{ id: `${task.id}-pr`, kind: "pr", title: pr.title || `PR #${pr.number}`, status: pr.state, url: pr.url, note: pr.checks, updated: task.updated }] : [];
 }
 
-const TEXTISH = /^(text\/|application\/(json|xml|x-yaml|yaml|csv|toml))/;
-const sizeLabel = (n = 0) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+export const TEXTISH = /^(text\/|application\/(json|xml|x-yaml|yaml|csv|toml))/;
+export const sizeLabel = (n = 0) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+/** Compact icon + status/version summary for 1-line `<OutputRow>` cards on messages, workspace panel, and channel files. */
+export function outputMeta(o: Output): { icon: IconName; meta: string; tone?: "muted" | "attention" | "danger" | "ok" } {
+  const icon: IconName = o.kind === "pr"
+    ? "merge"
+    : o.kind === "file"
+    ? ((o.mime ?? "").startsWith("image/") ? "image" : /\.(md|markdown|txt)$/i.test(o.name ?? o.title) ? "document" : "code")
+    : "spark";
+  const rowTone = o.status === "failed" || (o.kind === "pr" && o.note === "failure")
+    ? "danger"
+    : o.status === "pending"
+    ? "attention"
+    : undefined;
+  if (o.kind === "pr") {
+    const meta = prLine({ provider: "github", url: o.url ?? "", number: 0, title: o.title, state: o.status as any, checks: (o.note ?? "none") as any }).replace(/^PR #0( · )?/, "") || L("open", "进行中");
+    return { icon, meta, tone: rowTone };
+  }
+  if (o.kind === "file") {
+    return { icon, meta: [o.version && o.version > 1 ? `v${o.version}` : "", o.size !== undefined ? sizeLabel(o.size) : ""].filter(Boolean).join(" · "), tone: rowTone };
+  }
+  const st = o.status === "ready" ? L("ready", "已就绪") : o.status === "failed" ? L("failed", "失败") : L("in progress", "进行中");
+  return { icon, meta: [o.service, st, o.note].filter(Boolean).join(" · "), tone: rowTone };
+}
 
 /** One output: a PR, a file (preview a text or picture in place, open it in the browser), or an outside result. */
 export function OutputCard(props: { team: Team; task: Task; output: Output }) {
@@ -194,7 +217,7 @@ function holderText(t: Team, hd: Holder, me: string | undefined, task?: Task): s
   return L(`Ball: ${who} · ${WHY[hd.why]?.() ?? hd.why}`, `球在 ${who} 手里 · ${WHY[hd.why]?.() ?? hd.why}`);
 }
 
-export function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; detail?: boolean }) {
+export function TaskCard(props: { team: Team; task: Task; channelName?: string; onOpen?: () => void; onCardPress?: () => void; detail?: boolean }) {
   const t = props.team;
   const task = () => props.task;
   const agent = () => t.agents().find((a) => a.id === task().agent_id);
@@ -256,7 +279,11 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (s === "queued") return !machine() ? L("The agent has no machine", "这个 Agent 还没有机器") : machine()!.online ? L(`${machine()!.name} will pick it up`, `${machine()!.name} 马上认领`) : L(`${machine()!.name} is offline; it starts when it’s back`, `${machine()!.name} 离线，上线后开工`);
     // its computer went away mid-run: it goes on when it's back (or on another, if the agent's owner says so)
     if (s === "running" && task().claimed_by && machine() && !machine()!.online) return L(`${machine()!.name} is offline; it goes on when it’s back`, `${machine()!.name} 离线，等它上线`);
-    if (s === "running") return task().step || L("Working…", "干活中…");
+    if (s === "running") {
+      const p = planSummary(task());
+      if (p) return [p.ratio, p.current || task().step].filter(Boolean).join(" · ");
+      return task().step || L("Working…", "干活中…");
+    }
     if (s === "waiting" && task().wait?.how === "delegates") {
       const who = waitingFor(t, task());
       return who ? L(`Waiting for ${who}`, `等 ${who}`) : L("Everything delegated is back", "委派的都交回了");
@@ -267,18 +294,31 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
   return (
     <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, maxWidth: 560 }}>
       <If when={props.detail} else={
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-          <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.fg2 : colors.fg, numberOfLines: 1 }}>
-            {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
-          </Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-            <If when={task().state === "running"}>
-              <Spinner size={11} tint={colors.fg} />
-            </If>
-            <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
+        <If when={props.onCardPress && !task().redacted} else={
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
+            <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.fg2 : colors.fg, numberOfLines: 1 }}>
+              {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
+            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <If when={task().state === "running"}>
+                <Spinner size={11} tint={colors.fg} />
+              </If>
+              <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
+            </View>
           </View>
-        </View>
+        }>
+          <CardHead testID={`task-${task().id}-card`} label={`${task().id} ${task().title}`} onPress={() => props.onCardPress!()}>
+            <Txt variant="caption" tone="faint" weight="semibold" tabular>{task().id}</Txt>
+            <Txt testID={`task-${task().id}-heading`} weight="semibold" grow lines={1}>{task().title}</Txt>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+              <If when={task().state === "running"}>
+                <Spinner size={11} tint={colors.fg} />
+              </If>
+              <Txt testID={`task-${task().id}-state`} variant="caption" weight="semibold" tone={label().tone}>{label().label()}</Txt>
+            </View>
+          </CardHead>
+        </If>
       }>
         <Text testID={`task-${task().id}-ref`} style={{ fontSize: 12, color: colors.fg3, fontVariant: ["tabular-nums"] }}>{taskRef(t, task())}</Text>
         <If when={renaming()} else={
@@ -399,11 +439,11 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
             {(task().redacted
               // its agent's owner is not in that private channel: who asked and which agent, nothing of what it says
               ? [`@${agent()?.handle ?? "?"}`, L("in a private channel", "在一个私有频道里"), L(`asked by ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`, `发起人 ${t.users().find((u) => u.id === task().created_by)?.name ?? "?"}`)]
-              : [`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", waiting()]).filter(Boolean).join(" · ")}
+              : [`@${agent()?.handle ?? "?"}`, props.channelName ? `#${props.channelName}` : "", task().state !== "running" ? planSummary(task())?.ratio ?? "" : "", waiting()]).filter(Boolean).join(" · ")}
           </Text>
         </View>
       </If>
-      <If when={!task().redacted && task().reminders?.length ? task().reminders : null}>
+      <If when={!task().redacted && (task().reminders ?? []).filter((r) => !r.done && !!r.repeat).length ? (task().reminders ?? []).filter((r) => !r.done && !!r.repeat) : null}>
         {(rs) => (
           <View testID={`task-${task().id}-reminders`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
             <Each of={rs()} key={(r) => r.id}>

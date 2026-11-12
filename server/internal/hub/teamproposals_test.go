@@ -12,6 +12,17 @@ func (e *taskEnv) propose(tok, title, key string, urgent bool) resp {
 	return e.do("POST", "/api/v1/agent/propose", tok, map[string]any{"title": title, "why": "看到 " + title, "plan": "做到：" + title, "key": key, "urgent": urgent})
 }
 
+// Proposal tests use independent concurrent tasks, not consecutive turns of one conversation.
+func (e *taskEnv) claimedProposal(text string) (string, string, map[string]any) {
+	m := e.do("POST", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, map[string]any{"text": text, "as_task": true}).body
+	id := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	r := e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	if r.status != 200 {
+		e.t.Fatalf("claim: %d %s", r.status, r.raw)
+	}
+	return id, r.body["read_token"].(string), m
+}
+
 // cards: the proposal cards in this person's inbox.
 func (e *taskEnv) cards(session string) []map[string]any {
 	out := []map[string]any{}
@@ -32,7 +43,7 @@ func cardTitles(b map[string]any) []string {
 
 func TestProposalsBatchAndAnswer(t *testing.T) {
 	e := newTaskEnv(t, "channel", false) // Sunday 2026-11-08 04:00 UTC; @acha needs no yes
-	id, tok, _ := e.claimed("@acha 看看依赖")
+	id, tok, _ := e.claimedProposal("@acha 看看依赖")
 	check(t, "a proposal needs a plan", e.do("POST", "/api/v1/agent/propose", tok, map[string]any{"title": "升级"}).status == 400)
 	check(t, "a key is one short word", e.propose(tok, "升级", "Bad Key!", false).status == 400)
 	r := e.propose(tok, "升级 lodash", "dep-lodash", false)
@@ -72,7 +83,7 @@ func TestProposalsBatchAndAnswer(t *testing.T) {
 	check(t, "2 stays on the card", len(cs) == 1 && fmt.Sprint(cardTitles(cs[0])) == "[2 删掉没人管的分支]", resp{raw: []byte(fmt.Sprint(cs))})
 
 	// the same thing again: a key whose task is open is refused; a newer one with a waiting key replaces it
-	_, tok2, _ := e.claimed("@acha 再看看依赖")
+	_, tok2, _ := e.claimedProposal("@acha 再看看依赖")
 	r = e.propose(tok2, "升级 lodash 到 5", "dep-lodash", false)
 	check(t, "its task is still open: refused", r.status == 409 && strings.Contains(string(r.raw), "已经在做："+t1), r)
 	r = e.propose(tok2, "删掉 3 个没人管的分支", "stale-branches", false)
@@ -87,11 +98,11 @@ func TestProposalsBatchAndAnswer(t *testing.T) {
 	pid := cs[0]["proposals"].([]any)[0].(map[string]any)["id"].(string)
 	check(t, "不做", e.do("POST", "/api/v1/proposals/"+pid+"/answer", e.zw.session, map[string]any{"do": false}).status == 200 && len(e.cards(e.zw.session)) == 0)
 	check(t, "answered once", e.do("POST", "/api/v1/proposals/"+pid+"/answer", e.zw.session, map[string]any{"do": true}).status == 409)
-	_, tok3, _ := e.claimed("@acha 第三次看依赖")
+	_, tok3, _ := e.claimedProposal("@acha 第三次看依赖")
 	r = e.propose(tok3, "删分支", "stale-branches", false)
 	check(t, "declined: refused, and the agent is told why", r.status == 409 && strings.Contains(string(r.raw), "已经被拒绝过"), r)
 	e.h.db.Exec("UPDATE proposals SET answered = answered - ? WHERE state = 'declined'", (31 * 24 * time.Hour).Milliseconds()) // a month ago
-	_, tok4, _ := e.claimed("@acha 一个月后看依赖")
+	_, tok4, _ := e.claimedProposal("@acha 一个月后看依赖")
 	check(t, "30 days later it may come back", e.propose(tok4, "删分支", "stale-branches", false).status == 200)
 
 	// limits: 5 a run
@@ -102,7 +113,7 @@ func TestProposalsBatchAndAnswer(t *testing.T) {
 	// 20 unanswered for one person: no more
 	var last resp
 	for i := 0; i < 4 && last.status != 429; i++ {
-		_, tk, _ := e.claimed(fmt.Sprintf("@acha 第 %d 轮", i))
+		_, tk, _ := e.claimedProposal(fmt.Sprintf("@acha 第 %d 轮", i))
 		for j := 0; j < 5 && last.status != 429; j++ {
 			last = e.propose(tk, fmt.Sprintf("又一件 %d-%d", i, j), "", false)
 		}
@@ -118,7 +129,7 @@ func TestProposalsBatchAndAnswer(t *testing.T) {
 func TestProposalsUrgentQuietAndExpiry(t *testing.T) {
 	e := newTaskEnv(t, "channel", false)
 	e.advance(29*time.Hour + 31*time.Minute) // Monday 09:31
-	_, tok, _ := e.claimed("@acha 盯一下")
+	_, tok, _ := e.claimedProposal("@acha 盯一下")
 	r := e.propose(tok, "主干红了，今天发不了版", "ci-main-red", true)
 	cs := e.cards(e.zw.session)
 	check(t, "urgent: at once, a card of its own", r.status == 200 && strings.Contains(string(r.raw), "has it now") && len(cs) == 1 && cs[0]["urgent"] == true, r)
@@ -131,7 +142,7 @@ func TestProposalsUrgentQuietAndExpiry(t *testing.T) {
 	e.advance(13*time.Hour + 30*time.Minute) // Monday 23:01; a new day's urgents only Tuesday
 	e.advance(24 * time.Hour)                // Tuesday 23:01
 	e.h.Tick()                               // Tuesday's batch (the third one) came at 09:30
-	_, tok2, _ := e.claimed("@acha 夜里盯一下")
+	_, tok2, _ := e.claimedProposal("@acha 夜里盯一下")
 	r = e.propose(tok2, "夜里出事了", "night", true)
 	check(t, "in his quiet hours: held", r.status == 200 && strings.Contains(string(r.raw), "quiet hours end"), r)
 	before := len(e.cards(e.zw.session))
@@ -151,7 +162,7 @@ func TestProposalsWeeklyExpireAWeekOnTheCard(t *testing.T) {
 	e := newTaskEnv(t, "channel", false) // Sunday 2026-11-08 04:00 UTC
 	check(t, "weekly", e.do("PATCH", "/api/v1/users/"+e.zw.id, e.zw.session, map[string]any{"digest": map[string]any{"every": "weekly"}}).status == 200)
 	e.advance(30 * time.Hour) // Monday 10:00, just after this week's card
-	_, tok, _ := e.claimed("@acha 每周看看")
+	_, tok, _ := e.claimedProposal("@acha 每周看看")
 	e.propose(tok, "整理过期的 issue", "issues-weekly", false)
 	e.h.Tick()
 	check(t, "it waits for next Monday", len(e.cards(e.zw.session)) == 0)
@@ -175,7 +186,7 @@ func TestProposalDigestSettingAndPatrol(t *testing.T) {
 	check(t, "a bad time", e.do("PATCH", "/api/v1/users/"+e.wl.id, e.wl.session, map[string]any{"digest": map[string]any{"every": "twice", "at2": "25:00"}}).status == 400)
 	check(t, "his own: twice a day, 8:00 and 16:00", e.do("PATCH", "/api/v1/users/"+e.wl.id, e.wl.session, map[string]any{"digest": map[string]any{"every": "twice", "at": "8:00", "at2": "16:00", "quiet": ""}}).status == 200)
 
-	// a patrol proposes: it goes to who set the trigger up; its ⚡ message goes up first; its history says so
+	// a patrol proposes: it goes to who set the trigger up; the agent's own message opens the thread (no ⚡ user message)
 	r := e.do("POST", "/api/v1/triggers", e.wl.session, map[string]any{"channel_id": e.cid, "agent": "acha", "kind": "schedule", "when": "9:00", "repeat": "daily",
 		"text": "看过期的依赖", "duty": "每周整理"})
 	trg := r.body["id"].(string)
@@ -187,7 +198,8 @@ func TestProposalDigestSettingAndPatrol(t *testing.T) {
 	before := len(e.channelTexts())
 	r = e.propose(tok, "升级 3 个过期依赖", "deps-weekly", false)
 	check(t, "to 王磊, at his own next time", r.status == 200 && strings.Contains(string(r.raw), "@wanglei with their next batch, Mon 16:00"), r)
-	check(t, "the ⚡ message went up", len(e.channelTexts()) == before+1)
+	texts := e.channelTexts()
+	check(t, "the agent's own proposal line opens the thread without ⚡", len(texts) == before+1 && !strings.HasPrefix(texts[len(texts)-1], "⚡"))
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "nothing", "summary": "提了一个案"})
 	runs := e.dutyRuns(e.wl.session, "trigger="+trg)
 	check(t, "its history: proposed", len(runs) == 1 && runs[0]["outcome"] == "proposed" && runs[0]["note"] == "升级 3 个过期依赖", resp{raw: []byte(fmt.Sprint(runs))})

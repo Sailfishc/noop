@@ -143,7 +143,18 @@ export type Task = {
   delegates?: Delegate[] | null;
   /** The repeating reminders that bring its agent back to its thread (the ⏰ on its card); older servers send none. */
   reminders?: Reminder[] | null;
+  /** Live plan checklist synced from the runtime's own todo list (Spec §7). */
+  plan?: PlanItem[] | null;
 };
+export type PlanItem = { text: string; status: "pending" | "in_progress" | "done" };
+/** Plan progress ("3/7" + current step) for task cards and task rows (Spec §7); null when the task has no checklist. */
+export function planSummary(task: Task): { done: number; total: number; ratio: string; current: string } | null {
+  const items = task.plan ?? [];
+  if (!items.length) return null;
+  const done = items.filter((x) => x.status === "done").length;
+  const cur = items.find((x) => x.status === "in_progress") ?? items.find((x) => x.status !== "done");
+  return { done, total: items.length, ratio: `${done}/${items.length}`, current: cur?.text ?? "" };
+}
 /** A task its agent delegated, as the parent lists it. */
 export type Delegate = { task: string; agent: string; state: string; status: string; redos?: number };
 /** The task needed this person for this: kind confirm | decide | ask | handoff | handoff_card | align | accept | unblock
@@ -196,6 +207,7 @@ export type Wait = {
 };
 /** How many times a task may hand work to an outside service before a person decides. */
 export const EXTERNAL_TRIES = 3;
+export type OutputVersion = { version: number; size: number; at: number };
 export type Output = {
   id: string; kind: "pr" | "file" | "external"; title: string;
   /** pending | ready | failed; a PR: open | merged | closed */
@@ -203,6 +215,8 @@ export type Output = {
   service?: string; external_id?: string;
   /** progress or why it failed; a PR: its checks */
   note?: string; preview?: boolean; updated: number;
+  task_id?: string; thread_id?: string; message_id?: string;
+  versions?: OutputVersion[] | null;
 };
 /** The one line that connects a computer as a machine: installs the daemon, trades the code for its token, runs it as a service. */
 export const installCommand = (server: string, code: string) => {
@@ -218,6 +232,8 @@ export type Channel = { id: string; slug: string; name: string; topic: string; a
   created_by?: string;
   /** A private chat between its creator and this agent: two members, fixed; its name is the agent's handle. */
   dm_agent?: string;
+  /** Optional member agent that reads unaddressed human messages in this channel (Spec §4). */
+  tl?: string;
   /** Its usual repository (host/owner/name), a hint for agents; "" for none. */
   repo?: string;
   /** How the channel works, written by its members; every agent working here reads it. */
@@ -226,9 +242,13 @@ export type Message = {
   id: string; seq: number; channel_id: string; thread_id: string | null; author: Member; text: string;
   mentions: Mention[] | null; attachments: string[] | null; client_id?: string | null; created: number; edited: number | null;
   reply_count: number; last_reply_at: number | null;
+  answer_to?: string;
   /** Who put which emoji on it, oldest first (an agent's 👀: it took the message up). */
   reactions?: { emoji: string; author: Member }[];
+  /** Outputs produced with this message (files, PRs, external results), opened in the right-hand workspace panel. */
+  outputs?: Output[] | null;
 };
+export type ReminderRun = { at: number; outcome: string; note?: string; task_id?: string };
 /** A reminder: set from a message ("remind me later"), by /remind, or by an agent (remi remind). */
 export type Reminder = {
   id: string; by: string; by_agent?: string | null; target: Member; channel_id: string; thread_id: string | null; message_id: string | null;
@@ -238,6 +258,11 @@ export type Reminder = {
   until?: number | null;
   /** A repeating one on hold: it does not go off; until keeps counting. */
   paused?: boolean;
+  checks?: number;
+  no_change?: number;
+  last_outcome?: string;
+  last_note?: string;
+  runs?: ReminderRun[] | null;
 };
 /** Who may pause or cancel it: who set it and who gets it; for an agent, also its owner and an admin (as triggers). */
 export const mayStopReminder = (r: Reminder, me: User | null, agent: Agent | undefined) =>
@@ -481,6 +506,27 @@ export function createTeam(s: Session) {
   const reminders = signal<Reminder[]>([]);
   /** New top-level messages from others since a channel was last looked at. */
   const unread = signal<Record<string, number>>({});
+  /** Per-channel 10-minute "继续和 @x 聊" chip after an agent answers me in a channel (Spec §2). */
+  const talking = signal<Record<string, { id: string; handle: string; until: number }>>({});
+  const talkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function setTalking(channelId: string, id: string, handle: string) {
+    const prev = talkingTimers.get(channelId);
+    if (prev) clearTimeout(prev);
+    const span = 10 * 60_000;
+    talking.update((x) => ({ ...x, [channelId]: { id, handle, until: Date.now() + span } }));
+    talkingTimers.set(channelId, setTimeout(() => dismissTalking(channelId), span));
+  }
+  function dismissTalking(channelId: string) {
+    const prev = talkingTimers.get(channelId);
+    if (prev) clearTimeout(prev);
+    talkingTimers.delete(channelId);
+    talking.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
+  }
+  function talkingWith(channelId: string): { id: string; handle: string } | null {
+    const cur = talking()[channelId];
+    return cur && cur.until > Date.now() ? { id: cur.id, handle: cur.handle } : null;
+  }
   let viewing: string | null = null;
   let after = 0; // the newest message seq seen
   let disposed = false;
@@ -520,8 +566,19 @@ export function createTeam(s: Session) {
     const list = untracked(top)[m.channel_id];
     const isNew = !list?.some((x) => x.id === m.id);
     if (list) top.update((t) => ({ ...t, [m.channel_id]: mergeMessages(t[m.channel_id], [m]) }));
-    const mine = m.author.kind === "user" && m.author.id === untracked(me)?.id;
+    const myId = untracked(me)?.id;
+    const mine = m.author.kind === "user" && m.author.id === myId;
     if (live && isNew && !mine && viewing !== m.channel_id) unread.update((u) => ({ ...u, [m.channel_id]: (u[m.channel_id] ?? 0) + 1 }));
+    if (live && isNew && m.author.kind === "agent" && myId) {
+      const ch = untracked(channels).find((c) => c.id === m.channel_id);
+      if (!ch?.dm_agent) {
+        const forMe = m.answer_to === myId;
+        if (forMe) {
+          const ag = untracked(agents).find((a) => a.id === m.author.id);
+          if (ag) setTalking(m.channel_id, ag.id, ag.handle);
+        }
+      }
+    }
   }
 
   function applyFrame(f: any) {
@@ -578,6 +635,7 @@ export function createTeam(s: Session) {
     top.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
     tasks.update((x) => Object.fromEntries(Object.entries(x).filter(([, v]) => v.channel_id !== channelId)));
     unread.update((x) => { const { [channelId]: _, ...rest } = x; return rest; });
+    dismissTalking(channelId);
   }
 
   function putTasks(ts: Task[]) {
@@ -643,7 +701,7 @@ export function createTeam(s: Session) {
   /** The ⏰ on the task cards that show it, at once (their task frame follows). null: it is gone. */
   function onTaskCards(id: string, r: Reminder | null) {
     tasks.update((x) => Object.fromEntries(Object.entries(x).map(([k, t]) => [k, t.reminders?.some((y) => y.id === id)
-      ? { ...t, reminders: r ? t.reminders.map((y) => (y.id === id ? r : y)) : t.reminders.filter((y) => y.id !== id) } : t])));
+      ? { ...t, reminders: r ? t.reminders.map((y) => (y.id === id ? { ...y, ...r } : y)) : t.reminders.filter((y) => y.id !== id) } : t])));
   }
   /** Hold a repeating one, or let it go on. */
   async function pauseReminder(id: string, paused: boolean) {
@@ -814,11 +872,26 @@ export function createTeam(s: Session) {
     return r.ok ? (r.data.attachments as Attachment[]).map((a) => ({ ...a, url: a.url ? s.url.replace(/\/$/, "") + a.url : undefined })) : [];
   }
   /** asTask: the composer's "as task" (a top-level message that @s an agent): tracked as a task from the start. */
-  async function send(channelId: string, text: string, threadId: string | null = null, files: string[] = [], asTask = false): Promise<string | null> {
+  async function send(channelId: string, text: string, threadId: string | null = null, files: string[] = [], asTask = false, toAgent = ""): Promise<string | null> {
     const client_id = `c${Date.now().toString(36)}${(counter++).toString(36)}`;
-    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, { text, client_id, ...(threadId ? { thread_id: threadId } : {}), ...(files.length ? { attachments: files } : {}), ...(asTask ? { as_task: true } : {}) });
+    const r = await api("POST", `/api/v1/channels/${channelId}/messages`, {
+      text,
+      client_id,
+      ...(threadId ? { thread_id: threadId } : {}),
+      ...(files.length ? { attachments: files } : {}),
+      ...(asTask ? { as_task: true } : {}),
+      ...(toAgent ? { to_agent: toAgent } : {}),
+    });
     if (!r.ok) return errorOf(r, `发送失败（${r.status || "连不上服务器"}）`);
-    applyMessage(r.data as Message, false);
+    const posted = r.data as Message;
+    if (!threadId) {
+      const ag = (posted.mentions ?? []).find((x) => x.kind === "agent");
+      if (ag) {
+        const cur = untracked(talking)[channelId];
+        if (cur && cur.id !== ag.id) dismissTalking(channelId);
+      }
+    }
+    applyMessage(posted, false);
     return null;
   }
 
@@ -845,8 +918,8 @@ export function createTeam(s: Session) {
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
   }
-  /** name, topic, or the default repository (an address; "" clears it); private: false makes a private channel public. */
-  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string; private?: false }) {
+  /** name, topic, TL, or the default repository (an address; "" clears it); private: false makes a private channel public. */
+  async function patchChannel(channelId: string, patch: { name?: string; topic?: string; repo?: string; conventions?: string; private?: false; tl?: string }) {
     const r = await api("PATCH", `/api/v1/channels/${channelId}`, patch);
     if (r.ok && r.data?.id) channels.update((cs) => upsert(cs, r.data as Channel));
     return r;
@@ -999,6 +1072,11 @@ export function createTeam(s: Session) {
     const r = await api("GET", `/api/v1/outputs/${id}/link${q}`);
     return r.ok ? s.url.replace(/\/$/, "") + r.data.url : null;
   }
+  /** All outputs across messages and tasks in a channel, newest first (Spec §6). */
+  async function channelOutputs(channelId: string): Promise<Output[]> {
+    const r = await api("GET", `/api/v1/channels/${channelId}/outputs`);
+    return r.ok ? ((r.data.outputs ?? []) as Output[]) : [];
+  }
   /** Where a task runs, before it ever ran (an address; "" = a general task). */
   /** Rename a task (its creator or the agent's owner); the agent then leaves the title as it is. */
   async function setTaskTitle(id: string, title: string) {
@@ -1023,6 +1101,8 @@ export function createTeam(s: Session) {
     clearInterval(poll);
     clearTimeout(retry);
     clearTimeout(inboxTimer);
+    for (const tm of talkingTimers.values()) clearTimeout(tm);
+    talkingTimers.clear();
     socket?.close();
   }
 
@@ -1034,8 +1114,8 @@ export function createTeam(s: Session) {
   });
 
   return {
-    preferences, savePreferences, digest, saveDigest, proposals, answerProposal, answerBatch, openDM, dmWith,
-    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, pauseReminder, channelReminders, loadChannelReminders, reminderOfMessage, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, taskOfThread, loadInbox, loadTasks,
+    preferences, savePreferences, digest, saveDigest, proposals, answerProposal, answerBatch, openDM, dmWith, talkingWith, dismissTalking,
+    url: s.url, shareUrl, conn, me, users, workspace, signups, decideSignup, patchWorkspace, agents, machines, channels, loaded, top, more, threads, unread, tasks, inbox, waiting, reminders, remind, reminderSeen, cancelReminder, pauseReminder, channelReminders, loadChannelReminders, reminderOfMessage, loadReminders, act, setAcceptance, setTaskRepo, setTaskTitle, outputLink, channelOutputs, taskOfThread, loadInbox, loadTasks,
     openChannel, leaveView, viewingNow, onLiveMessage, loadOlder, openThread, send, upload, attachments, search, createChannel, join, addMember, removeMember, patchChannel, repos,
     createAgent, patchAgent, deleteAgent, createMachine, enrollMachine, renameMachine, patchMachine, machineJoinCode, deleteMachine, invite, loginCode, devices, removeDevice, gitSettings, saveGitPlatforms, metrics, teamConfig, saveTeamConfig, triggers, createTrigger, confirmTrigger, patchTrigger, deleteTrigger, triggerRuns, pauseDuty, logout, dispose, applyFrame, catchUp,
     userById, agentById,

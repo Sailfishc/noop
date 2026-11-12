@@ -2,7 +2,7 @@
 import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, untracked, View } from "nsh";
 import fs from "fs/promises";
 import { L, lang } from "../i18n";
-import { Avatar, Btn, StateMark, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
+import { Avatar, Btn, Chip, StateMark, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
 import { blockedReason, dispatchFor, machineNow, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
@@ -147,7 +147,10 @@ const guessType = (name: string) => {
 export function Composer(props: { team: Team; channelId: string; threadId?: string; testID: string; placeholder: string; asTask?: boolean;
   /** A private chat's agent: a top-level message names it without an @. */
   agent?: string;
-  onSend: (text: string, files: string[], asTask: boolean) => Promise<string | null> }) {
+  /** 10-minute "继续和 @x 聊 ×" target in a channel when no @agent is written explicitly. */
+  continueAgent?: { id: string; handle: string } | null;
+  onDismissContinue?: () => void;
+  onSend: (text: string, files: string[], asTask: boolean, toAgent?: string) => Promise<string | null> }) {
   const t = props.team;
   const text = signal("");
   // two lines at least, then it grows with the text (a line to spare) up to about ten and scrolls
@@ -176,7 +179,9 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
       queueMicrotask(() => setText(v, v.length));
     });
   });
-  const preview = () => dispatchLine(t, props.channelId, text(), props.threadId ? undefined : props.agent);
+  const hasAgentMention = (s: string) => [...s.matchAll(/(^|[^\w@])@([a-z][a-z0-9_-]{1,31})/g)].some((m) => t.agents().some((a) => a.handle === m[2]));
+  const activeContinue = () => (!props.threadId && !props.agent && props.continueAgent && !hasAgentMention(text()) ? props.continueAgent : null);
+  const preview = () => dispatchLine(t, props.channelId, text(), props.threadId ? undefined : (props.agent ?? activeContinue()?.handle));
   function setText(v: string, at: number, to = at) {
     text.set(v);
     caret = { start: at, end: to };
@@ -261,7 +266,8 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
       }
       paths.push(r.path);
     }
-    const err = await props.onSend(v, paths, !!props.asTask && untracked(asTask) && !!untracked(preview));
+    const cont = !props.threadId && !props.agent && !hasAgentMention(v) ? props.continueAgent?.id : undefined;
+    const err = await props.onSend(v, paths, !!props.asTask && untracked(asTask) && !!untracked(preview), cont);
     busy.set(false);
     error.set(err ?? "");
     if (!err) {
@@ -293,6 +299,19 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
       <ErrorNote text={error()} testID={`${props.testID}-error`} />
       <If when={sent() && !text()}>
         <Text testID={`${props.testID}-sent`} style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.fg2 }}>{sent()}</Text>
+      </If>
+      <If when={activeContinue()}>
+        {(ca) => (
+          <View style={{ flexDirection: "row" }}>
+            <Chip
+              testID={`${props.testID}-continue`}
+              icon="bubble"
+              label={L(`Continue with @${ca().handle}`, `继续和 @${ca().handle} 聊`)}
+              dismissLabel={L("Stop continuing with this agent", "取消继续和它聊")}
+              onDismiss={() => props.onDismissContinue?.()}
+            />
+          </View>
+        )}
       </If>
       <If when={preview()}>
         {(p) => <Text testID={`${props.testID}-preview`} style={{ paddingHorizontal: 4, fontSize: 12, lineHeight: 17, color: p().warn ? colors.attention : colors.fg2 }}>{p().text}</Text>}

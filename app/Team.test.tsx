@@ -1472,14 +1472,13 @@ describe("passing the ball", () => {
     expect(app.shows("id:trigger-edit-trg_1-save")).toBe(false);
   });
 
-  test("a repeating reminder for an agent: on its task card, paused and cancelled there; the ⏰ message stops it; the channel lists it", async () => {
+  test("a repeating reminder for an agent: on its task card, paused and cancelled there; silent checks leave a 1-line summary in the thread; the channel lists it", async () => {
     const log = newLog();
-    const r = rem();
+    const r = rem({ checks: 12, no_change: 12, last_outcome: "nothing", last_note: "MR !12 还没变", runs: [{ at: Date.now() - 60_000, outcome: "nothing", note: "MR !12 还没变" }] });
     const t1 = task({ id: "T-0001", state: "done", tracked: true, title: "汇报 MR 进展", created_by: "u_1", reminders: [r] });
-    const fired = msg({ id: "msg_9", seq: 3, thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: `⏰ @acha ${r.text}` });
     const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
       ...server(log, { __reminders: [r] }, [t1]),
-      [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1, fired] } },
+      [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
     } });
     await app.waitFor("id:reminder-tag-rem_1");
     expect(app.shows("text:/每 10 分钟 · 下次/")).toBe(true); // on the card even when the task is done
@@ -1495,10 +1494,10 @@ describe("passing the ball", () => {
     await app.press("id:channel-members");
 
     await app.press("id:thread-msg_1");
-    await app.waitFor("id:msg-msg_9");
-    await app.press("id:remind-msg_9");
-    await app.press("id:remind-msg_9-stop");
-    await app.waitUntil(() => log.acts.includes("rem_1 cancel"));
+    await app.waitFor("id:check-rem_1");
+    expect(app.shows("text:/已检查 12 次/")).toBe(true);
+    await app.press("id:check-rem_1");
+    await app.waitFor("text:/MR !12 还没变/");
   });
 
   test("a scheduled repeating reminder in 待你决定 can be paused", async () => {
@@ -1872,5 +1871,163 @@ describe("desktop shell", () => {
     await app.waitFor("text:Dispatch to @acha");
     await app.press("id:ctx-dispatch-acha");
     await app.waitUntil(() => app.value("id:team-composer") === "@acha ");
+  });
+});
+
+describe("chat stream, workspace panel, plan checklists & channel files", () => {
+  const outDoc = {
+    id: "out_1",
+    kind: "file" as const,
+    name: "report.md",
+    title: "report.md",
+    mime: "text/markdown",
+    size: 128,
+    version: 2,
+    versions: [{ version: 1, size: 96, created: T0 }, { version: 2, size: 128, created: T0 + 1000 }],
+    message_id: "msg_ans",
+    thread_id: "msg_ans",
+    updated: T0 + 1000,
+  };
+
+  test("an agent's answer carries a 1-line output card; pressing it opens 工作面板 on 产出 with rendered Markdown and version switching", async () => {
+    const log = newLog();
+    const ans = msg({ id: "msg_ans", seq: 3, author: { kind: "agent", id: "a_1" }, text: "复盘整理好了，见文档。", outputs: [outDoc] });
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" },
+      width: 1280,
+      height: 800,
+      network: {
+        ...server(log),
+        [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [m1, ans], more: false } },
+        [`GET ${URL}/api/v1/messages/msg_ans/thread`]: { body: { root: ans, replies: [] } },
+        [`GET ${URL}/api/v1/outputs/out_1/link`]: { body: { url: "/api/v1/outputs/out_1/content?v=2&exp=1&sig=x" } },
+        [`GET ${URL}/api/v1/outputs/out_1/link?*`]: (r: { url: string }) => ({
+          body: { url: r.url.includes("v=1") ? "/api/v1/outputs/out_1/content?v=1&exp=1&sig=x" : "/api/v1/outputs/out_1/content?v=2&exp=1&sig=x" },
+        }),
+        [`GET ${URL}/api/v1/outputs/out_1/content?*`]: (r: { url: string }) => ({
+          body: r.url.includes("v=1") ? "# 事故复盘 v1\n\n初稿内容。" : "# 事故复盘 v2\n\n根因是慢查询锁竞争。",
+        }),
+      },
+    });
+    await app.waitFor("id:msg-output-out_1");
+    await app.press("id:msg-output-out_1");
+    await app.waitFor("id:work-viewer-out_1");
+    expect(app.shows("text:工作面板")).toBe(true);
+    await app.waitFor("text:事故复盘 v2");
+    await app.press("id:work-output-version-1");
+    await app.waitFor("text:事故复盘 v1");
+  });
+
+  test("a runtime's plan checklist shows 1/3 + current step on the task card and Tasks list, and renders in 工作面板 计划; channel 文件 lists outputs", async () => {
+    const log = newLog();
+    const planned = task({
+      id: "T-0001",
+      state: "running",
+      tracked: true,
+      title: "优化 /orders 查询",
+      step: "加复合索引",
+      plan: [
+        { text: "分析执行计划", status: "done" },
+        { text: "加复合索引", status: "in_progress" },
+        { text: "压测对比 P99", status: "pending" },
+      ],
+      outputs: [{ ...outDoc, task_id: "T-0001", thread_id: "msg_1", message_id: "msg_2" }],
+    });
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" },
+      width: 1280,
+      height: 800,
+      network: {
+        ...server(log, {}, [planned]),
+        [`GET ${URL}/api/v1/outputs/out_1/link`]: { body: { url: "/api/v1/outputs/out_1/content?v=2&exp=1&sig=x" } },
+        [`GET ${URL}/api/v1/outputs/out_1/content?*`]: { body: "# 压测报告" },
+      },
+    });
+    await app.waitFor("text:/1\\/3 · 加复合索引/");
+
+    // Channel 文件 tab lists the output and opens 工作面板 on 产出
+    await app.press("id:channel-tab-files");
+    await app.waitFor("id:channel-file-out_1");
+    await app.press("id:channel-file-out_1");
+    await app.waitFor("id:work-viewer-out_1");
+
+    // Switch to 计划 tab in 工作面板
+    await app.press("id:work-tab-plan");
+    await app.waitFor("id:work-plan-ratio");
+    expect(app.shows("text:1/3")).toBe(true);
+    expect(app.shows("text:分析执行计划")).toBe(true);
+    expect(app.shows("text:压测对比 P99")).toBe(true);
+
+    // Tasks page row also shows 1/3
+    await app.press("id:open-tasks");
+    await app.waitFor("id:tasks-filter-all");
+    await app.press("id:tasks-filter-all");
+    await app.waitFor("id:taskrow-T-0001");
+    expect(app.shows("text:/1\\/3/")).toBe(true);
+  });
+
+  test("继续和 @acha 聊 chip routes unaddressed follow-up messages until dismissed; MembersPanel sets channel TL", async () => {
+    const log = newLog();
+    const myAsk = msg({ id: "msg_1", seq: 1, author: { kind: "user", id: "u_1" }, text: "@acha 超时是多少？", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
+    const liveReply = msg({ id: "msg_5", seq: 5, author: { kind: "agent", id: "a_1" }, text: "默认 3 秒。", answer_to: "u_1" });
+    let updatesServed = false;
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" },
+      width: 1280,
+      height: 800,
+      network: {
+        ...server(log),
+        [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [myAsk], more: false } },
+        [`GET ${URL}/api/v1/updates?*`]: () => {
+          if (updatesServed) return { body: { messages: [], more: false } };
+          updatesServed = true;
+          return { body: { messages: [liveReply], more: false } };
+        },
+      },
+    });
+    await app.waitFor("id:team-composer-continue");
+    expect(app.shows("text:继续和 @acha 聊")).toBe(true);
+    await app.type("id:team-composer", "重试几次？");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(log.posts[0]).toMatchObject({ text: "重试几次？", to_agent: "a_1" });
+
+    // Dismissing × clears the chip so subsequent plain messages do not set to_agent
+    await app.press("id:team-composer-continue-dismiss");
+    await app.waitFor("id:team-composer-continue", { state: "gone" });
+    await app.type("id:team-composer", "大家午安");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 2);
+    expect(log.posts[1].to_agent).toBeUndefined();
+
+    // MembersPanel exposes the channel TL selector
+    await app.press("id:channel-members");
+    await app.waitFor("id:channel-tl-select");
+    await app.press("id:channel-tl-select");
+    await app.waitFor("text:阿查 @acha");
+    await app.press("text:阿查 @acha >> nth=1");
+    await app.waitUntil(() => log.patches.some((p) => p.channel?.tl === "a_1"));
+  });
+
+  test("another person's answer does not start my continuation", async () => {
+    const log = newLog();
+    const myAsk = msg({ id: "msg_1", seq: 1, author: { kind: "user", id: "u_1" }, text: "@acha 先前的问题", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
+    const otherAsk = msg({ id: "msg_2", seq: 2, author: { kind: "user", id: "u_2" }, text: "@acha 我的问题", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
+    const otherReply = msg({ id: "msg_3", seq: 3, author: { kind: "agent", id: "a_1" }, text: "给王磊的回答", answer_to: "u_2" });
+    let served = false;
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, width: 1280, height: 800,
+      network: {
+        ...server(log),
+        [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [myAsk, otherAsk], more: false } },
+        [`GET ${URL}/api/v1/updates?*`]: () => ({ body: { messages: served ? [] : (served = true, [otherReply]), more: false } }),
+      },
+    });
+    await app.waitFor("text:给王磊的回答");
+    expect(app.shows("id:team-composer-continue")).toBe(false);
+    await app.type("id:team-composer", "大家午安");
+    await app.press("id:team-composer-send");
+    await app.waitUntil(() => log.posts.length === 1);
+    expect(log.posts[0].to_agent).toBeUndefined();
   });
 });

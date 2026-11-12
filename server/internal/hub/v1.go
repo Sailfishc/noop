@@ -72,6 +72,7 @@ func (h *Hub) v1Routes() *http.ServeMux {
 	r("DELETE /api/v1/channels/{id}/members/{kind}/{member}", person, h.v1MemberRemove)
 	r("GET /api/v1/channels/{id}/messages", anyone, h.v1Messages)
 	r("POST /api/v1/channels/{id}/messages", anyone, h.v1Post)
+	r("GET /api/v1/channels/{id}/outputs", person, h.v1ChannelOutputs)
 	r("GET /api/v1/messages/{id}/thread", anyone, h.v1Thread)
 	r("PATCH /api/v1/messages/{id}", anyone, h.v1Edit)
 	r("GET /api/v1/updates", anyone, h.v1Updates)

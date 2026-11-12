@@ -34,7 +34,9 @@ type channelView struct {
 	Private   bool   `json:"private"`
 	CreatedBy string `json:"created_by"`
 	// DMAgent: a private chat between its creator and this agent (teamdm.go); its name is the agent's handle
-	DMAgent  string   `json:"dm_agent,omitempty"`
+	DMAgent string `json:"dm_agent,omitempty"`
+	// TL: optional member agent that receives unaddressed human top-level messages in this channel (teamtl.go)
+	TL       string   `json:"tl,omitempty"`
 	Archived bool     `json:"archived"`
 	Created  int64    `json:"created"`
 	Members  []member `json:"members"`
@@ -43,8 +45,8 @@ type channelView struct {
 
 func (h *Hub) channel(id string) (channelView, bool) {
 	var c channelView
-	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, private, COALESCE(created_by, ''), COALESCE(dm_agent, ''), archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
-		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Private, &c.CreatedBy, &c.DMAgent, &c.Archived, &c.Created)
+	err := h.db.QueryRow("SELECT id, slug, name, topic, repo, conventions, private, COALESCE(created_by, ''), COALESCE(dm_agent, ''), COALESCE(tl_agent, ''), archived, created FROM channels WHERE id = ? OR slug = ?", id, id).
+		Scan(&c.ID, &c.Slug, &c.Name, &c.Topic, &c.Repo, &c.Conventions, &c.Private, &c.CreatedBy, &c.DMAgent, &c.TL, &c.Archived, &c.Created)
 	if err != nil {
 		return c, false
 	}
@@ -327,11 +329,32 @@ func (h *Hub) v1ChannelPatch(w http.ResponseWriter, q *request) {
 		Conventions *string `json:"conventions"`
 		// Private: false makes a private channel public (its creator only; there is no way back)
 		Private *bool `json:"private"`
+		// TL: agent id or handle ("" clears the channel's TL)
+		TL *string `json:"tl"`
 	}
 	_ = q.json(&b)
-	if c.DMAgent != "" && (b.Name != nil || b.Private != nil || b.Topic != nil) {
-		errJSON(w, 400, "私聊不能改名、改说明或转公开；要多人一起，新建一个私有频道")
+	if c.DMAgent != "" && (b.Name != nil || b.Private != nil || b.Topic != nil || b.TL != nil) {
+		errJSON(w, 400, "私聊不能改名、改说明、设 TL 或转公开；要多人一起，新建一个私有频道")
 		return
+	}
+	if b.TL != nil {
+		raw := strings.TrimSpace(*b.TL)
+		if raw == "" {
+			h.must(h.db.Exec("UPDATE channels SET tl_agent = '' WHERE id = ?", c.ID))
+			h.cancelTL(c.ID)
+		} else {
+			a, ok := h.agentByIDOrHandle(raw)
+			if !ok || !h.isMember(c.ID, "agent", a.ID) {
+				errJSON(w, 400, "TL 必须是这个频道里的 Agent")
+				return
+			}
+			if c.Private && !h.mayBringAgent(q.who.userID, a) {
+				errJSON(w, 403, "@"+a.Handle+" 不接整个团队的活，只有它的主人能设它为私有频道 TL")
+				return
+			}
+			h.must(h.db.Exec("UPDATE channels SET tl_agent = ? WHERE id = ?", a.ID, c.ID))
+			h.cancelTL(c.ID)
+		}
 	}
 	madePublic := false
 	if b.Private != nil && *b.Private != c.Private {
@@ -439,6 +462,10 @@ func (h *Hub) v1MemberRemove(w http.ResponseWriter, q *request) {
 	}
 	h.channelChanged(c.ID) // before: the removed member hears it too
 	h.must(h.db.Exec("DELETE FROM channel_members WHERE channel_id = ? AND kind = ? AND member_id = ?", c.ID, m.Kind, m.ID))
+	if m.Kind == "agent" && c.TL == m.ID {
+		h.must(h.db.Exec("UPDATE channels SET tl_agent = '' WHERE id = ?", c.ID))
+		h.cancelTL(c.ID)
+	}
 	if c.Private {
 		if m.Kind == "user" {
 			h.channelRemoved(c.ID, m.ID)
@@ -476,6 +503,9 @@ type messageView struct {
 	LastReplyAt *int64    `json:"last_reply_at"`
 	// Reactions: who put which emoji on it, oldest first (an agent's 👀: it took the message up)
 	Reactions []reaction `json:"reactions"`
+	// Outputs: files or external results generated with this message (Spec §6)
+	Outputs  []outputView `json:"outputs,omitempty"`
+	AnswerTo string       `json:"answer_to,omitempty"`
 }
 
 type reaction struct {
@@ -487,7 +517,7 @@ const messageCols = `m.id, m.seq, m.channel_id, m.thread_id, m.author_kind, m.au
 	COALESCE(m.attachments, '[]'), m.client_id, m.created, m.edited,
 	(SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id), (SELECT MAX(created) FROM messages r WHERE r.thread_id = m.id),
 	(SELECT json_group_array(json_object('emoji', x.emoji, 'author', json_object('kind', x.author_kind, 'id', x.author_id)))
-	  FROM (SELECT * FROM reactions WHERE message_id = m.id ORDER BY created) x)`
+	  FROM (SELECT * FROM reactions WHERE message_id = m.id ORDER BY created) x), m.answer_to`
 
 func scanMessages(rows *sql.Rows, err error) []messageView {
 	if err != nil {
@@ -499,7 +529,7 @@ func scanMessages(rows *sql.Rows, err error) []messageView {
 		var m messageView
 		var mentions, att, reactions string
 		if err := rows.Scan(&m.ID, &m.Seq, &m.ChannelID, &m.ThreadID, &m.Author.Kind, &m.Author.ID, &m.Text, &mentions, &att,
-			&m.ClientID, &m.Created, &m.Edited, &m.ReplyCount, &m.LastReplyAt, &reactions); err != nil {
+			&m.ClientID, &m.Created, &m.Edited, &m.ReplyCount, &m.LastReplyAt, &reactions, &m.AnswerTo); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(reactions), &m.Reactions)
@@ -535,7 +565,7 @@ func (h *Hub) react(messageID string, author member, emoji string) {
 }
 
 func (h *Hub) message(id string) (messageView, bool) {
-	ms := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.id = ?", id))
+	ms := h.withMessageOutputs(scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.id = ?", id)))
 	if len(ms) == 0 {
 		return messageView{}, false
 	}
@@ -587,6 +617,7 @@ func (h *Hub) v1Messages(w http.ResponseWriter, q *request) {
 	for i, j := 0, len(ms)-1; i < j; i, j = i+1, j-1 {
 		ms[i], ms[j] = ms[j], ms[i]
 	}
+	ms = h.withMessageOutputs(ms)
 	writeJSON(w, 200, obj{"messages": ms, "more": more})
 }
 
@@ -599,7 +630,7 @@ func (h *Hub) v1Thread(w http.ResponseWriter, q *request) {
 	if root.ThreadID != nil { // a reply: show its whole thread
 		root, _ = h.message(*root.ThreadID)
 	}
-	replies := scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.thread_id = ? ORDER BY m.seq", root.ID))
+	replies := h.withMessageOutputs(scanMessages(h.db.Query("SELECT "+messageCols+" FROM messages m WHERE m.thread_id = ? ORDER BY m.seq", root.ID)))
 	writeJSON(w, 200, obj{"root": root, "replies": replies})
 }
 
@@ -613,7 +644,8 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 	var b struct {
 		Text        string          `json:"text"`
 		ThreadID    string          `json:"thread_id"`
-		AsTask      bool            `json:"as_task"` // the composer's "as task": track it as a task from the start
+		AsTask      bool            `json:"as_task"`  // the composer's "as task": track it as a task from the start
+		ToAgent     string          `json:"to_agent"` // explicit "continue talking with @x" chip target when text has no @agent
 		ClientID    string          `json:"client_id"`
 		Attachments json.RawMessage `json:"attachments"`
 		AsAgent     string          `json:"as_agent"`
@@ -694,7 +726,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 			return
 		}
 		agents := 0
-		for _, mm := range h.postMentions(c, thread == nil, author, text) {
+		for _, mm := range h.postMentions(c, thread == nil, author, text, b.ToAgent) {
 			if mm.Kind == "agent" {
 				agents++
 			}
@@ -704,7 +736,7 @@ func (h *Hub) v1Post(w http.ResponseWriter, q *request) {
 			return
 		}
 	}
-	mentions, _ := json.Marshal(h.postMentions(c, thread == nil, author, text))
+	mentions, _ := json.Marshal(h.postMentions(c, thread == nil, author, text, b.ToAgent))
 	att, _ := json.Marshal(files)
 	var clientID any
 	if b.ClientID != "" {
@@ -741,7 +773,7 @@ func (h *Hub) v1Edit(w http.ResponseWriter, q *request) {
 		return
 	}
 	c, _ := h.channel(m.ChannelID)
-	mentions, _ := json.Marshal(h.postMentions(c, m.ThreadID == nil, m.Author, b.Text))
+	mentions, _ := json.Marshal(h.postMentions(c, m.ThreadID == nil, m.Author, b.Text, ""))
 	h.must(h.db.Exec("UPDATE messages SET text = ?, mentions = ?, edited = ? WHERE id = ?", b.Text, string(mentions), h.nowMs(), m.ID))
 	m, _ = h.message(m.ID)
 	h.broadcastChannel(m.ChannelID, obj{"type": "message_edited", "message": m})
@@ -762,7 +794,7 @@ func (h *Hub) v1Updates(w http.ResponseWriter, q *request) {
 		rows, err = h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.seq > ? AND m.channel_id IN (
 			SELECT channel_id FROM channel_members WHERE kind = 'user' AND member_id = ?) ORDER BY m.seq LIMIT 501`, after, q.who.userID)
 	}
-	ms := scanMessages(rows, err)
+	ms := h.withMessageOutputs(scanMessages(rows, err))
 	more := len(ms) > 500
 	if more {
 		ms = ms[:500]

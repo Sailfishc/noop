@@ -18,16 +18,21 @@ import { AccountRow } from "./account-row";
 import { Tabs } from "./tabs";
 import { TabBar } from "./tab-bar";
 import { Link } from "./link";
+import { FoldLine } from "./fold-line";
+import { DocView } from "./doc-view";
+import { OutputRow } from "./output-row";
+import { PlanList } from "./plan-list";
 import { ErrorNote } from "./error-note";
 import { Field, TextArea } from "./field";
 import { Icon, type IconName } from "./icons";
 import { Label, Noted } from "./noted";
-import { Card, Panel } from "./panel";
+import { Card, CardHead, Panel } from "./panel";
 import { PickCard } from "./pick-card";
 import { QrCode } from "./qr-code";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
 import { Tag } from "./tag";
+import { Chip } from "./chip";
 import { TagMenu } from "./tag-menu";
 import { Modal } from "./dialog";
 import { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
@@ -208,6 +213,7 @@ export function Showcase() {
           <Tag label="ok" tone="ok" />
           <Tag label="info" tone="info" />
           <Tag label="danger" tone="danger" />
+          <Chip testID="showcase-chip" icon="bubble" label="继续和 @acha 聊" dismissLabel="取消继续聊天" onDismiss={() => {}} />
           <TagMenu testID="showcase-tagmenu" icon="bell" tone="default" label="every 10 min · next 10:32">
             <MenuRow label="Pause" onSelect={() => {}} />
             <MenuRow label="Cancel" danger onSelect={() => {}} />
@@ -237,13 +243,29 @@ export function Showcase() {
             <ListRow title="Selected" selected left={<Icon name="chat" size={size.icon.md} tint={colors.fg2} />} onPress={() => {}} />
             <AccountRow name="张伟" status="Live" live />
             <Link icon="merge" label="PR #3 · CI passing (a Link)" onPress={() => {}} />
+            <FoldLine icon="bell" label="已检查 12 次，最近一次 10:02，没有变化" open={false} onToggle={() => {}} />
+            <OutputRow testID="showcase-output-row" icon="document" title="report.md" meta="v2 · 2.4 KB" onPress={() => {}} />
             <TabBar testID="showcase-tabbar" value={tab()} onChange={(v) => v !== "me" && tab.set(v)} tabs={[{ value: "chat", icon: "chat", label: "Messages", badge: 2 }, { value: "tasks", icon: "task", label: "Tasks", badge: 3, tone: "attention" }, { value: "me", icon: "user", label: "Me" }]} />
           </View>
-          <View style={{ flex: touch ? undefined : 1 }}>
+          <View style={{ flex: touch ? undefined : 1, gap: space.md }}>
             <Card>
+              <CardHead label="Open card" onPress={() => {}}>
+                <Txt weight="semibold" grow>A Card with CardHead</Txt>
+              </CardHead>
               <Txt>A Card: a group on the raised surface, a hairline edge.</Txt>
               <Row><Btn small kind="primary" label="Save" onPress={() => {}} /></Row>
             </Card>
+            <DocView testID="showcase-doc" text={"## 方案要点\n- 对话流里产出只占一行\n- 点开在右侧工作面板查看"} />
+            <PlanList
+              testID="showcase-plan"
+              running
+              step="改 src/orders.ts"
+              items={[
+                { text: "排查慢查询原因", status: "done" },
+                { text: "给 orders 表补充复合索引", status: "in_progress" },
+                { text: "补齐回归测试", status: "pending" },
+              ]}
+            />
           </View>
         </View>
       </Section>

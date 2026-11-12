@@ -3,7 +3,6 @@ package hub
 import (
 	"fmt"
 	"net/url"
-	"strings"
 	"testing"
 	"time"
 )
@@ -62,8 +61,8 @@ func TestDutiesAndPatrols(t *testing.T) {
 	check(t, "not on the task board (tracked)", len(e.do("GET", "/api/v1/tasks?tracked=1", e.zw.session, nil).body["tasks"].([]any)) == 0)
 	cl := e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
 	th := cl.body["thread"].([]any)
-	check(t, "the run still reads the request as the thread's first message", cl.status == 200 && len(th) == 1 &&
-		strings.Contains(th[0].(map[string]any)["text"].(string), "⚡ @acha 看一下主干的 CI"), cl)
+	check(t, "the run reads the prompt text without a fake ⚡ user message", cl.status == 200 && len(th) == 1 &&
+		th[0].(map[string]any)["text"].(string) == "看一下主干的 CI" && cl.body["firing"] != nil, cl)
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"reaction": "🔍"})
 	r := e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"pr": map[string]any{"provider": "github", "url": "https://github.com/acme/pay/pull/9", "number": 9, "state": "open"}})
 	check(t, "a patrol may not open a PR", r.status == 403, r)
@@ -76,7 +75,7 @@ func TestDutiesAndPatrols(t *testing.T) {
 	tv = e.do("GET", "/api/v1/triggers?channel="+e.cid, e.zw.session, nil).body["triggers"].([]any)[0].(map[string]any)
 	check(t, "the panel counts the last seven days", fmt.Sprint(tv["recent"]) == "map[nothing:1]", resp{raw: []byte(fmt.Sprint(tv))})
 
-	// the next one speaks: the ⚡ message goes up first, then its words, in that order; the reaction waits on it
+	// the next one speaks: the agent's own words open the thread as root (never a fake ⚡ user message)
 	e.advance(6 * time.Hour) // 16:00: the 15:00 one
 	e.h.Tick()
 	id2 := e.do("GET", "/api/v1/tasks?state=queued", e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
@@ -87,25 +86,26 @@ func TestDutiesAndPatrols(t *testing.T) {
 	check(t, "still quiet", len(e.channelTexts()) == before && e.task(id2)["quiet"] == true)
 	check(t, "it says something", e.do("POST", "/api/v1/agent/say", tok, map[string]any{"text": "主干红了，在查"}).status == 200)
 	texts := e.channelTexts()
-	check(t, "the ⚡ message is in the channel now", len(texts) == before+1 && strings.HasPrefix(texts[len(texts)-1], "⚡ @acha"), resp{raw: []byte(fmt.Sprint(texts))})
+	check(t, "the agent's own message is in the channel now without ⚡", len(texts) == before+1 && texts[len(texts)-1] == "主干红了，在查", resp{raw: []byte(fmt.Sprint(texts))})
 	root := e.task(id2)["thread_id"].(string)
 	rs := e.do("GET", "/api/v1/messages/"+root+"/thread", e.zw.session, nil).body
 	rootMsg := rs["root"].(map[string]any)
-	check(t, "under the id the task had, with the agent's reaction, and its words below", rootMsg["id"] == root && strings.Contains(fmt.Sprint(rootMsg["reactions"]), "🔍") &&
-		e.lastReply(root) == "主干红了，在查" && e.task(id2)["quiet"] == nil, resp{raw: []byte(fmt.Sprint(rs))})
+	check(t, "under the id the task had, authored by the agent", rootMsg["id"] == root && rootMsg["author"].(map[string]any)["kind"] == "agent" &&
+		rootMsg["text"] == "主干红了，在查" && e.task(id2)["quiet"] == nil, resp{raw: []byte(fmt.Sprint(rs))})
 	r = e.do("POST", "/api/v1/tasks/"+id2+"/report", e.token, map[string]any{"state": "review", "summary": "CI 红在 test_refund，原因是时区", "answer": true})
 	check(t, "it reports in the thread", r.status == 200 && e.lastReply(root) == "CI 红在 test_refund，原因是时区", r)
 	runs = e.dutyRuns(e.zw.session, "trigger="+a2)
 	check(t, "its line: it spoke", len(runs) == 1 && runs[0]["outcome"] == "spoke", resp{raw: []byte(fmt.Sprint(runs))})
 	check(t, "both triggers' lines in the duty's history, newest first", len(e.dutyRuns(e.zw.session, "channel="+e.cid+"&agent="+e.aid+"&duty="+url.QueryEscape("看住 主干"))) == 2)
 
-	// a patrol that fails is said as before: its message goes up with the failure
+	// a patrol that fails is not silent: its failure message opens the thread
 	e.advance(18 * time.Hour) // next day 10:00
 	e.h.Tick()
 	id3 := e.do("GET", "/api/v1/tasks?state=queued", e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
 	e.do("POST", "/api/v1/tasks/"+id3+"/claim", e.token, nil)
 	e.do("POST", "/api/v1/tasks/"+id3+"/report", e.token, map[string]any{"state": "failed", "summary": "运行失败：仓库打不开"})
-	check(t, "a failed patrol is not silent", e.task(id3)["quiet"] == nil && e.lastReply(e.task(id3)["thread_id"].(string)) == "运行失败：仓库打不开")
+	root3 := e.do("GET", "/api/v1/messages/"+e.task(id3)["thread_id"].(string)+"/thread", e.zw.session, nil).body["root"].(map[string]any)
+	check(t, "a failed patrol is not silent", e.task(id3)["quiet"] == nil && root3["text"] == "运行失败：仓库打不开")
 	runs = e.dutyRuns(e.zw.session, "trigger="+a1)
 	check(t, "and counts as failed", runs[0]["outcome"] == "failed", resp{raw: []byte(fmt.Sprint(runs))})
 
@@ -125,7 +125,7 @@ func TestDutiesAndPatrols(t *testing.T) {
 	e.h.Tick()
 	check(t, "resumed: it fires again", len(e.do("GET", "/api/v1/tasks", e.zw.session, nil).body["tasks"].([]any)) > n)
 
-	// a trigger that is not read-only works as before: the message at once, a tracked task; nothing is refused
+	// a trigger that is not read-only also wakes silently (ADR 0003), may open PRs, and stays silent on nothing
 	old := mk("11:00", "", map[string]any{"readonly": false})
 	before = len(e.channelTexts())
 	e.do("POST", "/api/v1/triggers/duty", e.zw.session, map[string]any{"channel_id": e.cid, "agent_id": e.aid, "duty": "看住 主干", "enabled": false})
@@ -137,10 +137,17 @@ func TestDutiesAndPatrols(t *testing.T) {
 	ts = e.do("GET", "/api/v1/tasks?state=queued", e.zw.session, nil).body["tasks"].([]any)
 	check(t, "the plain trigger fired once", len(ts) == 1 && ts[0].(map[string]any)["mandate"].(map[string]any)["trigger"] == old, resp{raw: []byte(fmt.Sprint(ts))})
 	plain := ts[0].(map[string]any)
-	check(t, "its message is there at once, its task tracked, not read-only", len(e.channelTexts()) == before+1 && plain["tracked"] == true && plain["readonly"] == nil && plain["quiet"] == nil)
+	check(t, "wakes quietly without a message, not read-only", len(e.channelTexts()) == before && plain["readonly"] == nil && plain["quiet"] == true)
 	cl = e.do("POST", "/api/v1/tasks/"+plain["id"].(string)+"/claim", e.token, nil)
-	r = e.do("POST", "/api/v1/tasks/"+plain["id"].(string)+"/report", e.token, map[string]any{"state": "nothing"})
-	check(t, "only a patrol may say nothing", cl.status == 200 && r.status == 400, cl, r)
+	r = e.do("POST", "/api/v1/tasks/"+plain["id"].(string)+"/report", e.token, map[string]any{"pr": map[string]any{"provider": "github", "url": "https://github.com/acme/pay/pull/10", "number": 10, "state": "open"}})
+	check(t, "a non-readonly trigger may open a PR", cl.status == 200 && r.status == 200, cl, r)
+	r = e.do("POST", "/api/v1/tasks/"+plain["id"].(string)+"/report", e.token, map[string]any{"state": "nothing", "summary": "无需发消息"})
+	check(t, "and a silent firing may report nothing", r.status == 200, r)
+	human := e.post(e.wl.session, "@acha 看一下", "")
+	humanID := e.do("GET", "/api/v1/tasks?thread="+human["id"].(string), e.wl.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	check(t, "owner's request starts", e.do("POST", "/api/v1/tasks/"+humanID+"/claim", e.token, nil).status == 200)
+	r = e.do("POST", "/api/v1/tasks/"+humanID+"/report", e.token, map[string]any{"state": "nothing"})
+	check(t, "a human @ request cannot report nothing", r.status == 400, r)
 	r = e.do("PATCH", "/api/v1/triggers/"+old, e.wl.session, map[string]any{"duty": "日常", "readonly": true})
 	check(t, "a trigger's duty and read-only switch can be changed", r.status == 200 && r.body["duty"] == "日常" && r.body["readonly"] == true, r)
 	check(t, "removing a trigger removes its history", e.do("DELETE", "/api/v1/triggers/"+old, e.wl.session, nil).status == 200 &&

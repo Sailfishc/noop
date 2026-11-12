@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -43,46 +44,112 @@ type outputVersion struct {
 	At    int64  `json:"at"`
 }
 
+type outputVersionMeta struct {
+	Version int   `json:"version"`
+	Size    int64 `json:"size"`
+	At      int64 `json:"at"`
+}
+
 type outputView struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`   // file | pr | external
-	Title      string `json:"title"`  // what people see
-	Status     string `json:"status"` // pending | ready | failed (a PR: open | merged | closed)
-	URL        string `json:"url,omitempty"`
-	Name       string `json:"name,omitempty"` // a file: its path under out/
-	Mime       string `json:"mime,omitempty"`
-	Size       int64  `json:"size,omitempty"`
-	Version    int    `json:"version,omitempty"`     // a file: how many times it was uploaded
-	Service    string `json:"service,omitempty"`     // an external result: which service keeps it
-	ExternalID string `json:"external_id,omitempty"` // and its id there
-	Note       string `json:"note,omitempty"`        // progress or why it failed
-	Preview    bool   `json:"preview,omitempty"`     // a preview image is kept here
-	Updated    int64  `json:"updated"`
+	ID         string              `json:"id"`
+	TaskID     string              `json:"task_id,omitempty"`
+	ThreadID   string              `json:"thread_id,omitempty"`
+	MessageID  string              `json:"message_id,omitempty"`
+	Kind       string              `json:"kind"`   // file | pr | external
+	Title      string              `json:"title"`  // what people see
+	Status     string              `json:"status"` // pending | ready | failed (a PR: open | merged | closed)
+	URL        string              `json:"url,omitempty"`
+	Name       string              `json:"name,omitempty"` // a file: its path under out/
+	Mime       string              `json:"mime,omitempty"`
+	Size       int64               `json:"size,omitempty"`
+	Version    int                 `json:"version,omitempty"`     // a file: how many times it was uploaded
+	Versions   []outputVersionMeta `json:"versions,omitempty"`    // file versions (1..Version) for WorkPanel switching
+	Service    string              `json:"service,omitempty"`     // an external result: which service keeps it
+	ExternalID string              `json:"external_id,omitempty"` // and its id there
+	Note       string              `json:"note,omitempty"`        // progress or why it failed
+	Preview    bool                `json:"preview,omitempty"`     // a preview image is kept here
+	Updated    int64               `json:"updated"`
 	media      string
 	preview    string
 	versions   []outputVersion
 }
 
-func (h *Hub) outputs(taskID string) []outputView {
-	rows, err := h.db.Query(`SELECT id, kind, title, status, url, name, mime, size, version, service, external_id, note, media, preview,
-		versions, updated FROM task_outputs WHERE task_id = ? ORDER BY created`, taskID)
-	if err != nil {
-		panic(err)
-	}
+const outputCols = `o.id, o.task_id, COALESCE((SELECT thread_id FROM tasks_v1 WHERE tasks_v1.id = o.task_id), ''),
+	COALESCE(o.message_id, ''), o.kind, o.title, o.status, o.url, o.name, o.mime, o.size, o.version,
+	o.service, o.external_id, o.note, o.media, o.preview, o.versions, o.updated`
+
+func scanOutputRows(rows interface {
+	Next() bool
+	Scan(...any) error
+	Close() error
+}) []outputView {
 	defer rows.Close()
 	out := []outputView{}
 	for rows.Next() {
 		var o outputView
 		var versions string
-		if err := rows.Scan(&o.ID, &o.Kind, &o.Title, &o.Status, &o.URL, &o.Name, &o.Mime, &o.Size, &o.Version, &o.Service, &o.ExternalID,
-			&o.Note, &o.media, &o.preview, &versions, &o.Updated); err != nil {
+		if err := rows.Scan(&o.ID, &o.TaskID, &o.ThreadID, &o.MessageID, &o.Kind, &o.Title, &o.Status, &o.URL, &o.Name,
+			&o.Mime, &o.Size, &o.Version, &o.Service, &o.ExternalID, &o.Note, &o.media, &o.preview, &versions, &o.Updated); err != nil {
 			panic(err)
 		}
 		_ = json.Unmarshal([]byte(versions), &o.versions)
+		if len(o.versions) > 0 {
+			o.Versions = make([]outputVersionMeta, len(o.versions))
+			for i, v := range o.versions {
+				o.Versions[i] = outputVersionMeta{Version: i + 1, Size: v.Size, At: v.At}
+			}
+		}
 		o.Preview = o.preview != ""
 		out = append(out, o)
 	}
 	return out
+}
+
+func (h *Hub) outputs(taskID string) []outputView {
+	rows, err := h.db.Query("SELECT "+outputCols+" FROM task_outputs o WHERE o.task_id = ? ORDER BY o.created", taskID)
+	if err != nil {
+		panic(err)
+	}
+	return scanOutputRows(rows)
+}
+
+func (h *Hub) withMessageOutputs(ms []messageView) []messageView {
+	if len(ms) == 0 {
+		return ms
+	}
+	ph := make([]string, len(ms))
+	args := make([]any, len(ms))
+	for i, m := range ms {
+		ph[i] = "?"
+		args[i] = m.ID
+	}
+	rows, err := h.db.Query("SELECT "+outputCols+" FROM task_outputs o WHERE o.message_id IN ("+strings.Join(ph, ",")+") ORDER BY o.created", args...)
+	if err != nil {
+		panic(err)
+	}
+	byMsg := map[string][]outputView{}
+	for _, o := range scanOutputRows(rows) {
+		byMsg[o.MessageID] = append(byMsg[o.MessageID], o)
+	}
+	for i := range ms {
+		if os := byMsg[ms[i].ID]; len(os) > 0 {
+			ms[i].Outputs = os
+		}
+	}
+	return ms
+}
+
+func (h *Hub) linkTaskOutputs(t taskView, msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	res, err := h.db.Exec("UPDATE task_outputs SET message_id = ?, channel_id = ? WHERE task_id = ? AND message_id IS NULL",
+		msgID, t.ChannelID, t.ID)
+	if err != nil {
+		panic(err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // withOutputs: the tasks with their outputs, the PR first.
@@ -94,7 +161,7 @@ func (h *Hub) withOutputs(ts []taskView) []taskView {
 			if title == "" {
 				title = fmt.Sprintf("PR #%d", pr.Number)
 			}
-			os = append(os, outputView{ID: ts[i].ID + "-pr", Kind: "pr", Title: title, Status: pr.State, URL: pr.URL, Note: pr.Checks, Updated: ts[i].Updated})
+			os = append(os, outputView{ID: ts[i].ID + "-pr", TaskID: ts[i].ID, ThreadID: ts[i].ThreadID, Kind: "pr", Title: title, Status: pr.State, URL: pr.URL, Note: pr.Checks, Updated: ts[i].Updated})
 		}
 		ts[i].Outputs = append(os, h.outputs(ts[i].ID)...)
 		ts[i].Events, ts[i].Calls = h.taskEvents(ts[i].ID)
@@ -103,6 +170,60 @@ func (h *Hub) withOutputs(ts []taskView) []taskView {
 		ts[i].Reminders = h.taskReminders(ts[i])
 	}
 	return ts
+}
+
+// v1ChannelOutputs: every output produced across messages and tasks in this channel (Spec §6: computed from messages/tasks,
+// no separate storage). Private channels are visible only to their members (404 to outsiders).
+func (h *Hub) v1ChannelOutputs(w http.ResponseWriter, q *request) {
+	c, ok := h.channel(q.r.PathValue("id"))
+	if !ok || !h.canRead(q.who, c.ID) {
+		errJSON(w, 404, "not found")
+		return
+	}
+	rows, err := h.db.Query("SELECT "+outputCols+` FROM task_outputs o
+		WHERE o.channel_id = ? OR o.task_id IN (SELECT id FROM tasks_v1 WHERE channel_id = ?)
+		ORDER BY o.updated DESC LIMIT 200`, c.ID, c.ID)
+	if err != nil {
+		panic(err)
+	}
+	outs := scanOutputRows(rows)
+	prRows, err := h.db.Query("SELECT id, thread_id, COALESCE(pr, ''), updated FROM tasks_v1 WHERE channel_id = ? AND pr IS NOT NULL ORDER BY updated DESC LIMIT 100", c.ID)
+	if err != nil {
+		panic(err)
+	}
+	type prRow struct {
+		id, thread, raw string
+		updated         int64
+	}
+	prs := []prRow{}
+	for prRows.Next() {
+		var r prRow
+		if err := prRows.Scan(&r.id, &r.thread, &r.raw, &r.updated); err != nil {
+			prRows.Close()
+			panic(err)
+		}
+		prs = append(prs, r)
+	}
+	prRows.Close()
+	for _, r := range prs {
+		if r.raw == "" {
+			continue
+		}
+		var pr prView
+		if json.Unmarshal([]byte(r.raw), &pr) != nil || pr.URL == "" {
+			continue
+		}
+		title := pr.Title
+		if title == "" {
+			title = fmt.Sprintf("PR #%d", pr.Number)
+		}
+		outs = append(outs, outputView{ID: r.id + "-pr", TaskID: r.id, ThreadID: r.thread, Kind: "pr", Title: title, Status: pr.State, URL: pr.URL, Note: pr.Checks, Updated: r.updated})
+	}
+	sort.SliceStable(outs, func(i, j int) bool { return outs[i].Updated > outs[j].Updated })
+	if len(outs) > 200 {
+		outs = outs[:200]
+	}
+	writeJSON(w, 200, obj{"outputs": outs})
 }
 
 // v1OutputUpload: the machine uploads a file of the task's out/ (the raw body; ?name=report.md). The same name again
@@ -154,11 +275,11 @@ func (h *Hub) storeOutput(w http.ResponseWriter, q *request, t taskView) {
 		if title == "" {
 			title = path.Base(name)
 		}
-		h.must(h.db.Exec(`INSERT INTO task_outputs (id, task_id, kind, title, status, name, mime, size, version, media, versions, created, updated)
-			VALUES (?, ?, 'file', ?, 'ready', ?, ?, ?, 1, ?, ?, ?, ?)`, id, t.ID, title, name, typ, len(q.body), media, string(vj), now, now))
+		h.must(h.db.Exec(`INSERT INTO task_outputs (id, task_id, channel_id, kind, title, status, name, mime, size, version, media, versions, created, updated)
+			VALUES (?, ?, ?, 'file', ?, 'ready', ?, ?, ?, 1, ?, ?, ?, ?)`, id, t.ID, t.ChannelID, title, name, typ, len(q.body), media, string(vj), now, now))
 	} else {
-		h.must(h.db.Exec("UPDATE task_outputs SET mime = ?, size = ?, version = ?, media = ?, versions = ?, status = 'ready', updated = ? WHERE id = ?",
-			typ, len(q.body), version+1, media, string(vj), now, id))
+		h.must(h.db.Exec("UPDATE task_outputs SET channel_id = ?, message_id = NULL, mime = ?, size = ?, version = ?, media = ?, versions = ?, status = 'ready', updated = ? WHERE id = ?",
+			t.ChannelID, typ, len(q.body), version+1, media, string(vj), now, id))
 	}
 	h.taskChanged(t.ID)
 	writeJSON(w, 200, obj{"id": id})
@@ -175,7 +296,8 @@ type outputReport struct {
 	Note       string `json:"note"`
 }
 
-func (h *Hub) applyOutputs(taskID string, rs []outputReport) {
+func (h *Hub) applyOutputs(t taskView, rs []outputReport) {
+	taskID := t.ID
 	for _, r := range rs {
 		if r.Kind == "" {
 			r.Kind = "external"
@@ -205,15 +327,15 @@ func (h *Hub) applyOutputs(taskID string, rs []outputReport) {
 			key, val = "title", title
 		}
 		if h.db.QueryRow("SELECT id FROM task_outputs WHERE task_id = ? AND kind = 'external' AND "+key+" = ?", taskID, val).Scan(&id) == nil {
-			h.must(h.db.Exec("UPDATE task_outputs SET title = ?, status = ?, url = COALESCE(NULLIF(?, ''), url), service = COALESCE(NULLIF(?, ''), service), note = ?, updated = ? WHERE id = ?",
-				title, status, u, trimmed(r.Service, 60), trimmed(r.Note, 300), now, id))
+			h.must(h.db.Exec("UPDATE task_outputs SET channel_id = ?, message_id = NULL, title = ?, status = ?, url = COALESCE(NULLIF(?, ''), url), service = COALESCE(NULLIF(?, ''), service), note = ?, updated = ? WHERE id = ?",
+				t.ChannelID, title, status, u, trimmed(r.Service, 60), trimmed(r.Note, 300), now, id))
 			continue
 		}
 		if h.count("SELECT COUNT(*) FROM task_outputs WHERE task_id = ?", taskID) >= maxOutputsOfTask {
 			return
 		}
-		h.must(h.db.Exec(`INSERT INTO task_outputs (id, task_id, kind, title, status, url, service, external_id, note, created, updated)
-			VALUES (?, ?, 'external', ?, ?, ?, ?, ?, ?, ?, ?)`, newID("o_"), taskID, title, status, u, trimmed(r.Service, 60), ext, trimmed(r.Note, 300), now, now))
+		h.must(h.db.Exec(`INSERT INTO task_outputs (id, task_id, channel_id, kind, title, status, url, service, external_id, note, created, updated)
+			VALUES (?, ?, ?, 'external', ?, ?, ?, ?, ?, ?, ?, ?)`, newID("o_"), taskID, t.ChannelID, title, status, u, trimmed(r.Service, 60), ext, trimmed(r.Note, 300), now, now))
 	}
 }
 

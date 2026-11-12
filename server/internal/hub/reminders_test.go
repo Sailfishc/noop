@@ -95,7 +95,8 @@ func TestReminders(t *testing.T) {
 	e.do("POST", "/api/v1/reminders/"+got[0].(map[string]any)["id"].(string)+"/seen", e.ll.session, nil)
 	check(t, "dismissed", len(list(e.ll.session)) == 0)
 
-	// an agent, every day: it is @-ed in its person's name, and the @ dispatches
+	// an agent, every day: woken silently without a ⏰ message in its person's name (ADR 0003)
+	beforeMsgs := len(e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, nil).body["messages"].([]any))
 	r = e.do("POST", "/api/v1/reminders", e.wl.session, map[string]any{"command": "每天 9:00 @acha 汇总昨天的告警", "channel_id": e.cid})
 	check(t, "daily for an agent", r.status == 200 && r.body["repeat"] == "daily" && r.body["target"].(map[string]any)["kind"] == "agent", r)
 	rid = r.body["id"].(string)
@@ -103,11 +104,9 @@ func TestReminders(t *testing.T) {
 	e.advance(24 * time.Hour)
 	e.h.Tick()
 	ms := e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, nil).body["messages"].([]any)
-	last := ms[len(ms)-1].(map[string]any)
-	check(t, "the agent is @-ed by the person", strings.HasPrefix(last["text"].(string), "⏰ @acha 汇总昨天的告警") &&
-		last["author"].(map[string]any)["id"] == e.wl.id)
-	tasks := e.do("GET", "/api/v1/tasks?thread="+last["id"].(string), e.wl.session, nil).body["tasks"].([]any)
-	check(t, "and it is a task for it", len(tasks) == 1)
+	check(t, "no ⏰ message posted when the reminder fires", len(ms) == beforeMsgs)
+	tasks := e.do("GET", "/api/v1/tasks?state=queued", e.wl.session, nil).body["tasks"].([]any)
+	check(t, "and a quiet task is queued for it", len(tasks) == 1 && tasks[0].(map[string]any)["quiet"] == true)
 	rem, _ := e.h.reminder(rid)
 	check(t, "and it is due again a day later", float64(rem.Due) == first+float64(24*time.Hour/time.Millisecond) && !rem.Done)
 
@@ -121,7 +120,9 @@ func TestReminders(t *testing.T) {
 	check(t, "the person sees what the agent set in their name", len(list(e.wl.session)) == 3)
 	check(t, "a bad time", e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("回头 看"), "content-type", "text/plain").status == 400)
 	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "汇总好了"})
-	check(t, "in review", e.task(id)["state"] == "review")
+	ms = e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, nil).body["messages"].([]any)
+	check(t, "in review, and the agent's own words opened the thread", e.task(id)["state"] == "review" && len(ms) == beforeMsgs+1 &&
+		ms[len(ms)-1].(map[string]any)["text"] == "汇总好了" && ms[len(ms)-1].(map[string]any)["author"].(map[string]any)["kind"] == "agent")
 	e.advance(30 * time.Hour)
 	e.h.Tick()
 	check(t, "its own reminder brings the task back", e.task(id)["state"] == "queued", resp{raw: []byte(e.task(id)["state"].(string))})
@@ -179,17 +180,20 @@ func TestIntervalReminders(t *testing.T) {
 	check(t, "still queued: skipped, no new message", len(msgs()) == n && rem.Due > e.now().UnixMilli())
 	id := tasks[0].(map[string]any)["id"].(string)
 	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
-	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "MR !12 还在等 CI"})
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "nothing", "summary": "MR !12 还没变"})
+	rem, _ = e.h.reminder(rid)
+	check(t, "silent check: no message posted, checks=1, no_change=1", len(msgs()) == n && rem.Checks == 1 && rem.NoChange == 1 && rem.LastOutcome == "nothing")
 	e.advance(10 * time.Minute)
 	e.h.Tick()
 	check(t, "done with the last one: the next goes into the same thread", e.task(id)["state"] == "queued")
-	top := 0
-	for _, m := range msgs() {
-		if strings.HasPrefix(m.(map[string]any)["text"].(string), "⏰") {
-			top++
-		}
-	}
-	check(t, "one thread, not one per firing", top == 1)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "MR !12 还在等 CI"})
+	rem, _ = e.h.reminder(rid)
+	check(t, "when it speaks: one root message in the agent's own words, never ⏰", len(msgs()) == n+1 &&
+		msgs()[len(msgs())-1].(map[string]any)["text"] == "MR !12 还在等 CI" && rem.Checks == 2 && rem.NoChange == 1)
+	e.advance(10 * time.Minute)
+	e.h.Tick()
+	check(t, "next check wakes the same thread", e.task(id)["state"] == "queued")
 
 	// an agent: only for itself, at most 3, and it stops after a day
 	tok := e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil).body["read_token"].(string)
@@ -265,8 +269,8 @@ func TestAgentCancelsReminders(t *testing.T) {
 	daily := e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"command": "每天 9:00 @acha 汇总告警", "channel_id": e.cid})
 	e.advance(24 * time.Hour)
 	e.h.Tick()
-	ms := e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, nil).body["messages"].([]any)
-	fired := ms[len(ms)-1].(map[string]any)["id"].(string)
+	qts := e.do("GET", "/api/v1/tasks?state=queued", e.zw.session, nil).body["tasks"].([]any)
+	fired := qts[len(qts)-1].(map[string]any)["thread_id"].(string)
 	tok2 := run(fired)
 	check(t, "its person's daily one is listed", strings.Contains(text(e.do("GET", "/api/v1/agent/reminders", tok2, nil)), daily.body["id"].(string)))
 	check(t, "and can be stopped", cancel(tok2, daily.body["id"].(string)).status == 200)

@@ -6,7 +6,7 @@
 import { computed, effect, type JSX, Scroll, signal, Storage, Text, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { Avatar, colors, Dot, hovered, Icon, MenuRow, PopMenu, tone } from "../ui";
-import { channelLabel, type Task, type Team } from "./api";
+import { channelLabel, planSummary, type Task, type Team } from "./api";
 import { STATUS, STATUSES, statusOf, type Status, type Tone } from "./status";
 import { concernsMe, liveLine, needsMe, taskRef, waitsOn } from "./taskpeople";
 import { Header, time, WIDE } from "./ui";
@@ -69,8 +69,8 @@ function TaskRow(props: { team: Team; task: Task; showStatus?: boolean; showChan
       </If>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Avatar name={agent()?.name ?? "?"} agent size={16} />
-        <Text style={{ flexShrink: 1, fontSize: 12, color: colors.fg2, numberOfLines: 1 }}>
-          {[`@${agent()?.handle ?? "?"}`, liveLine(task()) || time(task().updated)].join(" · ")}
+        <Text testID={`taskrow-${task().id}-agent`} style={{ flexShrink: 1, fontSize: 12, color: colors.fg2, numberOfLines: 1 }}>
+          {[`@${agent()?.handle ?? "?"}`, planSummary(task())?.ratio ?? "", liveLine(task()) || time(task().updated)].filter(Boolean).join(" · ")}
         </Text>
         <View style={{ flex: 1 }} />
         <If when={outs()}>

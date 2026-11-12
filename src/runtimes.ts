@@ -8,9 +8,12 @@ import { DEFAULT_GATES } from "./gates";
 import { addUsage, type Usage } from "./runfail";
 import { codexMcpArgs, type McpServer } from "./teamconfig";
 
+export type PlanItem = { text: string; status: "pending" | "in_progress" | "done" };
+
 /** What a run is doing, for the task card ("运行 bun test", "改 src/orders.ts"). "idle": a tool call finished and the
  * agent is between calls, a safe moment to stop it and resume the session with news (teamwork.ts, steering). */
-export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "message"; text: string } | { kind: "error"; text: string }
+export type RunEvent = { kind: "session"; id: string } | { kind: "step"; text: string } | { kind: "plan"; items: PlanItem[] }
+  | { kind: "message"; text: string } | { kind: "error"; text: string }
   | { kind: "usage"; usage: Usage } | { kind: "idle" };
 const IDLE: RunEvent = { kind: "idle" };
 
@@ -67,6 +70,20 @@ const short = (s: string, n = 120) => {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
+function codexPlan(raw: unknown): PlanItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: PlanItem[] = [];
+  let markedActive = false;
+  for (const x of raw.slice(0, 50)) {
+    const text = short(x?.text ?? x?.content ?? "", 200);
+    if (!text) continue;
+    if (x?.completed) items.push({ text, status: "done" });
+    else if (!markedActive) { markedActive = true; items.push({ text, status: "in_progress" }); }
+    else items.push({ text, status: "pending" });
+  }
+  return items;
+}
+
 /** One line of `codex exec --json` → what it means for us (null: nothing worth showing). */
 export function codexEvent(line: string): RunEvent | RunEvent[] | null {
   let e: any;
@@ -86,8 +103,10 @@ export function codexEvent(line: string): RunEvent | RunEvent[] | null {
     case "error":
       return { kind: "error", text: String(e.message ?? "error") };
     case "item.started":
+    case "item.updated":
     case "item.completed": {
       const it = e.item ?? {};
+      if (e.type === "item.updated" && it.type !== "todo_list") return null;
       switch (it.type) {
         case "agent_message":
           return e.type === "item.completed" ? { kind: "message", text: String(it.text ?? "") } : null;
@@ -102,8 +121,13 @@ export function codexEvent(line: string): RunEvent | RunEvent[] | null {
         case "mcp_tool_call":
           return e.type === "item.started" ? { kind: "step", text: `调用 ${it.server ?? ""}${it.tool ? `.${it.tool}` : ""}` } : IDLE;
         case "todo_list": {
+          const items = codexPlan(it.items);
           const next = (it.items ?? []).find((x: any) => !x.completed);
-          return next ? { kind: "step", text: short(next.text, 100) } : null;
+          const out: RunEvent[] = [];
+          if (Array.isArray(it.items)) out.push({ kind: "plan", items });
+          if (next) out.push({ kind: "step", text: short(next.text, 100) });
+          if (e.type === "item.completed") out.push(IDLE);
+          return out.length === 1 ? out[0]! : out.length ? out : null;
         }
       }
       return null;
@@ -278,6 +302,22 @@ function toolStep(name: string, input: any): string | null {
   return `调用 ${name}`;
 }
 
+function claudePlan(raw: unknown): PlanItem[] {
+  if (!Array.isArray(raw)) return [];
+  const items: PlanItem[] = [];
+  for (const x of raw.slice(0, 50)) {
+    const text = short(x?.content ?? x?.text ?? "", 200);
+    if (!text) continue;
+    const st = x?.status === "completed" || x?.status === "done"
+      ? "done"
+      : x?.status === "in_progress"
+      ? "in_progress"
+      : "pending";
+    items.push({ text, status: st });
+  }
+  return items;
+}
+
 /** One line of `claude -p --output-format stream-json --verbose` → what it means for us. */
 export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
   let e: any;
@@ -289,8 +329,15 @@ export function claudeEvent(line: string): RunEvent | RunEvent[] | null {
       if (e.parent_tool_use_id) return null; // a subagent's inner steps
       const out: RunEvent[] = [];
       for (const c of e.message?.content ?? []) {
-        if (c.type === "tool_use") { const s = toolStep(String(c.name ?? ""), c.input); if (s) out.push({ kind: "step", text: s }); }
-        else if (c.type === "text" && c.text) out.push({ kind: "message", text: String(c.text) }); // said along the way (the result is the last word)
+        if (c.type === "tool_use") {
+          const name = String(c.name ?? "");
+          if (name.toLowerCase() === "todowrite") {
+            const items = claudePlan(c.input?.todos);
+            if (Array.isArray(c.input?.todos)) out.push({ kind: "plan", items });
+          }
+          const s = toolStep(name, c.input);
+          if (s) out.push({ kind: "step", text: s });
+        } else if (c.type === "text" && c.text) out.push({ kind: "message", text: String(c.text) }); // said along the way (the result is the last word)
       }
       return out.length ? out : null;
     }

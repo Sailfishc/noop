@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { RUNTIMES, type RunEvent, type Runtime, type RunResult } from "./runtimes";
+import { RUNTIMES, type PlanItem, type RunEvent, type Runtime, type RunResult } from "./runtimes";
 import { CHECKPOINT_EVERY, dropCheckpoint, keptCheckpoints, saveCheckpoint } from "./checkpoint";
 import { RUNTIME_NAMES } from "./gitflow";
 import { addUsage, classify, FAILURE_TEXT, type Failure, failureText, planFor, resetAt, type Usage } from "./runfail";
@@ -45,12 +45,19 @@ export type TeamTask = {
   /** A read-only run, a patrol a trigger started (server teamduties.go): it changes nothing (what it changes in a
    * repository is thrown away), opens no PR, and may end with "nothing" when nobody needs to hear of it. */
   readonly?: boolean;
+  /** Why a run woke silently without a person's message (reminder, trigger, or channel TL). */
+  firing?: Firing | null;
+  /** Shared conversation workdir id when consecutive messages reuse one runtime session (ADR 0001). */
+  conv_id?: string;
+  /** Live plan checklist synced from the runtime's own todo list (Spec §7). */
+  plan?: PlanItem[] | null;
 };
+export type Firing = { kind: "reminder" | "trigger" | "tl"; id?: string; text?: string; prev_state?: string };
 export type TaskCheckpoint = { at: number; checked?: number; machine?: string; repos: { repo: string; branch: string; commit?: string; head?: string; error?: string }[]; files?: { id: string; size: number } | null; error?: string };
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string;
   /** It came from another agent (a handoff) or a trigger, not from a person's own words. */
-  via?: string[] | null; parent?: string; trigger?: string;
+  via?: string[] | null; parent?: string; trigger?: string; reminder?: string;
   /** The agent of the parent task delegated a part to it (remi delegate): its result goes back to that agent. */
   delegated?: boolean; redos?: number };
 export type Claim = {
@@ -58,10 +65,14 @@ export type Claim = {
   /** repo: the channel's usual repository, a hint (the agent declares a repository itself with `remi repo`). */
   /** conventions: how the channel works, written by its members. */
   channel: { id: string; name: string; topic: string; repo?: string; conventions?: string };
-  recent: TeamMessage[]; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
+  recent: TeamMessage[]; conv_recent?: TeamMessage[] | null; thread: TeamMessage[]; new: TeamMessage[]; names: Record<string, string>;
   creator: { name: string; handle: string }; resumed: boolean;
   /** Why a waiting task woke (and what a callback posted). */
   wake?: Wake | null;
+  /** Why a run woke silently without a person's message. */
+  firing?: Firing | null;
+  /** In-flight tasks in the channel when woken as the channel's TL (Spec §4). */
+  active_tasks?: string;
   /** Where an outside service can post to wake this task. */
   callback_url?: string;
   /** What the run's `remi` command reads the chat with (only while this task runs). */
@@ -288,9 +299,29 @@ When nothing you found is worth a person's attention (all is as it should be), e
 Then nothing is posted: no message, nobody is told; the summary only goes into the trigger's history. Otherwise end
 with the usual result block (review when you have something to tell).`;
 
+const FIRING_SILENT = `# Silent firing (no message was posted in anyone's name)
+You were woken quietly by a scheduled reminder or trigger — nobody posted a chat message.
+- Check what it asks. Speak ONLY if something changed or needs a person's attention, in your own words.
+- If nothing changed since the last check (nothing worth interrupting people for), do NOT call \`remi say\` and end with:
+\`\`\`json
+{"status": "nothing", "summary": "one short line: what you checked"}
+\`\`\`
+Then nothing is posted in the chat — only the check count updates.`;
+
+function tlPromptSection(c: Claim, f: Firing): string {
+  return `# Channel TL wake (unaddressed message in #${c.channel.name})
+You are the TL of #${c.channel.name}. Someone posted in the channel without @-mentioning anyone:
+${f.text || "(see latest messages)"}
+${c.active_tasks?.trim() ? `\nActive tasks in #${c.channel.name} right now:\n${c.active_tasks.trim()}\n` : ""}
+Choose ONE of three reactions:
+1. Stay silent: when people are talking among themselves, venting, or saying things that do not call for an agent, do NOT call \`remi say\` and end with \`{"status": "nothing", "summary": "why you stayed silent"}\` — nothing appears in the channel.
+2. Route or point out overlap: when another agent in the channel is a better fit, hand the work to it (\`remi handoff @AGENT WHAT\` or \`remi delegate @AGENT WHAT\`) instead of doing everything yourself; when an active task above already covers that area, tell the person (\`这块 @某某 正在改\`); or @-mention the right person.
+3. Answer or act yourself: when it is a question you can answer or no better-suited agent is in the channel, answer directly (or claim as a task if it requires changes).`;
+}
+
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): string {
-  const a = c.agent, t = c.task;
+  const a = c.agent, t = c.task, firing = c.firing ?? t.firing;
   const conventions = [
     team?.instructions ? `# Team conventions (the team's AGENTS.md; they hold in every channel)\n${team.instructions}\n\n` : "",
     c.channel.conventions ? `# How #${c.channel.name} works (its members wrote this; it comes before the team's conventions)\n${c.channel.conventions}\n\n` : "",
@@ -307,7 +338,7 @@ ${RULES(wd, c)}${t.repo ? `\nRepository: ${t.repo}` : ""}
 ${conventions}# Channel #${c.channel.name}
 ${c.channel.topic ? `Purpose: ${c.channel.topic}\n` : ""}Latest messages (oldest first, cut to 600 characters; \`remi read\` for more):
 ${quote(c, c.recent) || "(none)"}
-
+${c.conv_recent?.length ? `\n# Earlier conversation context (your previous session expired after idle; resume naturally from what was said)\n${quote(c, c.conv_recent)}\n` : ""}
 # Request ${t.id}: ${t.title}${t.tracked ? " (tracked as a task)" : ""}
 Asked by ${c.creator.name} (@${c.creator.handle}).${mandateLine(c)}
 The request and its thread:
@@ -315,10 +346,8 @@ ${quote(c, c.thread)}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
-${t.readonly ? `\n${PATROL}\n` : mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.agents?.trim() ? `\n${AGENTS(c.agents)}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
-${REACT}
-
-${RESULT_SPEC}`;
+${t.readonly ? `\n${PATROL}\n` : firing?.kind === "tl" ? `\n${tlPromptSection(c, firing)}\n` : firing ? `\n${FIRING_SILENT}\n` : mayAlign(t) ? `\n${ALIGN}\n` : ""}${c.read_token ? `\n${LOOKUP}\n` : ""}${c.agents?.trim() ? `\n${AGENTS(c.agents)}\n` : ""}${c.callback_url ? `\nCallback address for outside services (a POST there wakes you while you wait; it may not be reachable from the internet): ${c.callback_url}\n` : ""}
+${firing ? (firing.kind === "tl" ? "Only send a `react:` line if you decide to answer or act (do NOT send `react:` if you stay silent with `\"status\": \"nothing\"`).\n\n" : "") : `${REACT}\n\n`}${RESULT_SPEC}`;
 }
 
 const HELD: Record<string, string> = { quota: "hit its usage limit", billing: "ran out of credit", auth: "was logged out", not_installed: "is not installed" };
@@ -381,10 +410,10 @@ react: <one emoji>
 choosing the emoji from how you read this request, the way a teammate reacts in chat: e.g. 🔍 a lookup or question, 🐛 a
 bug to fix, 🛠️ a change to make, 📝 writing, 📊 numbers or a report, 🎨 design, 🤔 unclear (say what is unclear when you
 report), 🙌 a quick yes. Pick what fits; it goes on the person's message in the channel.
-If fulfilling the request needs you to act beyond replying (change files, run commands that change something, open a
-pull request, submit to an outside service, produce a file), claim it as a task in that same message with a second line
+If fulfilling the request needs you to act beyond replying (change repository code, run commands that change external state, open a
+pull request, submit to an outside service, or carry out multi-step work that needs acceptance), claim it as a task in that same message with a second line
 task: <a short title, under 30 characters, in the people's language, saying what the work is>
-so the team can track it. Only answering a question or talking needs no claim. When the request is already tracked as a
+so the team can track it. Answering a question or talking (even when attaching a file or chart in out/) needs no claim. When the request is already tracked as a
 task, still give that line: it names the task on the team's board (people may rename it later).`;
 
 const WAKE: Record<Wake["reason"], string> = {
@@ -424,12 +453,34 @@ an outside result too), and report; wait again only if it is still running.
 ${RESULT_SPEC}`;
 }
 
+/** A later turn woken silently by a reminder, trigger, or channel TL in an existing session. */
+export function firingPrompt(c: Claim): string {
+  const f = (c.firing ?? c.task.firing)!;
+  if (f.kind === "tl") {
+    return `${tlPromptSection(c, f)}${c.agents?.trim() ? `\n\n${AGENTS(c.agents)}` : ""}
+
+Only send a \`react:\` line if you decide to answer or act (do NOT send \`react:\` if you stay silent with \`"status": "nothing"\`).
+
+${RESULT_SPEC}`;
+  }
+  return `A ${f.kind === "trigger" ? "trigger" : "scheduled reminder"} woke you silently (nobody posted a message)${f.text ? `:\n${f.text}` : "."}
+${c.new.length ? `\nPeople in the thread also said since your last turn:\n${quote(c, c.new)}\n` : ""}
+Check what changed since your last turn. Speak ONLY if something changed or needs a person's attention, in your own words.
+If nothing changed, do NOT call \`remi say\` and end with:
+\`\`\`json
+{"status": "nothing", "summary": "one short line: what you checked"}
+\`\`\`
+
+${RESULT_SPEC}`;
+}
+
 /** A later turn of the same session: only what people said since, and the decision answer if there is one. */
 export function followUpPrompt(c: Claim): string {
-  return `People in the task's thread said more since your last turn:
+  const shared = !!(c.task.conv_id && c.task.conv_id !== c.task.id);
+  return `${shared ? `New message in #${c.channel.name} (continuing your conversation; current request id is ${c.task.id}):` : "People in the task's thread said more since your last turn:"}
 ${quote(c, c.new)}
-
-Continue the task with this in mind (same rules as before).
+${shared && c.task.acceptance?.trim() ? `\nAcceptance criteria:\n${c.task.acceptance.trim()}\n` : ""}
+Continue ${shared ? "the conversation (answer directly if it is a question, or claim it with a `task:` line if it requires changing files or external work)" : "the task"} with this in mind (same rules as before).
 
 ${REACT}
 
@@ -534,7 +585,9 @@ async function git(cwd: string, ...args: string[]): Promise<{ ok: boolean; out: 
  * directory for a general task. The repository is the task's own (found or cloned on this machine by `resolve`), or,
  * when the task names none, the agent's repo path. */
 export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: string) => Promise<string>, fetchCheckpoint?: (taskId: string) => Promise<Uint8Array | null>): Promise<Workdir> {
-  const dir = join(root, c.task.id);
+  const workId = c.task.conv_id || c.task.id;
+  const sharedNewTurn = workId !== c.task.id && !c.resumed && (c.task.runs ?? 0) <= 1;
+  const dir = join(root, workId);
   let repoPath = c.agent.repo ? expand(c.agent.repo) : "";
   if (c.task.repo) {
     if (!resolve) throw new Error(`这台机器不知道去哪找 ${c.task.repo}`);
@@ -554,6 +607,7 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
         if (x.exitCode === 0) restored = "checkpoint";
       }
     }
+    if (sharedNewTurn) rmSync(join(dir, "out"), { recursive: true, force: true });
     mkdirSync(join(dir, "in"), { recursive: true });
     mkdirSync(join(dir, "out"), { recursive: true });
     return { cwd: dir, writable: [], files: dir, ...(restored ? { restored } : {}) };
@@ -565,6 +619,7 @@ export async function prepareWorkdir(c: Claim, root: string, resolve?: (remote: 
   const declared = new Set(c.task.repos ?? []);
   const point = c.task.moves ? c.task.checkpoint?.repos.find((r) => !declared.has(r.repo)) : undefined;
   const { base, common, setup, restored } = await worktree(repoPath, dir, branch, c.task.moves ? point ?? {} : undefined);
+  if (sharedNewTurn) await git(dir, "checkout", "-B", branch, base);
   const files = join(root, `${c.task.id}.files`);
   mkdirSync(join(files, "in"), { recursive: true });
   mkdirSync(join(files, "out"), { recursive: true });
@@ -969,8 +1024,8 @@ status of a pull request or CI run needs no checkout (\`gh pr view N -R owner/na
 person must do or check something; another agent is the right one for the next step), pass it on with
 \`remi handoff @WHO WHAT\`: a person gets the ball at once; another agent gets it at once where the person who asked
 may use it directly ("no card" in \`remi who\`), else only once its owner agrees on a card. Do not @-mention agents to
-make them work. On a long task you may also tell the thread how it goes with \`remi say TEXT\` (at
-most every 5 minutes, only when people would want to know), and hand over a file before you stop with
+make them work. Your runtime's own todo list updates the task's live plan checklist automatically — do NOT call \`remi say\` just to report routine step progress; use \`remi say TEXT\` (at
+most every 5 minutes) only when you discover something genuinely worth telling people mid-run, and hand over a file before you stop with
 \`remi upload FILE\`. When someone wants to be reminded, or wants something done later or again and again ("remind me in
 2 minutes", "remind me on Friday…", "every morning…"), always set it with
 \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` (WHEN: 2m, 1h, 3d, 9:30, tomorrow 9:00, fri 17:00), then finish
@@ -1217,11 +1272,21 @@ export function createWorker(o: WorkerOptions) {
       afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
     }
     const resume = t.session;
-    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") + switchedPrompt(c) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const firing = c.firing ?? t.firing;
+    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") + switchedPrompt(c) : firing ? firingPrompt(c) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
+    let latestPlan: PlanItem[] | undefined, pendingPlan: PlanItem[] | undefined;
     const every = o.stepEveryMs ?? 5000;
     let stepTimer: ReturnType<typeof setTimeout> | undefined;
-    const flushStep = () => { stepTimer = undefined; if (pendingStep) void report(t.id, { step: pendingStep }); lastStep = Date.now(); pendingStep = ""; };
+    const flushStep = () => {
+      stepTimer = undefined;
+      if (pendingStep || pendingPlan) {
+        void report(t.id, { ...(pendingStep ? { step: pendingStep } : {}), ...(pendingPlan ? { plan: pendingPlan } : {}) });
+      }
+      lastStep = Date.now();
+      pendingStep = "";
+      pendingPlan = undefined;
+    };
     let reacted = false, claimed = false;
     // steering: news came while it runs. Between tool calls the run is stopped at once; during one, when it ends (or
     // after steerWaitMs). The loop below then takes the news (a claim of the running task) and resumes the session.
@@ -1245,6 +1310,13 @@ export function createWorker(o: WorkerOptions) {
       if (e.kind === "message" && !claimed && (!t.tracked || !t.titled)) {
         const title = taskClaimOf(e.text);
         if (title !== null) { claimed = true; void report(t.id, { track: true, ...(title ? { title } : {}) }); }
+      }
+      if (e.kind === "plan") {
+        latestPlan = e.items;
+        pendingPlan = e.items;
+        if (Date.now() - lastStep >= every) flushStep();
+        else stepTimer ??= setTimeout(flushStep, every - (Date.now() - lastStep));
+        return;
       }
       if (e.kind !== "step") return;
       pendingStep = e.text;
@@ -1386,10 +1458,15 @@ export function createWorker(o: WorkerOptions) {
     if (await moved(t.id)) { log(`${t.id} 已经换到另一台电脑，这次运行作废：不推送、不开 PR`); return; }
     let extra: { pr?: PR; note?: string } | null = null;
     const morePRs: PR[] = [], moreNotes: string[] = [];
+    const canNothing = t.readonly || !!(c.firing ?? t.firing);
     if (t.readonly) { // a patrol: what it changed in a repository is thrown away, nothing is pushed
       if (await discard(wd)) { moreNotes.push("这是只读巡视，对仓库的改动已丢弃"); if (result.status === "nothing") result = { ...result, status: "review" }; }
       if (result.status === "nothing" && wd.files && outFiles(join(wd.files, "out")).length) result = { ...result, status: "review" }; // it made a report: that is something to hand over
-    } else if (result.status === "nothing") result = { ...result, status: "review" }; // only a patrol may stay silent
+    } else if (result.status === "nothing" && !canNothing) {
+      result = { ...result, status: "review" }; // only a patrol or silent firing may stay silent
+    } else if (result.status === "nothing" && ((wd.files && outFiles(join(wd.files, "out")).length) || (await touched(wd)))) {
+      result = { ...result, status: "review" };
+    }
     if (result.status === "nothing") {
       await finish(t, { state: "nothing", summary: result.summary, session: r.session, ...(usage ? { usage } : {}) });
       log(`${t.id} → nothing（巡视没有发现，不发消息）`);
@@ -1420,7 +1497,7 @@ export function createWorker(o: WorkerOptions) {
       }
     }
     const summary = [result.summary, extra?.pr ? `PR：${extra.pr.url}` : "", ...morePRs.map((p) => `PR：${p.url}`), extra?.note ?? "", ...moreNotes, notes.join("；")].filter(Boolean).join("\n\n");
-    const body: Record<string, unknown> = { state: result.status, summary, session: r.session, ...(usage ? { usage } : {}) };
+    const body: Record<string, unknown> = { state: result.status, summary, session: r.session, ...(usage ? { usage } : {}), ...(latestPlan ? { plan: latestPlan } : {}) };
     if (result.result === "confirmed" || result.result === "unconfirmed") body.result = result.result;
     if (result.status === "waiting" && result.wait) {
       const w = result.wait;
@@ -1428,10 +1505,12 @@ export function createWorker(o: WorkerOptions) {
       body.wait = { how: w.how, every: seconds(w.every), expect: seconds(w.expect), deadline: seconds(w.deadline), what: w.what ?? "" };
     }
     if (extra?.pr) body.pr = extra.pr;
-    // Nothing changed (no commits or edits, no PR, no files, no outside results) and nothing left unconfirmed: the
-    // summary is the whole result (a question answered, a lookup), so it needs nobody's acceptance.
+    // Nothing changed in a repository, no PR or outside results, and nothing left unconfirmed: an untracked conversation
+    // turn (even when it carries files in out/, Spec §6) or a run with no files is an answer that needs nobody's acceptance.
+    const hasOutFiles = !!(wd.files && outFiles(join(wd.files, "out")).length);
+    const plainTurn = t.tracked === false && !claimed;
     if (result.status === "review" && result.result !== "unconfirmed" && !extra?.pr && !t.pr && !outputs.length && !morePRs.length
-      && !(wd.files && outFiles(join(wd.files, "out")).length) && !(await touched(wd))) body.answer = true;
+      && (plainTurn || !hasOutFiles) && !(await touched(wd))) body.answer = true;
     if (result.status === "review" && Array.isArray(result.evidence)) {
       body.evidence = result.evidence.filter((e) => e && Number.isInteger(Number(e.criterion))).slice(0, 20)
         .map((e) => ({ criterion: Number(e.criterion), how: String(e.how ?? ""), proof: String(e.proof ?? "").slice(0, 2000), ...(e.file ? { file: String(e.file) } : {}) }));

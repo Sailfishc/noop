@@ -194,6 +194,7 @@ func (h *Hub) v1TaskEngine(w http.ResponseWriter, q *request) {
 		h.putRuntimeStatus(machine, a.Runtime, s)
 	}
 	h.setEngine(t.ID, &e)
+	h.convDetach(t)
 	runtime := to
 	if to == agent.Runtime {
 		runtime = "" // back to the agent's own

@@ -26,7 +26,7 @@ export function Tabs<T extends string>(props: { tabs: { value: T; label: string;
             onLayout={s.layout(t().value)}
             hoverStyle={hovered()}
             focusStyle={focusRing()}
-            style={{ minHeight: size.mark.tab, flexDirection: "row", alignItems: "center", gap: space.sm, paddingHorizontal: space.md, borderBottomWidth: stroke.underline, borderBottomColor: props.value === t().value && !s.ready() ? colors.fg : "transparent" }}
+            style={{ minHeight: size.mark.tab, minWidth: size.hit, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space.sm, paddingHorizontal: space.md, borderBottomWidth: stroke.underline, borderBottomColor: props.value === t().value && !s.ready() ? colors.fg : "transparent" }}
           >
             <Text style={{ fontSize: size.text.body, fontWeight: props.value === t().value ? "600" : "400", color: props.value === t().value ? colors.fg : colors.fg2 }}>{t().label}</Text>
             <If when={t().count}>

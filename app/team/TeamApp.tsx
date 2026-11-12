@@ -15,7 +15,7 @@ import { agentState, chrome, FOOTER, WIDE } from "./ui";
 import { agentCommands, bindShortcuts, channelCommands, paletteCommands, type Cmd, type Nav } from "./commands";
 import { composeInto } from "./composer";
 import { concernsMe } from "./taskpeople";
-import { ChannelView, DMDraft, MembersPanel, NewChannel, ThreadView, type Side } from "./channel";
+import { ChannelView, DMDraft, MembersPanel, NewChannel, WorkPanel, type Side } from "./channel";
 import { Inbox } from "./inbox";
 import { watchNotifications } from "./notify";
 import { SignIn } from "./signin";
@@ -156,7 +156,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       return (
         <ChannelView
           team={t} id={p.id} back={!wide()} onBack={() => { t.leaveView(); showList.set(true); }}
-          side={side()} onThread={(id) => side.set({ kind: "thread", id })} onMembers={() => side.set(side()?.kind === "members" ? null : { kind: "members" })}
+          side={side()} onThread={(id, tab, outputId) => side.set({ kind: "thread", id, tab, outputId, at: Date.now() })} onMembers={() => side.set(side()?.kind === "members" ? null : { kind: "members" })}
         />
       );
     }
@@ -200,7 +200,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   const sidePane = (back: boolean) => {
     const s = side(), p = page();
     if (!s || p.kind !== "channel") return null;
-    if (s.kind === "thread") return <ThreadView team={t} rootId={s.id} back={back} onClose={() => side.set(null)} />;
+    if (s.kind === "thread") return <WorkPanel team={t} rootId={s.id} initialTab={s.tab} initialOutputId={s.outputId} openAt={s.at} back={back} onClose={() => side.set(null)} />;
     return <MembersPanel team={t} channelId={p.id} back={back} onClose={() => side.set(null)} onAgent={(h) => openSettings("agents", h)} />;
   };
 

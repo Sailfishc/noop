@@ -50,7 +50,11 @@ const out = (o: any) => {
   if (!claude) return console.log(JSON.stringify(o));
   const line = (x: unknown) => console.log(JSON.stringify(x));
   if (o.type === "thread.started") line({ type: "system", subtype: "init", session_id: o.thread_id });
-  else if (o.type === "item.started") line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: o.item.command } }] } });
+  else if ((o.type === "item.started" || o.type === "item.updated" || o.type === "item.completed") && o.item?.type === "todo_list") {
+    line({ type: "assistant", message: { content: [{ type: "tool_use", name: "TodoWrite", input: {
+      todos: (o.item.items ?? []).map((x: any, i: number) => ({ content: x.text, status: x.completed ? "completed" : i === 0 || o.type !== "item.completed" ? "in_progress" : "pending" })),
+    } }] } });
+  } else if (o.type === "item.started") line({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: o.item.command } }] } });
   else if (o.type === "item.completed") said = o.item.text.replaceAll("假 Codex", "假 Claude Code");
   else if (o.type === "turn.completed") line({ type: "result", subtype: "success", session_id: session, result: said,
     usage: { input_tokens: o.usage.input_tokens, cache_read_input_tokens: o.usage.cached_input_tokens, output_tokens: o.usage.output_tokens } });
@@ -143,7 +147,9 @@ else if (has("align") && !resume) {
     question: "索引加在哪一列？", options: ["A: created_at — 最常用的查询能用上", "B: user_id — 只帮到退款页"], recommendation: "A",
   });
 } else {
+  out({ type: "item.started", item: { type: "todo_list", items: [{ text: "阅读上下文与代码", completed: true }, { text: "执行验证并整理结果", completed: false }] } });
   await step("bun test");
+  out({ type: "item.completed", item: { type: "todo_list", items: [{ text: "阅读上下文与代码", completed: true }, { text: "执行验证并整理结果", completed: true }] } });
   const turn = resume ? "第二轮" : "第一轮";
   const git = existsSync(join(cwd, ".git"));
   if (git) {

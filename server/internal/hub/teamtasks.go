@@ -129,13 +129,28 @@ type mandateView struct {
 	Takeovers []takeoverView `json:"takeovers,omitempty"`
 	// Via: the agents it came through, oldest first, when an agent handed it on ("@who via @A"); Parent: the task it was
 	// handed on from; Trigger: the trigger that started it (teamtriggers.go).
-	Via     []string `json:"via,omitempty"`
-	Parent  string   `json:"parent,omitempty"`
-	Trigger string   `json:"trigger,omitempty"`
+	Via      []string `json:"via,omitempty"`
+	Parent   string   `json:"parent,omitempty"`
+	Trigger  string   `json:"trigger,omitempty"`
+	Reminder string   `json:"reminder,omitempty"`
 	// Delegated: the parent's agent delegated it (remi delegate, teamdelegate.go): its result goes back to that agent,
 	// not to a person's acceptance; Redos: how many times that agent sent it back
 	Delegated bool `json:"delegated,omitempty"`
 	Redos     int  `json:"redos,omitempty"`
+}
+
+// firingView: why a run woke silently without a person's message (reminder, trigger, or channel TL).
+type firingView struct {
+	Kind      string `json:"kind"` // reminder | trigger | tl
+	ID        string `json:"id,omitempty"`
+	Text      string `json:"text,omitempty"`
+	PrevState string `json:"prev_state,omitempty"`
+}
+
+// planItem: one item in the runtime's own todo list (Spec §7), updated in place on the task.
+type planItem struct {
+	Text   string `json:"text"`
+	Status string `json:"status"` // pending | in_progress | done
 }
 
 type taskView struct {
@@ -154,6 +169,7 @@ type taskView struct {
 	Status      string          `json:"status"` // todo | in_progress | in_review | done | closed (people go by it)
 	Needs       string          `json:"needs"`  // what a person must do: confirm | decide | unblock | retry | ""
 	Step        string          `json:"step"`
+	Plan        []planItem      `json:"plan,omitempty"`
 	Summary     string          `json:"summary"`
 	Decision    *decisionView   `json:"decision"`
 	PR          *prView         `json:"pr"`
@@ -188,9 +204,12 @@ type taskView struct {
 	Runtime     string          `json:"runtime"`            // the runtime it runs with when not its agent's ("": the agent's; teamengine.go)
 	Engine      *engineView     `json:"engine"`             // the 换引擎继续 card, its last one
 	Readonly    bool            `json:"readonly,omitempty"` // a read-only run, a patrol (teamduties.go): no PR, handoff or delegation; it may end with nothing
-	// Quiet: its thread's first message (the ⚡ of the trigger) is not posted yet: it is, when the agent first speaks
-	Quiet bool `json:"quiet,omitempty"`
-	held  string
+	// Quiet: its thread has no message posted yet: the agent's own first words open it when there is something to say
+	Quiet     bool        `json:"quiet,omitempty"`
+	Firing    *firingView `json:"firing,omitempty"`
+	ConvID    string      `json:"conv_id,omitempty"`
+	convScope string
+	held      string
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -202,7 +221,7 @@ type taskView struct {
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
 	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, ''), moves, COALESCE(move, ''), runtime, COALESCE(engine, ''),
-	readonly, COALESCE(held, '')`
+	readonly, COALESCE(held, ''), COALESCE(firing, ''), COALESCE(conv_id, ''), COALESCE(conv_scope, ''), COALESCE(plan, '[]')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -212,14 +231,20 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 	out := []taskView{}
 	for rows.Next() {
 		var t taskView
-		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint, move, engine string
+		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint, move, engine, firing, plan string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine, &t.Readonly, &t.held); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine, &t.Readonly, &t.held, &firing, &t.ConvID, &t.convScope, &plan); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
 		t.Quiet = t.held != ""
+		if plan != "" && plan != "[]" {
+			_ = json.Unmarshal([]byte(plan), &t.Plan)
+		}
+		if firing != "" {
+			_ = json.Unmarshal([]byte(firing), &t.Firing)
+		}
 		t.Asked, t.Repos = []askedView{}, []string{}
 		_ = json.Unmarshal([]byte(asked), &t.Asked)
 		_ = json.Unmarshal([]byte(repos), &t.Repos)
@@ -396,8 +421,10 @@ func (h *Hub) taskEvents(id string) ([]taskEvent, []callView) {
 
 func (h *Hub) setTask(id string, cols map[string]any) {
 	needs, _ := cols["_needs"].(string) // what the new state needs a person for, when the state alone doesn't say (align)
+	silent, _ := cols["_silent"].(bool)
 	delete(cols, "_needs")
-	if state, ok := cols["state"].(string); ok {
+	delete(cols, "_silent")
+	if state, ok := cols["state"].(string); ok && !silent {
 		h.noteStatus(id, state, needs)
 	}
 	sets, args := []string{"updated = ?"}, []any{h.nowMs()}
@@ -448,10 +475,19 @@ func (h *Hub) onPosted(m messageView, asTask bool) {
 	root := m.ID
 	if m.ThreadID != nil {
 		root = *m.ThreadID
-		for _, t := range scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ?", root)) {
+		ts := scanTasks(h.db.Query("SELECT "+taskCols+" FROM tasks_v1 WHERE thread_id = ?", root))
+		for _, t := range ts {
 			if h.wakes(t, m) {
 				h.answered(t, m)
 				h.news(t)
+			}
+		}
+		if len(ts) == 0 {
+			// Replying to an agent's top-level answer wakes that agent in the answer's thread (Spec §3).
+			if rm, ok := h.message(root); ok && rm.Author.Kind == "agent" && h.isMember(m.ChannelID, "agent", rm.Author.ID) {
+				if ag, ok := h.agent(rm.Author.ID); ok && (m.Author.ID == ag.OwnerID || ag.Dispatch != "owner") {
+					h.createTask(m, root, ag.ID, false, asTask)
+				}
 			}
 		}
 	}
@@ -473,6 +509,9 @@ func (h *Hub) onPosted(m messageView, asTask bool) {
 			continue // already on it: followUp took it
 		}
 		h.createTask(m, root, mm.ID, joined, asTask)
+	}
+	if m.ThreadID == nil {
+		h.onPostedTL(m)
 	}
 }
 
@@ -528,13 +567,15 @@ type taskOrigin struct {
 	Via       []string
 	Parent    string
 	Trigger   string
+	Reminder  string
 	Confirmed bool
 	// Delegated: a part the parent's agent delegated (teamdelegate.go); Acceptance: what it asked for, its criteria
 	Delegated  bool
 	Acceptance string
-	// Readonly: a patrol's run (teamduties.go); Held: its first message, posted only when the agent first speaks
+	// Readonly: a patrol's run (teamduties.go); Held: prompt text before any message is posted; Firing: silent wake reason
 	Readonly bool
 	Held     string
+	Firing   *firingView
 }
 
 func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracked bool, o taskOrigin) string {
@@ -569,13 +610,16 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	}
 	repo := h.taskRepo(m.Text, root)
 	branch := "agent/" + id
+	convID, convScope, session, claimedBy := h.convBind(m, root, a, by, tracked, o, id)
 	mandate := mandateView{By: by, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
-		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Delegated: o.Delegated}
+		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Reminder: o.Reminder, Delegated: o.Delegated}
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, tracked, handler, created, updated, readonly, held) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
-		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, boolInt(tracked), h.taskHandler(m.Text), now, now,
-		boolInt(o.Readonly), nilIfEmpty(o.Held)))
-	h.noteStatus(id, state)
+		branch, repo, session, claimed_by, tracked, handler, created, updated, readonly, held, firing, conv_id, conv_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
+		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, session, claimedBy, boolInt(tracked), h.taskHandler(m.Text), now, now,
+		boolInt(o.Readonly), nilIfEmpty(o.Held), jsonOrNil(o.Firing), convID, convScope))
+	if o.Firing == nil {
+		h.noteStatus(id, state)
+	}
 	if state == taskClosed && summary != "" { // turned away: it says so in the thread, as a teammate would
 		h.insertMessage(m.ChannelID, &root, member{"agent", a.ID}, summary)
 	}
@@ -836,6 +880,7 @@ func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
 	if title := trimmed(b.Title, 60); title != "" {
 		cols["title"], cols["titled"] = title, 1
 	}
+	h.convDetach(t)
 	h.setTask(t.ID, cols)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
@@ -855,6 +900,7 @@ func (h *Hub) v1TaskReopen(w http.ResponseWriter, q *request) {
 	if n := trimmed(b.Note, 2000); n != "" {
 		text += "：" + n
 	}
+	h.convDetach(t)
 	h.insertMessage(t.ChannelID, &t.ThreadID, member{"user", q.who.userID}, text)
 	h.setTask(t.ID, map[string]any{"state": taskQueued, "step": ""})
 	h.taskChanged(t.ID)
@@ -942,12 +988,13 @@ func (h *Hub) v1MachineTasks(w http.ResponseWriter, q *request) {
 		if q.query("age") == "0" { // ended at all (its checkpoints go at once)
 			since = h.nowMs() + 1
 		}
-		args := []any{q.who.machineID, since}
+		args := []any{q.who.machineID, since, since}
 		for _, id := range list {
 			args = append(args, id)
 		}
 		ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE state IN ('done', 'closed')
 			AND claimed_by = ? AND updated < ?
+			AND id NOT IN (SELECT conv_id FROM tasks_v1 WHERE conv_id != '' AND (state NOT IN ('done', 'closed') OR updated >= ?))
 			AND id IN (?`+strings.Repeat(", ?", len(list)-1)+`) ORDER BY num`, args...))
 		writeJSON(w, 200, obj{"tasks": ts})
 		return
@@ -1020,13 +1067,18 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		woke = t.Wait.Wake
 	}
 	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil, "news": 0}
+	if t.Firing != nil {
+		cols["_silent"] = true
+	}
 	if !mine {
 		cols["runs"] = t.Runs + 1
 	}
 	h.setTask(t.ID, cols)
-	for _, m := range fresh { // the agent took them up: 👀 on each, the way a person would show they read it
-		if m.Author.Kind == "user" {
-			h.react(m.ID, member{"agent", a.ID}, "👀")
+	if t.Firing == nil {
+		for _, m := range fresh { // the agent took them up: 👀 on each, the way a person would show they read it
+			if m.Author.Kind == "user" {
+				h.react(m.ID, member{"agent", a.ID}, "👀")
+			}
 		}
 	}
 	recent := scanMessages(h.db.Query("SELECT "+messageCols+` FROM messages m WHERE m.channel_id = ? AND m.thread_id IS NULL
@@ -1037,11 +1089,12 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	for i := range recent {
 		recent[i].Text = clip(recent[i].Text, contextChars)
 	}
+	convRecent := h.convRecent(t)
 	c, _ := h.channel(t.ChannelID)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	people := map[string]string{}
-	for _, m := range append(append([]messageView{}, thread...), recent...) {
+	for _, m := range append(append(append([]messageView{}, thread...), recent...), convRecent...) {
 		if m.Author.Kind == "user" {
 			if u, ok := h.user(m.Author.ID); ok {
 				people[u.ID] = u.Name + " (@" + u.Handle + ")"
@@ -1051,9 +1104,13 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 		}
 	}
 	creator, _ := h.user(t.CreatedBy)
+	activeTasks := ""
+	if t.Firing != nil && t.Firing.Kind == "tl" {
+		activeTasks = h.channelActiveTasks(t.ChannelID, t.ID)
+	}
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo, "conventions": c.Conventions},
-		"recent": recent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
-		"wake": woke, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
+		"recent": recent, "conv_recent": convRecent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
+		"wake": woke, "firing": t.Firing, "active_tasks": activeTasks, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
 		"requester_preferences": h.preferences(t.CreatedBy), "memory_writable": h.memoryWritable(t, a),
 		"agents": h.agentList(t, promptAgents, t.Readonly), "checkpoint_files": h.checkpointFilesAllowed(q.who.machineID)})
 }
@@ -1071,6 +1128,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	var b struct {
 		State    string        `json:"state"`
 		Step     *string       `json:"step"`
+		Plan     *[]planItem   `json:"plan"`
 		Summary  string        `json:"summary"`
 		Session  *string       `json:"session"`
 		Branch   *string       `json:"branch"`
@@ -1127,7 +1185,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 	}
 	if len(b.Outputs) > 0 {
-		h.applyOutputs(t.ID, b.Outputs)
+		h.applyOutputs(t, b.Outputs)
 	}
 	if e := strings.TrimSpace(b.Reaction); isEmoji(e) {
 		h.agentReacts(t, a.ID, e)
@@ -1150,12 +1208,14 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 	}
 	if b.Session != nil {
-		cols["session"] = trimmed(*b.Session, 200)
+		ses := trimmed(*b.Session, 200)
+		cols["session"] = ses
+		h.convSession(t, a, q.who.machineID, ses)
 	}
 	if b.Branch != nil {
 		cols["branch"] = trimmed(*b.Branch, 200)
 	}
-	if b.State != "" || b.Step != nil {
+	if b.State != "" || b.Step != nil || b.Plan != nil {
 		if t.State != taskRunning || t.ClaimedBy == nil || *t.ClaimedBy != q.who.machineID {
 			errJSON(w, 409, "任务现在是 "+t.State+"，这次运行已经无效")
 			return
@@ -1171,24 +1231,57 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	if b.Step != nil {
 		cols["step"] = clip(strings.TrimSpace(*b.Step), 200)
 	}
-	if b.State == "nothing" { // a patrol found nothing a person needs to know: it ends without a word (teamduties.go)
-		if !t.Readonly {
-			errJSON(w, 400, "只有只读巡视能报 nothing")
+	if b.Plan != nil {
+		clean := []planItem{}
+		for _, it := range *b.Plan {
+			if len(clean) >= 50 {
+				break
+			}
+			txt := trimmed(it.Text, 300)
+			if txt == "" {
+				continue
+			}
+			st := it.Status
+			if st != "done" && st != "in_progress" {
+				st = "pending"
+			}
+			clean = append(clean, planItem{Text: txt, Status: st})
+		}
+		pj, _ := json.Marshal(clean)
+		cols["plan"] = string(pj)
+	}
+	if b.State == "nothing" { // a patrol or silent firing found nothing a person needs to know: it ends without a word
+		if !t.Readonly && t.Firing == nil {
+			errJSON(w, 400, "只有只读巡视或静默触发能报 nothing")
 			return
 		}
-		h.runEnded(t, a, q.who.machineID, taskDone, "", 0, "", cols)
-		cols["summary"], cols["step"], cols["state"] = trimmed(b.Summary, 8000), "", taskDone
+		endState := taskDone
+		if t.Firing != nil && t.Firing.PrevState != "" {
+			endState = t.Firing.PrevState
+		}
+		h.runEnded(t, a, q.who.machineID, endState, "", 0, "", cols)
+		cols["step"], cols["state"], cols["firing"], cols["_silent"] = "", endState, nil, true
+		if t.Firing == nil || t.Firing.PrevState == "" {
+			cols["summary"] = trimmed(b.Summary, 8000)
+		}
 		if t.News {
 			cols["state"] = taskQueued
 		}
 		h.setTask(t.ID, cols)
+		ses := t.Session
+		if s, ok := cols["session"].(string); ok && s != "" {
+			ses = s
+		}
+		h.convFinish(t, a, q.who.machineID, ses, false)
 		h.taskChanged(t.ID)
 		h.dutyRunEnded(t, "nothing", b.Summary)
+		h.reminderRunEnded(t, "nothing", b.Summary)
 		t, _ = h.task(t.ID)
 		writeJSON(w, 200, h.taskOut(q, t))
 		return
 	}
 	if b.State != "" {
+		cols["firing"] = nil
 		if b.State == "align" {
 			d, msg, code := h.alignDecision(t, b.Align)
 			if d == nil {
@@ -1245,9 +1338,18 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 				text = strings.TrimSpace(summary + "\n\n" + alignText(*b.Decision))
 			}
 		}
+		isAnswer := state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && b.PR == nil && t.Handler == "" && !proposedHandoff(t) && !h.delegated(t) && (t.Mandate == nil || !t.Mandate.Delegated)
+		plainStreamAnswer := isAnswer && !t.Tracked && cols["tracked"] == nil && !t.Readonly && (t.Mandate == nil || t.Mandate.Trigger == "")
 		text = h.callHandler(t, state, text)
+		if text == "" && h.count("SELECT COUNT(*) FROM task_outputs WHERE task_id = ? AND message_id IS NULL", t.ID) > 0 {
+			text = "已生成产出"
+		}
 		if text != "" {
-			h.insertMessage(t.ChannelID, &t.ThreadID, member{"agent", a.ID}, text)
+			thread := &t.ThreadID
+			if plainStreamAnswer && !t.Quiet && h.count("SELECT COUNT(*) FROM messages WHERE thread_id = ?", t.ThreadID) == 0 {
+				thread = nil
+			}
+			h.insertTaskMessage(t, thread, member{"agent", a.ID}, text)
 		}
 		if state == taskReview {
 			criteria := t.Acceptance
@@ -1258,7 +1360,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		}
 		if state == taskReview && t.Mandate != nil && t.Mandate.Delegated {
 			state = taskDone // delivered back to the agent that delegated it: it checks it, not a person (teamdelegate.go)
-		} else if state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && t.Handler == "" && !proposedHandoff(t) && !h.delegated(t) {
+		} else if isAnswer {
 			state = taskDone
 		} else if state == taskReview || (state == taskWaiting && !quota) {
 			cols["tracked"] = 1 // something to accept or to wait for: people track it
@@ -1271,11 +1373,23 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	if len(cols) > 0 {
 		h.setTask(t.ID, cols)
 	}
+	if b.Track && !t.Tracked && b.State == "" {
+		h.convDetach(t)
+	}
+	if b.State != "" {
+		ses := t.Session
+		if s, ok := cols["session"].(string); ok && s != "" {
+			ses = s
+		}
+		promoted := cols["state"] != taskDone || t.Tracked || cols["tracked"] != nil || t.PR != nil || b.PR != nil
+		h.convFinish(t, a, q.who.machineID, ses, promoted)
+	}
 	if len(cols) > 0 || len(b.Outputs) > 0 {
 		h.taskChanged(t.ID)
 	}
 	if b.State != "" {
 		h.dutyRunEnded(t, b.State, b.Summary)
+		h.reminderRunEnded(t, b.State, b.Summary)
 	}
 	if cols["state"] == taskReview || cols["state"] == taskDone {
 		h.delegatesDropped(t.ID) // delivered: what it delegated and is not back yet is not wanted any more
@@ -1326,8 +1440,10 @@ func (h *Hub) callHandler(t taskView, state, text string) string {
 func (h *Hub) insertMessage(channelID string, thread *string, author member, text string) messageView {
 	var th any
 	if thread != nil {
+		if m, ok := h.postFirstFiring(channelID, *thread, author, text); ok {
+			return m
+		}
 		th = *thread
-		h.postHeld(*thread) // a patrol's first message goes up before anything is said under it (teamduties.go)
 	}
 	mentions, _ := json.Marshal(h.mentions(text))
 	id := newID("msg_")
@@ -1335,6 +1451,33 @@ func (h *Hub) insertMessage(channelID string, thread *string, author member, tex
 		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?)`, id, channelID, th, author.Kind, author.ID, text, string(mentions), h.nowMs()))
 	m, _ := h.message(id)
 	h.broadcastChannel(channelID, obj{"type": "message", "message": m})
+	return m
+}
+
+// insertTaskMessage posts an agent message for task t and hangs any unlinked outputs of t on that message before broadcasting.
+func (h *Hub) insertTaskMessage(t taskView, thread *string, author member, text string) messageView {
+	var th any
+	if thread != nil {
+		if m, ok := h.postFirstFiring(t.ChannelID, *thread, author, text); ok {
+			if h.linkTaskOutputs(t, m.ID) {
+				m, _ = h.message(m.ID)
+				h.broadcastChannel(t.ChannelID, obj{"type": "message_edited", "message": m})
+			}
+			return m
+		}
+		th = *thread
+	}
+	mentions, _ := json.Marshal(h.mentions(text))
+	id := newID("msg_")
+	answerTo := ""
+	if thread == nil {
+		answerTo = t.CreatedBy
+	}
+	h.must(h.db.Exec(`INSERT INTO messages (id, channel_id, thread_id, author_kind, author_id, text, mentions, attachments, created, answer_to)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)`, id, t.ChannelID, th, author.Kind, author.ID, text, string(mentions), h.nowMs(), answerTo))
+	h.linkTaskOutputs(t, id)
+	m, _ := h.message(id)
+	h.broadcastChannel(t.ChannelID, obj{"type": "message", "message": m})
 	return m
 }
 
@@ -1466,6 +1609,9 @@ func (h *Hub) v1GitlabHook(w http.ResponseWriter, q *request) {
 // agentReacts puts the agent's chosen emoji on the messages it took up in this task (those with its 👀), in place of the
 // 👀; with none, on the thread's latest message from a person.
 func (h *Hub) agentReacts(t taskView, agentID, emoji string) {
+	if t.Firing != nil {
+		return
+	}
 	var ids []string
 	rows, err := h.db.Query(`SELECT message_id FROM reactions WHERE author_kind = 'agent' AND author_id = ? AND emoji = '👀'
 		AND message_id IN (SELECT id FROM messages WHERE id = ? OR thread_id = ?)`, agentID, t.ThreadID, t.ThreadID)

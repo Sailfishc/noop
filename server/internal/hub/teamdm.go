@@ -56,22 +56,35 @@ func (h *Hub) v1DMOpen(w http.ResponseWriter, q *request, agentID string) {
 }
 
 // postMentions: whom a message names. In a private chat, a person's top-level message names its agent even without
-// an @.
-func (h *Hub) postMentions(c channelView, topLevel bool, author member, text string) []mention {
+// an @; in a channel, the explicit "continue talking with @x" chip (toAgent) addresses @x when the message has no @agent.
+func (h *Hub) postMentions(c channelView, topLevel bool, author member, text, toAgent string) []mention {
 	ms := h.mentions(text)
-	if c.DMAgent == "" || !topLevel || author.Kind != "user" {
+	if !topLevel || author.Kind != "user" {
 		return ms
 	}
-	for _, m := range ms {
-		if m.Kind == "agent" && m.ID == c.DMAgent {
+	if c.DMAgent != "" {
+		for _, m := range ms {
+			if m.Kind == "agent" && m.ID == c.DMAgent {
+				return ms
+			}
+		}
+		a, ok := h.agent(c.DMAgent)
+		if !ok {
 			return ms
 		}
+		return append([]mention{{"agent", a.ID, a.Handle}}, ms...)
 	}
-	a, ok := h.agent(c.DMAgent)
-	if !ok {
-		return ms
+	if strings.TrimSpace(toAgent) != "" {
+		for _, m := range ms {
+			if m.Kind == "agent" {
+				return ms // explicit @agent in text wins
+			}
+		}
+		if a, ok := h.agentByIDOrHandle(toAgent); ok && (h.isMember(c.ID, "agent", a.ID) || a.Dispatch == "team") {
+			return append([]mention{{"agent", a.ID, a.Handle}}, ms...)
+		}
 	}
-	return append([]mention{{"agent", a.ID, a.Handle}}, ms...)
+	return ms
 }
 
 // dmClosed: why the person may no longer write in this private chat ("" = they may).

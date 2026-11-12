@@ -7,6 +7,7 @@ import { isParty, EXTERNAL_TRIES, taskMachine, taskRuntime, runtimeLabel, repoLa
 import { AUTONOMY, DISPATCH } from "./settings";
 import { failed, RuntimeBadge, time } from "./ui";
 import { OutputCard, externalTries, outputsOf, waitLines } from "./taskcard";
+import { NEEDS, STATUS, type Needs } from "./status";
 
 const minutes = (ms: number) => {
   const m = Math.max(1, Math.round(ms / 60_000));
@@ -124,6 +125,15 @@ export function TaskFacts(props: { team: Team; task: Task }) {
         <View testID={`task-${task().id}-runlog`} style={{ gap: 4 }}>
           <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L(`Created ${time(task().created)} · last change ${time(task().updated)}`, `创建 ${time(task().created)} · 最近变化 ${time(task().updated)}`)}</Text>
           <If when={task().step}><Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L(`Now: ${task().step}`, `当前：${task().step}`)}</Text></If>
+          <Each of={task().events ?? []} key="index">
+            {(ev) => {
+              const needs = () => {
+                const n = ev().needs;
+                return n && n in NEEDS ? NEEDS[n as Exclude<Needs, "">].label() : "";
+              };
+              return <Txt variant="caption" tone="muted">{[`${STATUS[ev().status]?.label() ?? ev().status}`, needs(), time(ev().at)].filter(Boolean).join(" · ")}</Txt>;
+            }}
+          </Each>
           <If when={task().summary}><Text style={{ fontSize: 12.5, lineHeight: 18, color: colors.fg }}>{task().summary}</Text></If>
         </View>
       </If>

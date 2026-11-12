@@ -1,22 +1,24 @@
-// A channel: its conversation, the members panel, the default repository, a thread with its task's facts, and a new channel.
+// A channel: its conversation, the members panel, the default repository, the workspace panel, and a new channel.
 import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { Avatar, Btn, StateMark, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
-import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
+import { Avatar, Btn, StateMark, colors, Dot, Dropdown, Empty, ErrorNote, Field, hovered, Icon, Label, Noted, OutputRow, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
+import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Output, type Task, type Team } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, stateLine, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
+import { agentState, stateLine, authorOf, failed, Header, RuntimeBadge, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { ChannelTriggers } from "./duties";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
-import { TaskCard, shownAsTask } from "./taskcard";
-import { NEEDS, STATUS, type Needs } from "./status";
+import { outputMeta, outputsOf } from "./taskcard";
+import { WorkPanel, type WorkTab } from "./workpanel";
 
-/** What the right column shows beside a channel: a thread, or the channel's members. */
-export type Side = { kind: "thread"; id: string } | { kind: "members" } | null;
+export { WorkPanel, WorkPanel as ThreadView, type WorkTab };
 
-export function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () => void; side: Side; onThread: (id: string) => void; onMembers: () => void }) {
+/** What the right column shows beside a channel: the workspace panel, or the channel's members. */
+export type Side = { kind: "thread"; id: string; tab?: WorkTab; outputId?: string; at?: number } | { kind: "members" } | null;
+
+export function ChannelView(props: { team: Team; id: string; back: boolean; onBack: () => void; side: Side; onThread: (id: string, tab?: WorkTab, outputId?: string) => void; onMembers: () => void }) {
   const t = props.team;
   const channel = () => t.channels().find((c) => c.id === props.id);
   const messages = () => t.top()[props.id] ?? [];
@@ -37,11 +39,40 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
     return mayBringAgent(a, t.me()) ? "" : L(`@${a.handle} no longer takes your work. The chat keeps its history.`, `@${a.handle} 不再接你的活，私聊只能看历史。`);
   };
   const joining = signal(false);
-  /** Conversation | Tasks (as in Raft: the channel's tasks as a board or a list). */
-  const tab = signal<"chat" | "tasks">("chat");
+  const expandedMsgs = signal<Record<string, boolean>>({});
+  /** Conversation | Tasks | Files (Spec §6: every output produced across messages in this channel). */
+  const tab = signal<"chat" | "tasks" | "files">("chat");
   const layout = rememberedLayout("channel");
+  const fetchedFiles = signal<Output[]>([]);
+  const filesLoading = signal(false);
   effect(() => { if (tab() === "tasks") void t.loadTasks(props.id); });
+  effect(() => {
+    const id = props.id;
+    if (tab() !== "files") return;
+    filesLoading.set(true);
+    void t.channelOutputs(id).then((xs) => {
+      if (props.id === id) {
+        fetchedFiles.set(xs);
+        filesLoading.set(false);
+      }
+    });
+  });
   const channelTasks = () => trackedTasks(t).filter((x) => x.channel_id === props.id);
+  const channelFiles = () => {
+    const map = new Map<string, Output>();
+    const put = (o: Output) => {
+      const prev = map.get(o.id);
+      if (!prev || (o.updated ?? 0) >= (prev.updated ?? 0)) map.set(o.id, o);
+    };
+    for (const o of fetchedFiles()) put(o);
+    for (const m of messages()) {
+      for (const o of m.outputs ?? []) put({ thread_id: m.thread_id ?? m.id, message_id: m.id, ...o });
+    }
+    for (const tk of Object.values(t.tasks()).filter((x) => x.channel_id === props.id && !x.redacted)) {
+      for (const o of outputsOf(tk)) put({ task_id: tk.id, thread_id: tk.thread_id, ...o });
+    }
+    return [...map.values()].sort((a, b) => (b.updated ?? 0) - (a.updated ?? 0));
+  };
   return (
     <View style={{ flex: 1 }}>
       <Header
@@ -81,6 +112,7 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           tabs={[
             { value: "chat", label: L("Conversation", "对话") },
             { value: "tasks", label: L("Tasks", "任务"), count: channelTasks().filter((x) => !["done", "closed"].includes(x.state)).length },
+            { value: "files", label: L("Files", "文件") },
           ]}
         />
         <View style={{ flex: 1 }} />
@@ -88,8 +120,41 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           <LayoutSwitch value={layout.get()} onChange={layout.set} />
         </If>
       </View>
-      <If when={tab() === "chat"} else={<TaskBoard team={t} tasks={channelTasks()} layout={layout.get()} onOpen={(x) => props.onThread(x.thread_id)}
-        empty={L("No tasks in this channel yet. Tick “As task” when you @ an agent, or let it claim the work.", "这个频道还没有任务。@Agent 时勾选「作为任务」，或者让它自己认领。")} />}>
+      <If when={tab() === "chat"} else={
+        <If when={tab() === "tasks"} else={
+          <Scroll testID="channel-files" style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 6, maxWidth: 680 }}>
+            <If when={channelFiles().length} else={
+              <View style={{ padding: 24, alignItems: "center" }}>
+                <If when={filesLoading()} else={<Empty testID="channel-files-empty" />}>
+                  <Spinner size={16} tint={colors.fg2} />
+                </If>
+              </View>
+            }>
+              <Each of={channelFiles()} key={(o) => o.id}>
+                {(o) => {
+                  const meta = () => outputMeta(o());
+                  return (
+                    <OutputRow
+                      testID={`channel-file-${o().id}`}
+                      icon={meta().icon}
+                      title={o().title}
+                      meta={meta().meta}
+                      tone={meta().tone}
+                      onPress={() => {
+                        const tid = o().thread_id ?? o().message_id;
+                        if (tid) props.onThread(tid, "outputs", o().id);
+                      }}
+                    />
+                  );
+                }}
+              </Each>
+            </If>
+          </Scroll>
+        }>
+          <TaskBoard team={t} tasks={channelTasks()} layout={layout.get()} onOpen={(x) => props.onThread(x.thread_id)}
+            empty={L("No tasks in this channel yet. Tick “As task” when you @ an agent, or let it claim the work.", "这个频道还没有任务。@Agent 时勾选「作为任务」，或者让它自己认领。")} />
+        </If>
+      }>
         <List
           testID="messages"
           each={messages()}
@@ -102,7 +167,18 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.fg2, textAlign: "center" }}>{channel()?.dm_agent ? L("No messages yet. Say what you need; no @ needed.", "还没有消息。直接说要它做什么，不用 @。") : L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
           style={{ flex: 1 }}
         >
-          {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
+          {(m) => (
+            <MessageRow
+              team={t}
+              m={m()}
+              flat={!!channel()?.dm_agent}
+              foldable
+              expanded={!!expandedMsgs()[m().id]}
+              onToggleExpand={() => expandedMsgs.update((v) => ({ ...v, [m().id]: !v[m().id] }))}
+              onThread={() => props.onThread(m().id)}
+              onOpenOutput={(o) => props.onThread(m().thread_id ?? m().id, "outputs", o.id)}
+            />
+          )}
         </List>
         <If
           when={member()}
@@ -124,7 +200,9 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
               placeholder={channel()?.dm_agent ? L(`Message ${dmAgent()?.name ?? ""}, no @ needed`, `直接跟 ${dmAgent()?.name ?? ""} 说，不用 @`) : L(`Message #${channel()?.name ?? ""}, @ an agent to hand it work`, `发到 #${channel()?.name ?? ""}，@Agent 给它派活`)}
               asTask
               agent={dmAgent()?.handle}
-              onSend={(text, files, asTask) => t.send(props.id, text, null, files, asTask)}
+              continueAgent={channel()?.dm_agent ? null : t.talkingWith(props.id)}
+              onDismissContinue={() => t.dismissTalking(props.id)}
+              onSend={(text, files, asTask, toAgent) => t.send(props.id, text, null, files, asTask, toAgent)}
             />
           </If>
         </If>
@@ -164,6 +242,46 @@ export function DMDraft(props: { team: Team; agent: Agent; back: boolean; onBack
           return err;
         }}
       />
+    </View>
+  );
+}
+
+function ChannelTL(props: { team: Team; channelId: string; agents: Agent[] }) {
+  const t = props.team;
+  const channel = () => t.channels().find((c) => c.id === props.channelId);
+  const tl = () => channel()?.tl ?? "";
+  const error = signal("");
+  const options = () => [
+    { value: "", label: L("None (default)", "不设（默认）") },
+    ...props.agents.map((a) => ({
+      value: a.id,
+      label: `${a.name} @${a.handle}`,
+      disabled: !!(channel()?.private && !mayBringAgent(a, t.me())),
+    })),
+  ];
+  return (
+    <View testID="channel-tl" style={{ gap: 6, paddingTop: 12 }}>
+      <Label
+        testID="channel-tl-head"
+        text="TL"
+        note={L(
+          "When a message in this channel doesn't @ anyone, only its TL reads the context (20s burst merged) and decides whether to stay silent, answer, or route to a better-suited agent.",
+          "频道里没 @ 任何人的消息只叫醒 TL（20 秒内合并），由它读了上下文决定沉默、直接回答还是转给更合适的 Agent。",
+        )}
+      />
+      <Dropdown
+        small
+        testID="channel-tl-select"
+        label="TL"
+        options={options()}
+        value={tl()}
+        onChange={async (v) => {
+          error.set("");
+          const r = await t.patchChannel(props.channelId, { tl: v });
+          if (!r.ok) error.set(failed(r));
+        }}
+      />
+      <ErrorNote text={error()} testID="channel-tl-error" />
     </View>
   );
 }
@@ -353,6 +471,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
       <Scroll style={{ flex: 1 }} contentStyle={{ paddingHorizontal: 16, paddingBottom: 16, gap: 4 }}>
         <ErrorNote text={error()} testID="members-error" />
         <ChannelRepo team={t} channelId={props.channelId} />
+        <ChannelTL team={t} channelId={props.channelId} agents={agents()} />
         <ChannelConventions team={t} channelId={props.channelId} />
         <ChannelTriggers team={t} channelId={props.channelId} agents={agents()} />
         <If when={adding()}>
@@ -426,6 +545,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                         <View role={mine() ? "button" : undefined} onPress={mine() ? () => props.onAgent(a().handle) : undefined} style={{ flex: 1, gap: 2 }}>
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                             <Text style={{ fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{a().name} <Text style={{ color: colors.fg2 }}>@{a().handle}</Text></Text>
+                            <If when={channel()?.tl === a().id}><Tag testID={`member-${a().handle}-tl`} label="TL" /></If>
                             <RuntimeBadge runtime={a().runtime} />
                           </View>
                           <StateMark testID={`member-${a().handle}-state`} state={st().state}
@@ -462,79 +582,6 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
           </View>
         </If>
       </Scroll>
-    </View>
-  );
-}
-
-export function ThreadView(props: { team: Team; rootId: string; back?: boolean; onClose: () => void }) {
-  const t = props.team;
-  const root = signal<Message | null>(null);
-  effect(() => {
-    const id = props.rootId;
-    root.set(null);
-    t.openThread(id).then((m) => root.set(m));
-  });
-  // the root as the channel has it now (its reply count moves)
-  const shown = () => {
-    const r = root();
-    return r ? (t.top()[r.channel_id] ?? []).find((m) => m.id === r.id) ?? r : null;
-  };
-  const replies = () => t.threads()[props.rootId] ?? [];
-  const channel = () => { const r = root(); return r ? t.channels().find((x) => x.id === r.channel_id) : undefined; };
-  const member = () => {
-    const c = channel(), me = t.me();
-    return !!c && !!me && isMember(c, "user", me.id);
-  };
-  const tasks = () => t.taskOfThread(props.rootId);
-  /** The replies, with where its tracked tasks went between them (as in Raft, a status change shows in the thread). */
-  const flow = () => {
-    const items: { key: string; at: number; m?: Message; line?: string }[] = replies().map((m) => ({ key: m.id, at: m.created, m }));
-    for (const x of tasks().filter(shownAsTask)) {
-      (x.events ?? []).forEach((e, i) => {
-        if (i === 0 && e.at - x.created < 2000) return; // its first status is on its card
-        const needs = e.needs && e.needs in NEEDS ? NEEDS[e.needs as Exclude<Needs, "">].label() : "";
-        items.push({ key: `${x.id}-ev-${i}`, at: e.at, line: [`${x.id} → ${STATUS[e.status]?.label() ?? e.status}`, needs].filter(Boolean).join(" · ") });
-      });
-    }
-    return items.sort((a, b) => a.at - b.at);
-  };
-  const task = () => tasks()[tasks().length - 1];
-  return (
-    <View testID="thread" style={{ flex: 1, backgroundColor: colors.page }}>
-      <Header
-        title={L("Thread", "线程")}
-        subtitle={channel() ? `# ${channel()!.name}` : undefined}
-        back={props.back}
-        onBack={props.onClose}
-        right={props.back ? undefined : (
-          <View role="button" testID="close-thread" accessibilityLabel={L("Close thread", "关闭线程")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-            <Icon name="close" size={16} tint={colors.fg2} />
-          </View>
-        )}
-      />
-      <If when={shown()} else={<View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner size={18} tint={colors.fg2} /></View>}>
-        {(r) => (
-          <>
-            <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 10 }}>
-              <Each of={tasks().filter(shownAsTask)} key={(x) => x.id}>
-                {(x) => (
-                  <View style={{ paddingHorizontal: 12, paddingBottom: 4 }}>
-                    <TaskCard team={t} task={x()} detail />
-                  </View>
-                )}
-              </Each>
-              <MessageRow team={t} m={r()} noTask />
-              <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.hairline }} />
-              <Each of={flow()} key={(x) => x.key}>
-                {(x) => <If when={x().m} else={<StatusLine text={x().line!} at={x().at} testID={x().key} />}>{(m) => <MessageRow team={t} m={m()} />}</If>}
-              </Each>
-            </Scroll>
-            <If when={member()}>
-              <Composer team={t} channelId={r().channel_id} threadId={r().id} testID="thread-composer" placeholder={L("Reply…", "回复…")} onSend={(text, files) => t.send(r().channel_id, text, r().id, files)} />
-            </If>
-          </>
-        )}
-      </If>
     </View>
   );
 }
@@ -609,12 +656,5 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
         <Btn testID="channel-create" kind="primary" label={priv() ? L("Create private channel", "创建私有频道") : L("Create channel", "创建频道")} busy={busy()} disabled={!name().trim()} onPress={create} />
       </Scroll>
     </View>
-  );
-}
-
-/** A task's status change between a thread's replies: one quiet centred line. */
-function StatusLine(props: { text: string; at: number; testID: string }) {
-  return (
-    <Text testID={props.testID} style={{ paddingVertical: 4, paddingHorizontal: 16, fontSize: 12, color: colors.fg3, textAlign: "center" }}>{`${props.text} · ${time(props.at)}`}</Text>
   );
 }

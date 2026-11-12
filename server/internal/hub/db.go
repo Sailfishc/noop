@@ -100,6 +100,12 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec(proposalsSchema); err != nil {
 		return err
 	}
+	if _, err := db.Exec(conversationsSchema); err != nil {
+		return err
+	}
+	if _, err := db.Exec(tlPendingSchema); err != nil {
+		return err
+	}
 	for _, alter := range []string{
 		"ALTER TABLE sessions ADD COLUMN user_id TEXT", // sessions now belong to a person (NULL: a legacy noop owner session)
 		"ALTER TABLE agents ADD COLUMN repo TEXT NOT NULL DEFAULT ''",
@@ -164,8 +170,25 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE triggers ADD COLUMN check_machine TEXT NOT NULL DEFAULT ''",   // the computer it was sent to
 		"ALTER TABLE tasks_v1 ADD COLUMN held TEXT",                                // its thread's first message, not posted until the agent first speaks (teamduties.go)
 		"ALTER TABLE users ADD COLUMN digest TEXT NOT NULL DEFAULT ''",             // 「提案什么时候给我」, the person's own (teamproposals.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN firing TEXT",                              // silent reminder/trigger/TL wake metadata while queued or running
+		"ALTER TABLE tasks_v1 ADD COLUMN conv_id TEXT NOT NULL DEFAULT ''",         // shared conversation workdir id (teamconv.go)
+		"ALTER TABLE tasks_v1 ADD COLUMN conv_scope TEXT NOT NULL DEFAULT ''",      // conversation scope: user_id or "*" for channel TL
+		"ALTER TABLE channels ADD COLUMN tl_agent TEXT NOT NULL DEFAULT ''",        // optional channel TL agent id (teamtl.go)
+		"ALTER TABLE task_outputs ADD COLUMN channel_id TEXT NOT NULL DEFAULT ''",  // channel the output belongs to (teamoutputs.go)
+		"ALTER TABLE task_outputs ADD COLUMN message_id TEXT",                      // message the output hangs on (Spec §6)
+		"ALTER TABLE tasks_v1 ADD COLUMN plan TEXT NOT NULL DEFAULT '[]'",          // live plan checklist from the runtime's todo list (Spec §7)
+		"ALTER TABLE messages ADD COLUMN answer_to TEXT NOT NULL DEFAULT ''",       // person whose request this top-level answer responds to
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	for _, idx := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_task_outputs_msg ON task_outputs (message_id)",
+		"CREATE INDEX IF NOT EXISTS idx_task_outputs_channel ON task_outputs (channel_id, updated DESC)",
+		"UPDATE task_outputs SET channel_id = COALESCE((SELECT channel_id FROM tasks_v1 WHERE tasks_v1.id = task_outputs.task_id), '') WHERE channel_id = ''",
+	} {
+		if _, err := db.Exec(idx); err != nil {
 			return err
 		}
 	}
@@ -194,6 +217,20 @@ func initSchema(db *sql.DB) error {
 	}
 	// a repeating reminder on hold (reminders.go)
 	if _, err := db.Exec("ALTER TABLE reminders ADD COLUMN paused INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
+	for _, alter := range []string{
+		"ALTER TABLE reminders ADD COLUMN checks INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE reminders ADD COLUMN no_change INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE reminders ADD COLUMN last_outcome TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE reminders ADD COLUMN last_note TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE reminders ADD COLUMN last_task TEXT",
+	} {
+		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return err
+		}
+	}
+	if _, err := db.Exec(reminderRunsSchema); err != nil {
 		return err
 	}
 	if _, err := db.Exec(runtimeStatusSchema); err != nil {

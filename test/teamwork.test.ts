@@ -477,13 +477,16 @@ test("a repository the agent declared gets a worktree on the task branch; its co
 });
 
 test("no runtime on this machine: the task is blocked with what to do", async () => {
+  const W = mkdtempSync(join(tmpdir(), "teamwork-no-runtime-"));
   const calls: { path: string; body: any }[] = [];
-  const w = createWorker({ api: fakeApi({ "T-0001": claim() }, calls), maxParallel: 1, runtimes: { codex: { name: "codex", available: () => false, start: () => { throw new Error("no"); } } }, log: () => {} });
+  const w = createWorker({ api: fakeApi({ "T-0001": claim() }, calls), workRoot: W, maxParallel: 1, runtimes: { codex: { name: "codex", available: () => false, start: () => { throw new Error("no"); } } }, log: () => {} });
   w.onTask({ ...claim().task, state: "queued" } as any, () => true);
   await Bun.sleep(1);
   await w.idle();
-  expect(calls.at(-2)?.body.state).toBe("blocked");
-  expect(calls.at(-2)?.body.summary).toContain("没有 codex");
+  const report = calls.find((c) => c.path === "/api/v1/tasks/T-0001/report");
+  expect(report?.body.state).toBe("blocked");
+  expect(report?.body.summary).toContain("没有 codex");
+  rmSync(W, { recursive: true, force: true });
 });
 
 test("the agent's runtime and model run the task; criteria the agent chose go back when people gave none", async () => {
@@ -791,4 +794,90 @@ test("the worker runs a check it is handed and tells the server the hash", async
   expect(posts[0].body.output).toBe("hi\n");
   expect(posts[0].body.hash).toHaveLength(64);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("empty runtime checklists clear the current plan", () => {
+  expect(codexEvent(JSON.stringify({ type: "item.updated", item: { type: "todo_list", items: [] } }))).toEqual({ kind: "plan", items: [] });
+  expect(claudeEvent(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "TodoWrite", input: { todos: [] } }] } }))).toEqual([{ kind: "plan", items: [] }]);
+});
+
+test("runtime checklists (Codex todo_list and Claude TodoWrite) become plan events; worker syncs plan and keeps untracked out/ answers plain", async () => {
+  const codexStart = codexEvent(JSON.stringify({
+    type: "item.started",
+    item: { type: "todo_list", items: [{ text: "排查慢查询", completed: true }, { text: "加索引", completed: false }, { text: "压测验证", completed: false }] },
+  }));
+  expect(codexStart).toEqual([
+    { kind: "plan", items: [{ text: "排查慢查询", status: "done" }, { text: "加索引", status: "in_progress" }, { text: "压测验证", status: "pending" }] },
+    { kind: "step", text: "加索引" },
+  ]);
+  const codexDone = codexEvent(JSON.stringify({
+    type: "item.completed",
+    item: { type: "todo_list", items: [{ text: "排查慢查询", completed: true }, { text: "加索引", completed: true }] },
+  }));
+  expect(codexDone).toEqual([
+    { kind: "plan", items: [{ text: "排查慢查询", status: "done" }, { text: "加索引", status: "done" }] },
+    { kind: "idle" },
+  ]);
+
+  const claudeTodo = claudeEvent(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name: "TodoWrite", input: { todos: [
+      { content: "读日志", status: "completed" },
+      { content: "改配置", status: "in_progress" },
+      { content: "回归检查", status: "pending" },
+    ] } }] },
+  }));
+  expect(claudeTodo).toEqual([
+    { kind: "plan", items: [{ text: "读日志", status: "done" }, { text: "改配置", status: "in_progress" }, { text: "回归检查", status: "pending" }] },
+    { kind: "step", text: "改配置" },
+  ]);
+
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-plan-")));
+  try {
+    const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [], uploaded: string[] = [];
+    const rt = fakeRuntime([
+      {
+        events: [JSON.stringify({
+          type: "item.updated",
+          item: { type: "todo_list", items: [{ text: "汇总纪要", completed: true }, { text: "导出 Markdown", completed: false }] },
+        })],
+        text: '总结好了\n```json\n{"status":"review","summary":"纪要已放在 out/summary.md"}\n```',
+      },
+    ], seen);
+    const w = createWorker({
+      api: fakeApi({ "T-0001": claim({ id: "T-0001", tracked: false, conv_id: "T-0001" }) }, calls),
+      files: {
+        upload: async (taskId, name, data) => { uploaded.push(`${taskId}:${name}:${Buffer.from(data).toString()}`); return true; },
+        preview: async () => true,
+        download: async () => null,
+      },
+      maxParallel: 1,
+      workRoot: join(W, "work"),
+      stepEveryMs: 0,
+      runtimes: {
+        codex: {
+          ...rt,
+          start(o) {
+            mkdirSync(join(o.cwd, "out"), { recursive: true });
+            writeFileSync(join(o.cwd, "out", "summary.md"), "# 会议纪要\n");
+            return rt.start(o);
+          },
+        },
+      },
+      log: () => {},
+    });
+    w.onTask({ ...claim().task, id: "T-0001", state: "queued" } as any, () => true);
+    await Bun.sleep(1);
+    await w.idle();
+
+    expect(uploaded.some((u) => u.includes("summary.md"))).toBe(true);
+    const finalReport = calls.filter((c) => c.path === "/api/v1/tasks/T-0001/report" && c.body.state).at(-1)!.body;
+    expect(finalReport.answer).toBe(true); // untracked plain conversation turn carrying out/ file stays an answer
+    expect(finalReport.plan).toEqual([
+      { text: "汇总纪要", status: "done" },
+      { text: "导出 Markdown", status: "in_progress" },
+    ]);
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
 });

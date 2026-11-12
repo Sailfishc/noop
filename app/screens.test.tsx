@@ -321,6 +321,60 @@ describe("screens", () => {
     await shot(app, "tasks-board");
   });
 
+  test("workpanel: plan checklist, Markdown output viewer, and channel files tab", async () => {
+    const docOut = {
+      id: "out_1",
+      kind: "file" as const,
+      name: "report.md",
+      title: "report.md",
+      mime: "text/markdown",
+      size: 256,
+      version: 2,
+      versions: [{ version: 1, size: 180, created: T0 }, { version: 2, size: 256, created: T0 + 60_000 }],
+      task_id: "T-0001",
+      thread_id: "msg_1",
+      message_id: "msg_2",
+      updated: T0 + 60_000,
+    };
+    const plannedTask = {
+      ...tasks[0]!,
+      plan: [
+        { text: "读取慢查询日志与索引现状", status: "done" },
+        { text: "在预发验证复合索引执行计划", status: "in_progress" },
+        { text: "整理压测前后 P99 对比文档", status: "pending" },
+      ],
+      outputs: [docOut],
+    };
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" },
+      ...SIZE,
+      network: {
+        ...server(newLog(), {
+          [`GET ${URL}/api/v1/machines`]: { body: { machines: [box] } },
+          [`GET ${URL}/api/v1/agents`]: { body: { agents: [acha] } },
+          [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [m1, { ...messages[1]!, outputs: [docOut] }, messages[2]!], more: false } },
+          [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [{ ...r1, outputs: [docOut] }] } },
+          [`GET ${URL}/api/v1/outputs/out_1/link`]: { body: { url: "/api/v1/outputs/out_1/content?v=2&exp=1&sig=x" } },
+          [`GET ${URL}/api/v1/outputs/out_1/content?*`]: { body: "# 慢查询排查报告\n\n- 原因：`orders` 表缺少 `(user_id, created_at)` 索引\n- 预期：P99 降至 160ms" },
+        }, [plannedTask, ...tasks.slice(1)]),
+      },
+    });
+    await app.waitFor("id:thread-msg_1");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:work-tab-plan");
+    await app.press("id:work-tab-plan");
+    await app.waitFor("id:work-plan-ratio");
+    await shot(app, "workpanel-plan");
+    await app.press("id:work-tab-outputs");
+    await app.waitFor("id:work-viewer-out_1");
+    await app.waitFor("text:慢查询排查报告");
+    await shot(app, "workpanel-outputs");
+    await app.press("id:close-thread");
+    await app.press("id:channel-tab-files");
+    await app.waitFor("id:channel-file-out_1");
+    await shot(app, "channel-files");
+  });
+
   test("tasks-page", async () => {
     const app = await start();
     await app.waitFor("id:open-tasks");
