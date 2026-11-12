@@ -556,9 +556,20 @@ describe("private", () => {
     await app.press("id:side-agent-acha");
     await app.waitFor("text:好的，整理好放在 out/meetings.md 了。");
     await shot(app, "private-dm");
-    await app.press("id:side-agent-helper");
+    await app.press("id:side-chat-new");
+    await app.waitFor("id:side-chat-new-helper");
+    await shot(app, "private-dm-more");
+    await app.press("id:side-chat-new-helper");
     await app.waitFor("id:dm-draft-helper");
     await shot(app, "private-dm-new");
+  });
+
+  test("mention-picker: the channel's agents, team-wide ones that join when called, then the channel's people", async () => {
+    const app = await privStart();
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@");
+    await app.waitFor("id:mention-picker");
+    await shot(app, "mention-picker");
   });
 
   test("private-new-channel", async () => {
