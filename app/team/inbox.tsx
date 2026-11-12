@@ -1,6 +1,7 @@
 // 待你决定: what waits for this person (people asking to join, for admins; tasks, reminders that went off), and tasks
 // waiting for outside results. On a wide window it is a triage desk: the list on the left, the one picked on the
 // right to act on, the next one picked once it is done; J and K move, Return opens its thread, H reminds me later.
+// On a phone the picked one (the first at the start) is open in the list with its buttons, the others a row each.
 import { effect, keymap, Scroll, signal, untracked, View } from "nsh";
 import { L } from "../i18n";
 import { Avatar, Empty, Keys, ListRow, MenuHeading, MenuLine, MenuRow, RowMenu, Split, toast, Txt } from "../ui";
@@ -98,9 +99,18 @@ export function Inbox(props: { team: Team; wide: boolean; back: boolean; onBack:
           <SignupSection team={t} />
           <ProposalSection team={t} />
           <If when={!nothing()} else={<Empty testID="inbox-empty" />}>
-            <Each of={items()} key={(x) => x.id}>
-              {(x) => <TaskCard team={t} task={x()} channelName={channelName(x())} onOpen={x().redacted ? undefined : () => open(x())} />}
-            </Each>
+            {/* the one picked (the first at the start) open with its buttons, the others a row each: press to open */}
+            <View style={{ gap: 2 }}>
+              <Each of={items()} key={(x) => x.id}>
+                {(x) => (
+                  <If when={current()?.id === x().id} else={row(x)}>
+                    <View style={{ paddingVertical: 8 }}>
+                      <TaskCard team={t} task={x()} channelName={channelName(x())} onOpen={x().redacted ? undefined : () => open(x())} />
+                    </View>
+                  </If>
+                )}
+              </Each>
+            </View>
           </If>
           {rest()}
         </Scroll>

@@ -18,6 +18,8 @@ export function slider<T extends string>(picked: () => T) {
   return {
     layout: (value: T) => (e: { bounds: { origin: { x: number; y: number }; size: { width: number; height: number } } }) =>
       boxes.update((b) => ({ ...b, [value]: { x: e.bounds.origin.x, y: e.bounds.origin.y, w: e.bounds.size.width, h: e.bounds.size.height } })),
+    /** Whether the options broke onto more than one line (a row of choices wider than a phone). */
+    wrapped: () => { const ys = Object.values(boxes()).map((b) => (b as Box).y); return ys.length > 1 && Math.max(...ys) > Math.min(...ys); },
     /** Whether the picked option was measured: show the indicator only then. */
     ready: () => !!box(),
     style: (): ViewStyle => ({

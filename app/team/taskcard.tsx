@@ -1,7 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { AskCard, Btn, Card, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
+import { AskCard, Btn, Card, Link, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
 import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -346,26 +346,27 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
           const mayAccept = () => !!me() && me()!.id === to()?.owner_id;
           const mayDecline = () => mayAccept() || party();
           return (
-            <Card tight testID={`task-${task().id}-handoff-${x().id}`}>
-              <Noted
-                testID={`task-${task().id}-handoff-${x().id}-who`}
-                note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
-                label={<Txt variant="caption" weight="semibold" tone="default">{x().kind === "delegate"
-                  ? L(`@${agent()?.handle ?? "?"} suggests delegating a part to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议委派给 @${to()?.handle ?? "?"}`)
-                  : L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}</Txt>}
-              />
-              <If when={x().what}>
-                <Txt lines={3}>{x().what}</Txt>
-              </If>
-              <If when={mayDecline()}>
-                <View style={{ flexDirection: "row", gap: 6 }}>
+            <AskCard
+              testID={`task-${task().id}-handoff-${x().id}`}
+              quiet={!mayDecline()}
+              kind={x().kind === "delegate"
+                ? L(`@${agent()?.handle ?? "?"} suggests delegating a part to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议委派给 @${to()?.handle ?? "?"}`)
+                : L(`@${agent()?.handle ?? "?"} suggests handing this to @${to()?.handle ?? "?"}`, `@${agent()?.handle ?? "?"} 建议交给 @${to()?.handle ?? "?"}`)}
+              note={mayAccept() ? undefined : L(`@${toOwner()?.handle ?? "?"} decides: @${to()?.handle ?? "?"} takes work from the asker only with its owner’s yes.`, `由 @${toOwner()?.handle ?? "?"} 决定：@${to()?.handle ?? "?"} 接发起人的活要它的主人同意。`)}
+              onReply={mayDecline() ? reply : undefined}
+              actions={
+                <If when={mayDecline()}>
                   <If when={mayAccept()}>
                     <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
                   </If>
                   <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
-                </View>
+                </If>
+              }
+            >
+              <If when={x().what}>
+                <Txt lines={3}>{x().what}</Txt>
               </If>
-            </Card>
+            </AskCard>
           );
         }}
       </Each>
@@ -414,10 +415,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
       </If>
       <If when={props.detail ? null : task().pr}>
         {(pr) => (
-          <View role="link" testID={`task-${task().id}-pr`} onPress={() => void openUrl(pr().url)} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 2, borderRadius: 6 }}>
-            <Icon name="merge" size={14} tint={pr().checks === "failure" ? colors.danger : colors.fg} />
-            <Text style={{ fontSize: 13, color: pr().checks === "failure" ? colors.danger : colors.fg }}>{prLine(pr())}</Text>
-          </View>
+          <Link testID={`task-${task().id}-pr`} icon="merge" tone={pr().checks === "failure" ? "danger" : "default"} label={prLine(pr())} onPress={() => void openUrl(pr().url)} />
         )}
       </If>
       <If when={task().state === "needs_decision" && task().decision?.kind === "align" ? task().decision : null}>

@@ -1,16 +1,19 @@
 // Signing in: an invite link (name and @handle), a one-time login code or link from a signed-in device, or asking
 // to join (an admin approves; this device keeps the application's token and signs in with it then).
-import { cleanup, effect, Image, Scroll, signal, Storage, Text, untracked, View, windowSize } from "nsh";
+import { cleanup, effect, Image, Scroll, signal, Storage, untracked, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { LOGO } from "./logo";
-import { Btn, canScan, Choice, colors, ErrorNote, Field, Modal, QrScanner, toast } from "../ui";
+import { Btn, canScan, Card, Choice, colors, ErrorNote, Field, IconBtn, Modal, QrScanner, toast, Txt } from "../ui";
 import { call, errorOf, type Reply, normalizeServer, parseInvite, parseLoginLink, type Session, TEAM_KEYS } from "./api";
-import { unreachable } from "./ui";
+import { unreachable, WIDE } from "./ui";
 
-/** Sign in with email + the authenticator's 6 digits, or join with an invite (bind an authenticator first). */
+type Mode = "home" | "login" | "invite" | "ask";
+
 /** `link`: a login link the app was opened with (the QR a phone's camera scanned): it signs in with it at once. */
 export function SignIn(props: { url: string; email: string; notice: string; link?: { server: string; code: string } | null; onLinkUsed?: () => void; onSession: (s: Session, email: string) => void }) {
-  const mode = signal<"login" | "invite" | "ask">("login");
+  /** Phones start from one big way in (扫码登录 where the camera reads codes, else the code); the others are a page each. */
+  const phone = () => windowSize().width < WIDE;
+  const mode = signal<Mode>(untracked(phone) ? "home" : "login");
   const url = signal(props.url);
   const code = signal("");
   const error = signal(props.notice);
@@ -121,6 +124,13 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     void login();
   }
 
+  /** The scanner page didn't come up at all (no web view, no answer): type the code instead, with the server remembered. */
+  function scanFailed(why: string) {
+    scanning.set(false);
+    go("login");
+    error.set(why);
+  }
+
   async function openInvite() {
     const p = parseInvite(link(), url());
     if (!p) return error.set(L("Paste the invite link you were sent (…/invite/…)", "粘贴收到的邀请链接（…/invite/…）"));
@@ -145,94 +155,125 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     props.onSession({ url: iv.server, session: r.data.session }, iv.email);
   }
 
+  const askForm = () => (
+    <If
+      when={asked()}
+      else={
+        <>
+          <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="ask-url" />
+          <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="ask-name" />
+          <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="wanglei" testID="ask-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
+          <Field label={L("Work email", "工作邮箱")} value={email()} onChange={(v) => email.set(v)} placeholder="wanglei@corp.com" keyboardType="email-address" testID="ask-email" />
+          <Field label={L("Note for the admin (optional)", "给管理员的话（可选）")} value={note()} onChange={(v) => note.set(v)} onSubmit={ask} placeholder={L("Who you are, which team", "你是谁、哪个组的")} testID="ask-note" />
+          <Btn testID="ask-send" kind="primary" grow label={L("Ask to join", "提交申请")} busy={busy()} disabled={!url().trim() || !name().trim() || !handle().trim() || !email().trim()} onPress={ask} />
+        </>
+      }
+    >
+      {(a) => (
+        <View testID="ask-waiting" style={{ gap: 12 }}>
+          <Txt variant="message">
+            {status() === "rejected"
+              ? L(`An admin of ${a().team || a().server} didn’t approve this request. Ask them for an invite link, or ask again.`, `${a().team || a().server} 的管理员没有通过这个申请。可以找管理员要邀请链接，或重新申请。`)
+              : L(`Request sent to ${a().team || a().server} as ${a().email}. Waiting for an admin to approve; this device signs you in as soon as they do.`, `已用 ${a().email} 向 ${a().team || a().server} 提交申请，等管理员审批。通过后这台设备会自动登录。`)}
+          </Txt>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <If when={status() === "pending"}>
+              <Btn testID="ask-check" kind="primary" label={L("Check now", "现在查看")} onPress={() => void check()} />
+            </If>
+            <Btn testID="ask-again" label={status() === "rejected" ? L("Ask again", "重新申请") : L("Withdraw and edit", "撤回重填")} onPress={() => void forgetAsk()} />
+          </View>
+        </View>
+      )}
+    </If>
+  );
+  const loginForm = () => (
+    <>
+      <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="team-url" />
+      <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("Get one on a signed-in device in Settings › Account.", "在已登录设备的 设置 › 账号 里生成")} />
+      <View style={{ flexDirection: "row", gap: 8 }}>
+        <If when={canScan() && !phone()}>
+          <Btn testID="team-scan" icon="scan" label={L("Scan", "扫码")} onPress={() => scanning.set(true)} />
+        </If>
+        <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
+      </View>
+    </>
+  );
+  const inviteForm = () => (
+    <If
+      when={invite()}
+      else={
+        <>
+          <Field label={L("Invite link", "邀请链接")} value={link()} onChange={(v) => link.set(v)} onSubmit={openInvite} placeholder="http://remi.corp:8080/invite/…" keyboardType="url" testID="invite-link" autoFocus />
+          <Btn testID="invite-open" kind="primary" grow label={L("Continue", "继续")} busy={busy()} onPress={openInvite} />
+        </>
+      }
+    >
+      {(iv) => (
+        <>
+          <Txt tone="muted">{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Txt>
+          <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="invite-name" autoFocus />
+          <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} onSubmit={join} placeholder="wanglei" testID="invite-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
+          <Btn testID="invite-join" kind="primary" grow label={L("Join", "加入")} busy={busy()} disabled={!name().trim() || !handle().trim()} onPress={join} />
+        </>
+      )}
+    </If>
+  );
+  const blurb = () => mode() === "home"
+    ? canScan() ? L("Scan the QR code in Settings › Account on a device you’re signed in on.", "扫已登录设备 设置 › 账号 里的二维码。") : L("Use a login code from Settings › Account on a device you’re signed in on.", "用已登录设备 设置 › 账号 里的登录码。")
+    : mode() === "login" ? L("Sign in with a login code from a device you’re already signed in on, or a login link from your admin.", "用已登录设备上生成的登录码，或管理员发给你的登录链接登录。")
+    : mode() === "invite" ? L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")
+    : L("Ask to join your team. An admin approves, then this device signs you in.", "申请加入团队。管理员通过后，这台设备会自动登录。");
+  const go = (m: Mode) => { mode.set(m); error.set(""); };
+
   return (
     <Scroll style={{ flex: 1, backgroundColor: colors.page }} keyboardShouldPersistTaps="handled">
       <View testID="team-signin" style={{ minHeight: windowSize().height, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, paddingVertical: 48 }}>
-        <View style={{ width: "100%", maxWidth: 440, gap: 22 }}>
-          <View style={{ alignItems: "center", gap: 10 }}>
+        <View style={{ width: "100%", maxWidth: 440, gap: 24 }}>
+          <If when={phone() && mode() !== "home"}>
+            <View style={{ alignSelf: "flex-start" }}>
+              <IconBtn icon="back" testID="signin-back" label={L("Back", "返回")} onPress={() => go("home")} />
+            </View>
+          </If>
+          <View style={{ alignItems: "center", gap: 12 }}>
             <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
-            <Text style={{ fontSize: 28, fontWeight: "600", color: colors.fg }}>Remi</Text>
-            <Text style={{ fontSize: 15, lineHeight: 22, color: colors.fg2, textAlign: "center" }}>
-              {mode() === "login" ? L("Sign in with a login code from a device you’re already signed in on, or a login link from your admin.", "用已登录设备上生成的登录码，或管理员发给你的登录链接登录。") : mode() === "invite" ? L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。") : L("Ask to join your team. An admin approves, then this device signs you in.", "申请加入团队。管理员通过后，这台设备会自动登录。")}
-            </Text>
+            <Txt variant="display">Remi</Txt>
+            <Txt tone="muted" center>{blurb()}</Txt>
           </View>
-          <View style={{ gap: 16, padding: 22, borderRadius: 16, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
-            <Choice
-              testID="signin-mode"
-              options={[{ value: "login", label: L("Sign in", "登录") }, { value: "invite", label: L("I have an invite", "我有邀请") }, { value: "ask", label: L("Ask to join", "申请加入") }]}
-              value={mode()}
-              onChange={(m) => { mode.set(m); error.set(""); }}
-            />
-            <If when={mode() === "ask"}>
-              <If
-                when={asked()}
-                else={
-                  <>
-                    <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="ask-url" />
-                    <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="ask-name" />
-                    <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} placeholder="wanglei" testID="ask-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
-                    <Field label={L("Work email", "工作邮箱")} value={email()} onChange={(v) => email.set(v)} placeholder="wanglei@corp.com" keyboardType="email-address" testID="ask-email" />
-                    <Field label={L("Note for the admin (optional)", "给管理员的话（可选）")} value={note()} onChange={(v) => note.set(v)} onSubmit={ask} placeholder={L("Who you are, which team", "你是谁、哪个组的")} testID="ask-note" />
-                    <Btn testID="ask-send" kind="primary" grow label={L("Ask to join", "提交申请")} busy={busy()} disabled={!url().trim() || !name().trim() || !handle().trim() || !email().trim()} onPress={ask} />
-                  </>
-                }
-              >
-                {(a) => (
-                  <View testID="ask-waiting" style={{ gap: 12 }}>
-                    <Text style={{ fontSize: 15, lineHeight: 22, color: colors.fg }}>
-                      {status() === "rejected"
-                        ? L(`An admin of ${a().team || a().server} didn’t approve this request. Ask them for an invite link, or ask again.`, `${a().team || a().server} 的管理员没有通过这个申请。可以找管理员要邀请链接，或重新申请。`)
-                        : L(`Request sent to ${a().team || a().server} as ${a().email}. Waiting for an admin to approve; this device signs you in as soon as they do.`, `已用 ${a().email} 向 ${a().team || a().server} 提交申请，等管理员审批。通过后这台设备会自动登录。`)}
-                    </Text>
-                    <View style={{ flexDirection: "row", gap: 8 }}>
-                      <If when={status() === "pending"}>
-                        <Btn testID="ask-check" kind="primary" label={L("Check now", "现在查看")} onPress={() => void check()} />
-                      </If>
-                      <Btn testID="ask-again" label={status() === "rejected" ? L("Ask again", "重新申请") : L("Withdraw and edit", "撤回重填")} onPress={() => void forgetAsk()} />
-                    </View>
-                  </View>
-                )}
-              </If>
-            </If>
-            <If
-              when={mode() === "invite"}
-              else={
-                <If when={mode() === "login"}>
-                  <Field label={L("Server address", "服务器地址")} value={url()} onChange={(v) => url.set(v)} placeholder="http://remi.corp:8080" keyboardType="url" testID="team-url" />
-                  <Field label={L("Login code or link", "登录码或登录链接")} value={code()} onChange={(v) => code.set(v)} onSubmit={login} placeholder="ABCD-EFGH" testID="team-code" hint={L("Get one on a signed-in device in Settings › Account.", "在已登录设备的 设置 › 账号 里生成")} />
-                  <View style={{ flexDirection: "row", gap: 8 }}>
-                    <If when={canScan()}>
-                      <Btn testID="team-scan" icon="scan" label={L("Scan", "扫码")} onPress={() => scanning.set(true)} />
-                    </If>
-                    <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
-                  </View>
+          <If when={mode() === "home"} else={
+            <Card>
+              <View style={{ gap: 16 }}>
+                <If when={!phone()}>
+                  <Choice
+                    testID="signin-mode"
+                    options={[{ value: "login", label: L("Sign in", "登录") }, { value: "invite", label: L("I have an invite", "我有邀请") }, { value: "ask", label: L("Ask to join", "申请加入") }]}
+                    value={mode() as Exclude<Mode, "home">}
+                    onChange={go}
+                  />
                 </If>
-              }
-            >
-              <If
-                when={invite()}
-                else={
-                  <>
-                    <Field label={L("Invite link", "邀请链接")} value={link()} onChange={(v) => link.set(v)} onSubmit={openInvite} placeholder="http://remi.corp:8080/invite/…" keyboardType="url" testID="invite-link" autoFocus />
-                    <Btn testID="invite-open" kind="primary" grow label={L("Continue", "继续")} busy={busy()} onPress={openInvite} />
-                  </>
-                }
-              >
-                {(iv) => (
-                  <>
-                    <Text style={{ fontSize: 14, color: colors.fg2 }}>{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Text>
-                    <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="invite-name" autoFocus />
-                    <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} onSubmit={join} placeholder="wanglei" testID="invite-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
-                    <Btn testID="invite-join" kind="primary" grow label={L("Join", "加入")} busy={busy()} disabled={!name().trim() || !handle().trim()} onPress={join} />
-                  </>
-                )}
+                <If when={mode() === "ask"}>{askForm()}</If>
+                <If when={mode() === "login"}>{loginForm()}</If>
+                <If when={mode() === "invite"}>{inviteForm()}</If>
+                <ErrorNote text={error()} testID="signin-error" />
+              </View>
+            </Card>
+          }>
+            {/* phones: one way first (scan the code a signed-in device shows), the others a page each */}
+            <View testID="signin-home" style={{ gap: 8 }}>
+              <If when={canScan()} else={<Btn testID="signin-code" kind="primary" label={L("Enter a login code", "输入登录码")} onPress={() => go("login")} />}>
+                <Btn testID="team-scan" kind="primary" icon="scan" label={L("Scan to sign in", "扫码登录")} onPress={() => scanning.set(true)} />
+                <Btn testID="signin-code" kind="ghost" label={L("Enter a login code", "手动输入登录码")} onPress={() => go("login")} />
               </If>
-            </If>
-            <ErrorNote text={error()} testID="signin-error" />
-          </View>
+              <Btn testID="signin-invite" kind="ghost" label={L("I have an invite link", "我有邀请链接")} onPress={() => go("invite")} />
+              <Btn testID="signin-ask" kind="ghost" label={L("Ask to join", "申请加入")} onPress={() => go("ask")} />
+              <ErrorNote text={error()} testID="signin-error" />
+            </View>
+          </If>
           <Modal open={scanning()} onClose={() => scanning.set(false)} title={L("Scan to sign in", "扫码登录")} width={480} testID="scan">
             <If when={scanning()}>
-              <QrScanner testID="scan-camera" onScan={scanned} />
+              <QrScanner testID="scan-camera" onScan={scanned} onFail={scanFailed} />
+              <If when={phone()}>
+                <Btn testID="scan-manual" kind="ghost" label={L("Enter a login code", "手动输入登录码")} onPress={() => { scanning.set(false); go("login"); }} />
+              </If>
             </If>
           </Modal>
         </View>
@@ -240,5 +281,3 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     </Scroll>
   );
 }
-
-

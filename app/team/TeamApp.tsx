@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { AccountRow, Avatar, colors, CommandPalette, Count, Dot, Icon, IconBtn, type IconName, Keys, ListHeading, ListRow, MenuHeading, MenuLine, MenuRow, PopMenu, RowMenu, Spinner, StateMark, titleBarHeight, toast, Txt } from "../ui";
+import { AccountRow, Avatar, colors, CommandPalette, Count, Dot, Icon, IconBtn, type IconName, Keys, ListHeading, ListRow, MenuHeading, MenuLine, MenuRow, PopMenu, RowMenu, Spinner, StateMark, TabBar, titleBarHeight, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -74,6 +74,15 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     open({ kind: "channel", id: first.id });
   });
 
+  // phones open on 待你决定 when something waits there, once: until this person goes anywhere else first
+  let launched = false;
+  effect(() => {
+    const n = waitingCount(t);
+    if (launched || untracked(wide)) return;
+    if (untracked(page).kind !== "home" || untracked(settings)) { launched = true; return; }
+    if (n > 0) { launched = true; untracked(() => open({ kind: "inbox" })); }
+  });
+
   function open(p: Page, threadId: string | null = null) {
     if (p.kind === "channel") t.openChannel(p.id);
     else t.leaveView();
@@ -91,6 +100,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
     return p.kind === "inbox" || p.kind === "tasks" ? p.kind : null;
   };
   function openTab(x: Tab) {
+    launched = true;
     if (x === "me") return settings.set({ tab: null });
     settings.set(null);
     if (x !== "chat") return open({ kind: x });
@@ -218,7 +228,7 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       )}
     </If>
     <If when={keyboardFrame().height ? null : tab()}>
-      {(x) => <TabBar team={t} active={x()} onTab={openTab} />}
+      {(x) => <PhoneTabs team={t} active={x()} onTab={openTab} />}
     </If>
     <CommandPalette
       testID="palette"
@@ -236,35 +246,17 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
   );
 }
 
-/** Phones: messages, what waits for me, tasks, me. */
-function TabBar(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
+/** Phones: what waits for me first, then messages, tasks, me. */
+function PhoneTabs(props: { team: Team; active: Tab; onTab: (x: Tab) => void }) {
   const t = props.team;
-  const waiting = () => waitingCount(t);
   const unread = () => Object.values(t.unread()).reduce((n, x) => n + (x || 0), 0);
-  const Item = (p: { tab: Tab; icon: IconName; label: string; badge: number }) => {
-    const on = () => props.active === p.tab;
-    return (
-      <View role="tab" testID={`tab-${p.tab}`} accessibilityLabel={p.label} accessibilityState={{ selected: on() }} onPress={() => props.onTab(p.tab)}
-        style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", gap: 3 }}>
-        <View style={{ width: 56, height: 30, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: on() ? colors.selected : "transparent" }}>
-          <Icon name={p.icon} size={22} tint={on() ? colors.fg : colors.fg2} weight={on() ? 1.8 : 1.5} />
-          <If when={p.badge}>
-            <View style={{ position: "absolute", top: -3, left: 33, minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, borderWidth: 2, borderColor: colors.page, alignItems: "center", justifyContent: "center", backgroundColor: colors.primary }}>
-              <Text testID={`tab-${p.tab}-badge`} style={{ fontSize: 10.5, fontWeight: "600", color: colors.onPrimary }}>{String(p.badge)}</Text>
-            </View>
-          </If>
-        </View>
-        <Text style={{ fontSize: 11, fontWeight: on() ? "600" : "400", color: on() ? colors.fg : colors.fg2 }}>{p.label}</Text>
-      </View>
-    );
-  };
   return (
-    <View testID="tabbar" style={{ flexDirection: "row", paddingTop: 6, paddingBottom: Math.max(6, safeArea().bottom), borderTopWidth: 1, borderTopColor: colors.hairline, backgroundColor: colors.page }}>
-      <Item tab="chat" icon="bubble" label={L("Messages", "消息")} badge={unread()} />
-      <Item tab="inbox" icon="bell" label={L("Waiting", "待你决定")} badge={waiting()} />
-      <Item tab="tasks" icon="task" label={L("Tasks", "任务")} badge={0} />
-      <Item tab="me" icon="user" label={L("Me", "我")} badge={0} />
-    </View>
+    <TabBar testID="tab" value={props.active} onChange={props.onTab} tabs={[
+      { value: "inbox", icon: "bell", label: L("Waiting", "待你决定"), badge: waitingCount(t), tone: "attention" },
+      { value: "chat", icon: "bubble", label: L("Messages", "消息"), badge: unread() },
+      { value: "tasks", icon: "task", label: L("Tasks", "任务") },
+      { value: "me", icon: "user", label: L("Me", "我") },
+    ]} />
   );
 }
 
