@@ -212,3 +212,72 @@ func TestIntervalReminders(t *testing.T) {
 	check(t, "after a day they stop", open == 0)
 	check(t, "every 5 minutes is refused", e.do("POST", "/api/v1/reminders", e.wl.session, map[string]any{"command": "every 5m @acha 看", "channel_id": e.cid}).status == 400)
 }
+
+func TestAgentCancelsReminders(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	text := func(r resp) string { return string(r.raw) }
+	remind := func(tok, s string) resp {
+		return e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString(s), "content-type", "text/plain")
+	}
+	cancel := func(tok, s string) resp {
+		return e.do("POST", "/api/v1/agent/remind/cancel", tok, bytes.NewBufferString(s), "content-type", "text/plain")
+	}
+	run := func(thread string) string {
+		id := e.do("GET", "/api/v1/tasks?thread="+thread, e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+		return e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil).body["read_token"].(string)
+	}
+
+	// "@acha report every 10 minutes": it sets its own interval reminder in the thread
+	id, tok, _ := e.claimed("@acha 每 10 分钟汇报一下 MR 的进展")
+	r := remind(tok, "every 10m 看一下 MR，有变化就汇报")
+	check(t, "set", r.status == 200, r)
+	rid := strings.Fields(strings.TrimPrefix(text(r), "reminder "))[0]
+	rid = strings.TrimSuffix(rid, ":")
+	r = remind(tok, "2h @wanglei 看一下 MR 有没有合并")
+	check(t, "and one for its person", r.status == 200, r)
+	pid := strings.TrimSuffix(strings.Fields(strings.TrimPrefix(text(r), "reminder "))[0], ":")
+	other := e.do("POST", "/api/v1/reminders", e.ll.session, map[string]any{"command": "2h 交对账报告", "channel_id": e.cid})
+	check(t, "someone else's own reminder", other.status == 200, other)
+
+	r = e.do("GET", "/api/v1/agent/reminders", tok, nil)
+	check(t, "remi reminders: the ones it set", r.status == 200 && strings.Contains(text(r), rid) && strings.Contains(text(r), "every 10m") &&
+		strings.Contains(text(r), "until") && strings.Contains(text(r), pid) && strings.Contains(text(r), "for @wanglei") &&
+		!strings.Contains(text(r), other.body["id"].(string)), r)
+	check(t, "not someone else's", cancel(tok, other.body["id"].(string)).status == 404)
+	check(t, "nothing to cancel", cancel(tok, "").status == 400)
+
+	// "可以先暂停": it stops what brings it back here
+	r = cancel(tok, "--here")
+	check(t, "remi remind cancel --here", r.status == 200 && strings.Contains(text(r), "cancelled "+rid) && !strings.Contains(text(r), pid), r)
+	rem, _ := e.h.reminder(rid)
+	check(t, "it is done", rem.Done)
+	r = cancel(tok, pid)
+	check(t, "remi remind cancel ID", r.status == 200 && strings.Contains(text(r), "cancelled "+pid), r)
+	check(t, "nothing left", text(e.do("GET", "/api/v1/agent/reminders", tok, nil)) == "no reminders\n")
+	check(t, "a cancelled one can't be cancelled again", cancel(tok, rid).status == 404)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "停了"})
+	e.advance(11 * time.Minute)
+	e.h.Tick()
+	check(t, "and it does not come back", e.task(id)["state"] == "review")
+
+	// a person's "every morning @acha …" opens a new thread each time; the agent can still stop it from there
+	daily := e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"command": "每天 9:00 @acha 汇总告警", "channel_id": e.cid})
+	e.advance(24 * time.Hour)
+	e.h.Tick()
+	ms := e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, nil).body["messages"].([]any)
+	fired := ms[len(ms)-1].(map[string]any)["id"].(string)
+	tok2 := run(fired)
+	check(t, "its person's daily one is listed", strings.Contains(text(e.do("GET", "/api/v1/agent/reminders", tok2, nil)), daily.body["id"].(string)))
+	check(t, "and can be stopped", cancel(tok2, daily.body["id"].(string)).status == 200)
+
+	// closing or cancelling the task stops its thread's repeating reminders; done does not
+	id, tok, _ = e.claimed("@acha 每 30 分钟看一下 CI")
+	rid = strings.TrimSuffix(strings.Fields(strings.TrimPrefix(text(remind(tok, "every 30m 看 CI")), "reminder "))[0], ":")
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "done", "summary": "CI 绿了"})
+	rem, _ = e.h.reminder(rid)
+	check(t, "done: it goes on", !rem.Done)
+	e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/cancel", e.zw.session, nil)
+	rem, _ = e.h.reminder(rid)
+	check(t, "closed: it stops", r.status == 200 && rem.Done, r)
+}

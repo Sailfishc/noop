@@ -486,7 +486,7 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 			return reminderView{}, 400, "Agent 设的按间隔提醒只能提醒它自己（在这个线程里汇报）；要定时提醒人，用 daily、weekdays 或 weekly"
 		}
 		if h.count("SELECT COUNT(*) FROM reminders WHERE by_agent = ? AND done = 0 AND repeat GLOB '[0-9]*'", byAgent) >= maxAgentIntervals {
-			return reminderView{}, 429, "这个 Agent 已经有 3 个按间隔的提醒了，先取消一个（remi 提醒的人可以在「待你决定」里取消）"
+			return reminderView{}, 429, "这个 Agent 已经有 3 个按间隔的提醒了，先取消一个：remi reminders 看有哪些，remi remind cancel ID 取消"
 		}
 		until = now.Add(agentIntervalFor).UnixMilli()
 	}
@@ -715,4 +715,132 @@ func (h *Hub) v1AgentRemind(w http.ResponseWriter, q *request) {
 		line += ", then " + r.Repeat
 	}
 	writeText(w, line+"\n")
+}
+
+// ---------------------------------------------------------------- an agent looking at and stopping its reminders
+
+// agentReminders: the scheduled reminders an agent may see and cancel while it runs t: the ones it set, and the ones
+// for it that are in t's thread or that t's person set (a person's "every morning @agent …" opens a new thread each
+// time, so "this thread" alone would miss it).
+func (h *Hub) agentReminders(t taskView, a agentView) []reminderView {
+	return scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE done = 0 AND (by_agent = ?
+		OR (target_kind = 'agent' AND target_id = ? AND (thread_id = ? OR by_user = ?))) ORDER BY due LIMIT 100`,
+		a.ID, a.ID, t.ThreadID, t.CreatedBy))
+}
+
+// endReminder: nothing more is scheduled for it (kept, done, so people can still see what it was).
+func (h *Hub) endReminder(r reminderView) {
+	h.must(h.db.Exec("UPDATE reminders SET done = 1 WHERE id = ?", r.ID))
+	r, _ = h.reminder(r.ID)
+	h.remindersChanged(r)
+}
+
+// endThreadReminders: a person closed or cancelled t, so the repeating reminders that would bring its agent back to
+// its thread stop too. Done does not stop them: each report is done, and the next one reopens it.
+func (h *Hub) endThreadReminders(t taskView) {
+	for _, r := range scanReminders(h.db.Query("SELECT "+reminderCols+` FROM reminders WHERE done = 0 AND repeat != ''
+		AND target_kind = 'agent' AND target_id = ? AND thread_id = ?`, t.AgentID, t.ThreadID)) {
+		h.endReminder(r)
+	}
+}
+
+// reminderLine: one reminder as remi shows it.
+func (h *Hub) reminderLine(r reminderView, a agentView) string {
+	loc := h.now().Location()
+	who := "you"
+	if r.Target.Kind == "user" {
+		if u, ok := h.user(r.Target.ID); ok {
+			who = "@" + u.Handle
+		}
+	} else if r.Target.ID != a.ID {
+		who = "@" + h.agentHandle(r.Target.ID)
+	}
+	line := r.ID + "  for " + who + "  next " + time.UnixMilli(r.Due).In(loc).Format("2006-01-02 15:04 Mon")
+	switch {
+	case interval(r.Repeat) > 0:
+		line += "  every " + r.Repeat
+	case r.Repeat != "":
+		line += "  " + r.Repeat
+	default:
+		line += "  once"
+	}
+	if r.Until != nil {
+		line += "  until " + time.UnixMilli(*r.Until).In(loc).Format("2006-01-02 15:04")
+	}
+	set := "you"
+	if r.ByAgent == nil || *r.ByAgent != a.ID {
+		set = "@" + r.By
+		if u, ok := h.user(r.By); ok {
+			set = "@" + u.Handle
+		}
+	}
+	return line + "  set by " + set + "  " + r.Text
+}
+
+// v1AgentReminders: `remi reminders`, what remi remind cancel can stop.
+func (h *Hub) v1AgentReminders(w http.ResponseWriter, q *request) {
+	t, a, ok := h.reader(w, q)
+	if !ok {
+		return
+	}
+	rs := h.agentReminders(t, a)
+	if len(rs) == 0 {
+		writeText(w, "no reminders\n")
+		return
+	}
+	var b strings.Builder
+	for _, r := range rs {
+		b.WriteString(h.reminderLine(r, a) + "\n")
+	}
+	writeText(w, b.String())
+}
+
+// v1AgentRemindCancel: `remi remind cancel ID…` or `remi remind cancel --here` (the repeating and scheduled ones for
+// the agent itself in this task's thread). Only ones remi reminders lists.
+func (h *Hub) v1AgentRemindCancel(w http.ResponseWriter, q *request) {
+	t, a, ok := h.reader(w, q)
+	if !ok {
+		return
+	}
+	words := strings.Fields(string(q.body))
+	if len(words) == 0 {
+		errJSON(w, 400, "说一下取消哪个：remi remind cancel ID（remi reminders 里看），或 remi remind cancel --here")
+		return
+	}
+	mine := map[string]reminderView{}
+	for _, r := range h.agentReminders(t, a) {
+		mine[r.ID] = r
+	}
+	var stop []reminderView
+	for _, wd := range words {
+		if wd == "--here" {
+			for _, r := range mine {
+				if r.Target == (member{"agent", a.ID}) && r.ThreadID != nil && *r.ThreadID == t.ThreadID {
+					stop = append(stop, r)
+				}
+			}
+			continue
+		}
+		r, ok := mine[wd]
+		if !ok {
+			errJSON(w, 404, "没有你能取消的提醒 "+wd+"：remi reminders 看有哪些")
+			return
+		}
+		stop = append(stop, r)
+	}
+	if len(stop) == 0 {
+		writeText(w, "no reminders for you in this thread\n")
+		return
+	}
+	var b strings.Builder
+	done := map[string]bool{}
+	for _, r := range stop {
+		if done[r.ID] {
+			continue
+		}
+		done[r.ID] = true
+		h.endReminder(r)
+		b.WriteString("cancelled " + h.reminderLine(r, a) + "\n")
+	}
+	writeText(w, b.String())
 }
