@@ -43,7 +43,7 @@ export function CommandPalette(props: {
   const row = (e: { id: string; label: string }): JSX.Element => {
     const it = byId().get(e.id);
     return (
-      <View testID={props.testID ? `${props.testID}-${e.id}` : undefined} style={{ flex: 1, width: "100%", flexDirection: "row", alignItems: "center", gap: space.md }}>
+      <View testID={props.testID ? `${props.testID}-${e.id}` : undefined} style={{ alignSelf: "stretch", flexGrow: 1, flexDirection: "row", alignItems: "center", gap: space.md }}>
         <If when={it?.icon}>{(i) => <Icon name={i()} size={size.icon.md} tint={colors.fg2} />}</If>
         <Text style={{ flex: 1, fontSize: size.text.body, color: colors.fg, numberOfLines: 1 }}>{e.label}</Text>
         <If when={it?.checked}><Icon name="check" size={size.icon.sm} tint={colors.fg2} /></If>
@@ -76,7 +76,7 @@ export function CommandPalette(props: {
           searchPrefix={<Icon name="search" size={size.icon.md} tint={colors.fg3} />}
           listStyle={{ maxHeight: measure.paletteList, padding: space.xs }}
           itemClass="focus:bg-selected hover:bg-hover"
-          itemStyle={{ minHeight: size.row.menu, paddingHorizontal: space.md, borderRadius: radius.sm, flexDirection: "row", alignItems: "center" }}
+          itemStyle={{ minHeight: size.row.menu, paddingHorizontal: space.md, borderRadius: radius.sm, justifyContent: "center" }}
           groupStyle={{ paddingHorizontal: space.md, paddingTop: space.md, paddingBottom: space.xs, fontSize: size.text.caption, fontWeight: "600", color: colors.fg3 }}
           separatorStyle={{ height: stroke.hairline, marginVertical: space.xs, backgroundColor: colors.hairline }}
           renderItem={row}

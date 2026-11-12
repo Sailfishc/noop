@@ -1,7 +1,7 @@
 // The people around a task (as in the design "Remi 任务视图 v2"): who asked for it, which agent does it and whose
 // agent that is, and whom it waits for right now. The task lives in its channel; these decide whose views it shows in.
 import { L } from "../i18n";
-import { channelLabel, takerOf, type Task, type Team } from "./api";
+import { channelLabel, openHandoffs, takerOf, type Task, type Team } from "./api";
 import type { Tone } from "./status";
 
 /** Whom the task waits for now, in a few words ("waits for your acceptance", "waits for zc to confirm"), and
@@ -17,6 +17,16 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
   // its computer is gone and another can take it: the agent's owner says go on there, or wait
   if (task.engine?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: switch runtimes?", "等你决定换不换引擎"], (n) => [`Waits for ${n}: switch runtimes?`, `等 ${n} 决定换不换引擎`], "attention");
   if (task.move?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: move computers?", "等你决定换不换电脑"], (n) => [`Waits for ${n}: move computers?`, `等 ${n} 决定换不换电脑`], "attention");
+  // its agent suggests handing it (or a part) to another agent: that agent's owner says yes, the task's people may say no
+  const ho = ["done", "closed"].includes(task.state) ? undefined : openHandoffs(task)[0];
+  if (ho) {
+    const to = t.agents().find((a) => a.id === ho.to);
+    const toOwner = t.users().find((u) => u.id === to?.owner_id);
+    if (isMe(to?.owner_id) || isMe(task.created_by)) {
+      return { label: ho.kind === "delegate" ? L(`Waits for you: delegate to @${to?.handle ?? "?"}?`, `等你决定：委派给 @${to?.handle ?? "?"}？`) : L(`Waits for you: hand it to @${to?.handle ?? "?"}?`, `等你决定：交给 @${to?.handle ?? "?"}？`), mine: true, tone: "attention" };
+    }
+    return { label: L(`Waits for ${toOwner?.name ?? "?"}: hand it on?`, `等 ${toOwner?.name ?? "?"} 决定交接`), mine: false, tone: "muted" };
+  }
   switch (task.state) {
     case "pending":
       return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "attention");

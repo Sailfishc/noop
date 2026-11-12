@@ -41,12 +41,18 @@ describe("team sign in", () => {
     const phone = await open("./App.tsx", { platform: "ios", network: server(newLog()) });
     await phone.waitFor("id:team-signin");
     expect(phone.shows("id:scan-camera")).toBe(false);
+    // a phone starts from one 扫码登录; the other ways are a page each, with a way back
+    expect(phone.shows("id:team-code")).toBe(false);
+    for (const way of ["signin-code", "signin-invite", "signin-ask"]) expect(phone.shows(`id:${way}`)).toBe(true);
+    await phone.press("id:signin-invite");
+    await phone.waitFor("id:invite-link");
+    await phone.press("id:signin-back");
+    await phone.waitFor("id:signin-home");
+    // headless has no web page to answer the scanner: it falls back to typing the code, saying why
     await phone.press("id:team-scan");
-    await phone.waitFor("id:scan-camera");
-    // headless has no web page to answer: the box says why instead of staying black
-    await phone.waitFor("id:scan-camera-problem", { timeout: 5000 });
-    await phone.press("id:scan-close");
+    await phone.waitFor("id:team-code");
     await phone.waitFor("id:scan-camera", { state: "gone" });
+    expect(phone.shows("text:/scanner page/")).toBe(true);
 
     const web = await open("./App.tsx", { platform: "web", width: 1200, height: 800, network: server(newLog()) });
     await web.waitFor("id:team-signin");
@@ -1313,8 +1319,9 @@ describe("team ownership", () => {
     expect(app.shows("text:Every agent working in this channel reads this with its task.")).toBe(false);
     await app.press("id:channel-conventions-head-info");
     expect(app.shows("id:channel-conventions-head-note")).toBe(true);
-    await app.press("id:channel-conventions-head-info");
-    expect(app.shows("id:channel-conventions-head-note")).toBe(false);
+    // on a touch screen the note is a sheet from the bottom; back (or the backdrop, or a swipe) closes it
+    await app.back();
+    await app.waitFor("id:channel-conventions-head-note", { state: "gone" });
     await app.press("id:channel-conventions-box");
     await app.waitFor("id:channel-conventions-input");
     await app.press("id:channel-conventions-cancel");
@@ -1391,7 +1398,7 @@ describe("passing the ball", () => {
     expect(app.shows("text:球在 王磊 手里 · 决定要不要交接")).toBe(true);
     expect(app.shows("id:task-T-0001-handoff-ho_1-accept")).toBe(false);
     expect(app.shows("id:task-T-0001-handoff-ho_1-decline")).toBe(true);
-    expect(app.shows("id:task-T-0001-handoff-ho_1-who-info")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-kind-info")).toBe(true);
   });
 
   test("a person the agent handed the ball to sees it as theirs", async () => {
@@ -1669,6 +1676,8 @@ describe("private channels", () => {
     expect(app.shows("id:members-add-bei-why-note")).toBe(false);
     await app.press("id:members-add-bei-why-info");
     await app.waitFor("text:/只有它的主人能拉进私有频道/");
+    await app.back();
+    await app.waitFor("id:members-add-bei-why-note", { state: "gone" });
     await app.press("id:members-add-helper");
     await app.waitFor("id:members-host-warning");
     expect(app.shows("text:/@helper 运行在王磊的电脑上，频道内容会发到那里/")).toBe(true);
@@ -1770,6 +1779,25 @@ describe("desktop shell", () => {
       decision: { question: "兼容旧版签名吗？", options: ["兼容 v1，半年后下线", "只支持 v2"], recommendation: "兼容 v1" } }),
     task({ id: "T-0002", thread_id: "msg_t2", created_by: "u_1", state: "review", tracked: true, title: "订单导出加时区", updated: T0 + 1 }),
   ];
+
+  test("a phone opens on 待你决定 when something waits: the first one open with its buttons, a held row's menu from the bottom", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, network: server(newLog(), {}, two()) });
+    await app.waitFor("id:task-T-0001");
+    expect(app.shows("id:tab-inbox-badge")).toBe(true);
+    // the first is open (its card and buttons), the next a row; pressing the row opens it instead
+    expect(app.shows("id:triage-T-0002")).toBe(true);
+    expect(app.shows("id:task-T-0002")).toBe(false);
+    await app.longPress("id:triage-T-0002");
+    await app.waitFor("id:triage-T-0002-later-1");
+    await app.back();
+    await app.waitFor("id:triage-T-0002-later-1", { state: "gone" });
+    await app.press("id:triage-T-0002");
+    await app.waitFor("id:task-T-0002");
+    expect(app.shows("id:triage-T-0001")).toBe(true);
+    // 消息 is the next tab; going there stays there
+    await app.press("id:tab-chat");
+    await app.waitFor("id:channel-pay");
+  });
 
   test("⌘K opens the palette; G I and G T go to 待你决定 and 我的任务; C starts a dispatch", async () => {
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });

@@ -3,14 +3,14 @@ import { L } from "../i18n";
 import { Btn } from "./button";
 import { Noted } from "./noted";
 import { Txt } from "./text";
-import { colors, radius, space, stroke } from "./theme";
+import { colors, radius, space, stroke, touch } from "./theme";
 
 /**
  * Where an agent asks a person something: to align on what done means, to decide, to accept. The only amber surface
  * in the app (a band down its edge, the attention tint) while it waits on the person looking at it; `quiet` while it
  * waits on someone else (the hairline card). `kind` is the ask in a word or two (等你决定), its `note` behind an ⓘ.
  * The answer comes first (`actions`: the options as buttons, the recommended one primary), then 回复… (`onReply`) for
- * anything the buttons don't say.
+ * anything the buttons don't say. On phones the buttons stack, each the card's full width, for a thumb.
  */
 export function AskCard(props: {
   kind: string;
@@ -44,7 +44,7 @@ export function AskCard(props: {
       />
       {props.children}
       <If when={props.actions || props.onReply}>
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
+        <View style={touch ? { flexDirection: "column", alignItems: "stretch", gap: space.sm } : { flexDirection: "row", flexWrap: "wrap", gap: space.sm }}>
           {props.actions}
           <If when={props.onReply}>
             <Btn small kind="ghost" testID={props.testID ? `${props.testID}-reply` : undefined} label={L("Reply…", "回复…")} onPress={() => props.onReply!()} />

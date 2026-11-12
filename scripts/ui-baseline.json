@@ -3,10 +3,8 @@
     "nsh-base": 1
   },
   "app/team/TeamApp.tsx": {
-    "font-size": 6,
-    "radius": 2,
-    "spacing": 7,
-    "pressable": 1
+    "font-size": 4,
+    "spacing": 6
   },
   "app/team/channel.tsx": {
     "nsh-base": 1,
@@ -51,9 +49,7 @@
     "pressable": 6
   },
   "app/team/signin.tsx": {
-    "font-size": 4,
-    "radius": 1,
-    "spacing": 4
+    "spacing": 1
   },
   "app/team/signups.tsx": {
     "font-size": 4,
@@ -61,10 +57,10 @@
     "spacing": 3
   },
   "app/team/taskcard.tsx": {
-    "font-size": 21,
-    "radius": 9,
+    "font-size": 20,
+    "radius": 8,
     "spacing": 9,
-    "pressable": 2
+    "pressable": 1
   },
   "app/team/taskfacts.tsx": {
     "font-size": 22,

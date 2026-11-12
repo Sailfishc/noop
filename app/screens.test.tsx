@@ -151,6 +151,18 @@ describe("showcase", () => {
       await shot(app, `showcase-tokens-${scheme}`);
     });
   }
+  test("showcase-phone-sheets: a Modal and an ⓘ note rise from the bottom on a phone", async () => {
+    const app = await open("./Showcase.tsx", PHONE_SHOW);
+    await app.waitFor("id:showcase");
+    await app.press("id:showcase-label-info");
+    await app.waitFor("id:showcase-label-note");
+    await shot(app, "showcase-phone-note");
+    await app.back();
+    await app.waitFor("id:showcase-label-note", { state: "gone" });
+    await app.press("id:showcase-dialog-open");
+    await app.waitFor("id:showcase-dialog");
+    await shot(app, "showcase-phone-sheet");
+  });
   test("showcase-overlays", async () => {
     const app = await open("./Showcase.tsx", DESK_SHOW);
     await app.waitFor("id:showcase");
@@ -403,6 +415,16 @@ describe("screens", () => {
     await shot(app, "signin-ask");
   });
 
+  test("phone sign-in: scan first, the other ways a page each", async () => {
+    // headless runs as iOS (扫码登录 first); the web screenshot has no camera, so the code comes first there
+    const app = await open("./App.tsx", { width: 390, height: 844, storage: { "hub.lang": "zh" }, network: net() });
+    await app.waitFor("id:signin-home");
+    await shot(app, "phone-signin");
+    await app.press("id:signin-code");
+    await app.waitFor("id:team-code");
+    await shot(app, "phone-signin-code");
+  });
+
   test("settings-people", async () => {
     const asking = { id: "s_1", email: "li@corp.com", handle: "lina", name: "李娜", note: "支付组新人，想加入一起做对账", state: "pending", created: Date.now() - 600_000 };
     const app = await open("./App.tsx", {
@@ -456,6 +478,8 @@ describe("quota", () => {
 
   test("on a phone", async () => {
     const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 390, height: 844, network: quotaNet() });
+    await app.waitFor("id:tab-chat");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-pay");
     await app.press("id:channel-pay");
     await app.waitFor("id:thread-msg_1");
@@ -506,13 +530,16 @@ const phone = () => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" 
 describe("phone", () => {
   test("messages tab, a channel, a thread", async () => {
     const app = await phone();
-    await app.waitFor("id:tab-chat");
+    // something waits for me, so the phone opens on 待你决定; 消息 is the next tab
+    await app.waitFor("text:写周报");
+    await shot(app, "phone-0-launch");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-pay");
     expect(app.shows("id:open-inbox")).toBe(false); // a tab on phones
     await shot(app, "phone-1-messages");
     await app.press("id:channel-pay");
     await app.waitFor("text:今天下午三点发版，大家注意一下");
-    expect(app.shows("id:tabbar")).toBe(false);
+    expect(app.shows("id:tab-me")).toBe(false);
     await shot(app, "phone-2-channel");
     await app.press("id:thread-msg_1");
     await app.waitFor("text:收到，在看");
@@ -542,7 +569,7 @@ describe("phone", () => {
     await shot(app, "phone-6-me");
     await app.press("id:settings-nav-agents");
     await app.waitFor("id:agent-acha");
-    expect(app.shows("id:tabbar")).toBe(false);
+    expect(app.shows("id:tab-me")).toBe(false);
     await app.press("id:agent-acha");
     await app.waitFor("text:阿查");
     expect(app.shows("id:agent-acha")).toBe(false); // the page, not the list beside it
@@ -550,7 +577,7 @@ describe("phone", () => {
     await app.press("id:back");
     await app.waitFor("id:agent-acha");
     await app.press("id:back");
-    await app.waitFor("id:tabbar");
+    await app.waitFor("id:tab-me");
   });
 });
 
@@ -631,6 +658,8 @@ describe("private", () => {
 
   test("phone: the channel list with a private one, and the channel", async () => {
     const app = await privStart(PHONE);
+    await app.waitFor("id:tab-chat");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-p-1a2b3c4d");
     await shot(app, "phone-private-1-list");
     await app.press("id:channel-p-1a2b3c4d");

@@ -16,6 +16,8 @@ import { StateMark } from "./agent-state";
 import { Keys } from "./palette";
 import { AccountRow } from "./account-row";
 import { Tabs } from "./tabs";
+import { TabBar } from "./tab-bar";
+import { Link } from "./link";
 import { ErrorNote } from "./error-note";
 import { Field, TextArea } from "./field";
 import { Icon, type IconName } from "./icons";
@@ -149,9 +151,10 @@ export function Showcase() {
         <ErrorNote text="Can’t reach the server. Check the address and your network." />
       </Section>
 
-      <Section title="Choice, Toggle">
+      <Section title="Choice (a list on a phone when it doesn’t fit), Toggle">
         <Row>
           <Choice options={[{ value: "a", label: "One" }, { value: "b", label: "Two" }, { value: "c", label: "Three" }]} value={pick()} onChange={pick.set} />
+          <Choice options={[{ value: "a", label: "Only me" }, { value: "b", label: "This channel's members" }, { value: "c", label: "The whole team" }]} value={pick()} onChange={pick.set} />
           <Toggle value={on()} onChange={on.set} label="On" />
           <Toggle value={false} onChange={() => {}} label="Off" />
         </Row>
@@ -225,7 +228,7 @@ export function Showcase() {
         </Row>
       </Section>
 
-      <Section title="Tabs, ListRow (plain, subtitle, selected), AccountRow, Card">
+      <Section title="Tabs, ListRow (plain, subtitle, selected), AccountRow, Link, TabBar (phones), Card">
         <View style={{ flexDirection: touch ? "column" : "row", gap: space.xl, alignItems: touch ? "stretch" : "flex-start" }}>
           <View style={{ flex: touch ? undefined : 1, gap: space.md }}>
             <Tabs testID="showcase-tab" value={tab()} onChange={tab.set} tabs={[{ value: "chat", label: "Conversation" }, { value: "tasks", label: "Tasks", count: 4 }]} />
@@ -233,6 +236,8 @@ export function Showcase() {
             <ListRow title="With a subtitle" subtitle="Codex · 等你" left={<Avatar name="acha" agent size="sm" />} right={<Dot tone="attention" />} onPress={() => {}} />
             <ListRow title="Selected" selected left={<Icon name="chat" size={size.icon.md} tint={colors.fg2} />} onPress={() => {}} />
             <AccountRow name="张伟" status="Live" live />
+            <Link icon="merge" label="PR #3 · CI passing (a Link)" onPress={() => {}} />
+            <TabBar testID="showcase-tabbar" value={tab()} onChange={(v) => v !== "me" && tab.set(v)} tabs={[{ value: "chat", icon: "chat", label: "Messages", badge: 2 }, { value: "tasks", icon: "task", label: "Tasks", badge: 3, tone: "attention" }, { value: "me", icon: "user", label: "Me" }]} />
           </View>
           <View style={{ flex: touch ? undefined : 1 }}>
             <Card>
