@@ -3,7 +3,7 @@
 import { cleanup, openUrl, platform, signal, Text, View } from "nsh";
 import { checkForPackage, checkForUpdate, downloadPackage, downloadUpdate, installAndRestart, restartToPackage, runningPackage } from "nsh/updater";
 import { L } from "../i18n";
-import { alpha, colors, hovered, Spinner } from "../ui";
+import { colors, hovered, Spinner } from "../ui";
 import { CHECK_EVERY_MS, createUpdates, type UpdateState } from "../update";
 import { CLIENT_VERSION } from "../version";
 
@@ -59,9 +59,9 @@ export function UpdateRow() {
       <If when={(appUpdate().kind === "none" || appUpdate().kind === "staged") && noteText(checkNote())}>
         <View testID="update-note" style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 30, paddingHorizontal: 10 }}>
           <If when={checkNote() === "checking"}>
-            <Spinner size={12} tint={colors.muted} />
+            <Spinner size={12} tint={colors.fg2} />
           </If>
-          <Text style={{ flexShrink: 1, fontSize: 12.5, color: colors.muted, numberOfLines: 2 }}>{noteText(checkNote())}</Text>
+          <Text style={{ flexShrink: 1, fontSize: 12.5, color: colors.fg2, numberOfLines: 2 }}>{noteText(checkNote())}</Text>
         </View>
       </If>
     </>
@@ -86,15 +86,15 @@ function UpdateButton() {
   return (
     <If when={state().kind !== "none" && state().kind !== "staged"}>
       <View role="button" testID="app-update" accessibilityLabel={label()} onPress={press} hoverStyle={hovered()}
-        style={{ minHeight: 36, justifyContent: "center", gap: 2, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: alpha(colors.text, 0.08) }}>
+        style={{ minHeight: 36, justifyContent: "center", gap: 2, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: colors.selected }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <If when={state().kind === "installing"}>
-            <Spinner size={12} tint={colors.muted} />
+            <Spinner size={12} tint={colors.fg2} />
           </If>
-          <Text style={{ flexShrink: 1, fontSize: 13.5, color: state().kind === "installing" ? colors.muted : colors.accent, numberOfLines: 1 }}>{label()}</Text>
+          <Text style={{ flexShrink: 1, fontSize: 13.5, color: state().kind === "installing" ? colors.fg2 : colors.fg, numberOfLines: 1 }}>{label()}</Text>
         </View>
         <If when={state().kind === "failed"}>
-          <Text style={{ fontSize: 12, lineHeight: 16, color: colors.muted, numberOfLines: 2 }}>{(state() as { message?: string }).message}</Text>
+          <Text style={{ fontSize: 12, lineHeight: 16, color: colors.fg2, numberOfLines: 2 }}>{(state() as { message?: string }).message}</Text>
         </If>
       </View>
     </If>

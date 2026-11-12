@@ -100,6 +100,7 @@ func (h *Hub) withOutputs(ts []taskView) []taskView {
 		ts[i].Events, ts[i].Calls = h.taskEvents(ts[i].ID)
 		ts[i].Holder = h.holderOf(ts[i])
 		ts[i].Delegates = h.delegatesOf(ts[i].ID)
+		ts[i].Reminders = h.taskReminders(ts[i])
 	}
 	return ts
 }

@@ -19,6 +19,9 @@ export const m1 = msg({ id: "msg_1", seq: 1, text: "@acha 看下慢查询", ment
 export const r1 = msg({ id: "msg_2", seq: 2, thread_id: "msg_1", author: { kind: "agent", id: "a_1" }, text: "收到，在看" });
 
 export type Log = { posts: any[]; patches: any[]; created: any[]; acts: string[] };
+/** A repeating reminder that brings @acha back to T-0001's thread every 10 minutes. */
+export const rem = (over: Record<string, unknown> = {}) => ({ id: "rem_1", by: "u_1", by_agent: "a_1", target: { kind: "agent", id: "a_1" }, channel_id: "c_1", thread_id: "msg_1",
+  message_id: null, text: "看一下 MR 和 CI，有变化就汇报", due: T0 + 4200_000, repeat: "10m", created: T0, fired: T0, seen: null, done: false, until: T0 + 86400_000, paused: false, ...over });
 export const task = (over: Record<string, unknown>) => ({
   id: "T-0001", channel_id: "c_1", thread_id: "msg_1", agent_id: "a_1", created_by: "u_2", title: "看下慢查询", body: "@acha 看下慢查询",
   state: "pending", step: "", summary: "", decision: null, pr: null, branch: "agent/T-0001", claimed_by: null, confirmed_by: null, runs: 0,
@@ -37,6 +40,13 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     return { body: t };
   };
   const triggers: any[] = [...((over as any).__triggers ?? [])];
+  let temporary: any[] = [...((over as any).__reminders ?? [])];
+  /** A reminder changed: on the channel's list and on the tasks of its thread. */
+  const putRem = (x: any) => {
+    temporary = x.done ? temporary.filter((y) => y.id !== x.id) : temporary.map((y) => (y.id === x.id ? x : y));
+    for (const [id, t] of live) if (t.reminders?.length) live.set(id, { ...t, reminders: x.done ? t.reminders.filter((y: any) => y.id !== x.id) : t.reminders.map((y: any) => (y.id === x.id ? x : y)) });
+  };
+  const remOf = (id: string) => temporary.find((y) => y.id === id) ?? [...live.values()].flatMap((t) => t.reminders ?? []).find((y: any) => y.id === id);
   let cards: any[] = [...((over as any).__proposals ?? [])];
   const answered = (ids: string[]) => { cards = cards.map((b) => ({ ...b, proposals: b.proposals.filter((p: any) => !ids.includes(p.id)) })).filter((b) => b.proposals.length); };
   const waiting = () => [...live.values()].filter((t) => ["pending", "needs_decision", "review"].includes(t.state) ||
@@ -62,6 +72,21 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       return { body: { done: nums.map((n) => ({ num: n, task: "T-0042" })), declined: 0, batches: cards } };
     },
     [`GET ${URL}/api/v1/reminders`]: { body: { reminders: [] } },
+    [`GET ${URL}/api/v1/reminders/channel?*`]: () => ({ body: { reminders: temporary } }),
+    [`PATCH ${URL}/api/v1/reminders/*`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/reminders\/([^/?]+)/)![1];
+      const b = JSON.parse(r.body!);
+      log.patches.push({ reminder: id, ...b });
+      const x = { ...remOf(id), paused: b.paused };
+      putRem(x);
+      return { body: x };
+    },
+    [`DELETE ${URL}/api/v1/reminders/*`]: (r: { url: string }) => {
+      const id = r.url.match(/reminders\/([^/?]+)/)![1];
+      log.acts.push(`${id} cancel`);
+      putRem({ ...remOf(id), done: true });
+      return { body: { ok: true } };
+    },
     [`GET ${URL}/api/v1/metrics?*`]: { body: { days: 7, since: T0, reply: { count: 9, median: 1_380_000, p90: 9_000_000, open: 2, oldest: 5_400_000 },
       reply_by: { confirm: { count: 3, median: 600_000, p90: 900_000, open: 0, oldest: 0 }, accept: { count: 6, median: 2_400_000, p90: 9_000_000, open: 2, oldest: 5_400_000 } },
       runs: { tasks: 7, mean: 1.9, median: 2, max: 4, three_plus: 2 }, cancelled: 2, redone: 1,
@@ -105,6 +130,14 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
       const xs = triggers.filter((x) => x.agent_id === b.agent_id && x.duty === b.duty);
       for (const x of xs) x.enabled = b.enabled;
       return { body: { triggers: xs } };
+    },
+    [`PATCH ${URL}/api/v1/triggers/*`]: (r: { url: string; body?: string | null }) => {
+      const id = r.url.match(/triggers\/([^/?]+)/)![1];
+      const b = JSON.parse(r.body!);
+      log.patches.push({ trigger: id, ...b });
+      const x = triggers.find((y) => y.id === id)!;
+      Object.assign(x, b.text !== undefined ? { text: b.text } : {}, b.repeat !== undefined ? { repeat: b.repeat } : {}, b.enabled !== undefined ? { enabled: b.enabled } : {});
+      return { body: x };
     },
     [`POST ${URL}/api/v1/triggers/*/confirm`]: (r: { url: string; body?: string | null }) => {
       const id = r.url.match(/triggers\/([^/]+)\//)![1];
@@ -171,7 +204,7 @@ export function server(log: Log, over: Record<string, unknown> = {}, tasks: any[
     },
     [`POST ${URL}/api/v1/invites`]: { body: { code: "INVITECODE123", path: "/invite/INVITECODE123", expires: Date.now() + 7 * 86400_000 } },
     [`POST ${URL}/api/v1/logout`]: { body: { ok: true } },
-    ...Object.fromEntries(Object.entries(over).filter(([k]) => k !== "__triggers" && k !== "__proposals")),
+    ...Object.fromEntries(Object.entries(over).filter(([k]) => !k.startsWith("__"))),
   };
 }
 export const newLog = (): Log => ({ posts: [], patches: [], created: [], acts: [] });

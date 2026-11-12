@@ -1,20 +1,19 @@
 import { Text, type JSX } from "nsh";
-import { colors, scale } from "./theme";
+import { size, tone, type Tone } from "./theme";
 
-/** The five sizes of `app/theme.json`'s type scale, by what the text is. */
+/** The five steps of the type scale, by what the text is. */
 export type TextVariant = "caption" | "body" | "message" | "title" | "display";
 /** The text's color, by role. */
-export type TextTone = "default" | "muted" | "faint" | "accent" | "danger" | "warn" | "up";
+export type TextTone = Tone;
 
 const weights = { regular: "400", medium: "500", semibold: "600", bold: "700" } as const;
-const lineHeights: Record<TextVariant, number> = { caption: 17, body: 19, message: 20, title: 22, display: 28 };
-const toneColor = (t: TextTone) =>
-  ({ default: colors.text, muted: colors.muted, faint: colors.faint, accent: colors.accent, danger: colors.danger, warn: colors.warn, up: colors.up })[t];
 
 /**
- * Text, by what it is rather than by size: `caption` 12 (a note, a time, meta), `body` 13 (most text), `message` 14
- * (messages, what people type), `title` 16 (a section or a panel), `display` 22 (a page). Titles default to semibold.
- * `lines` cuts it to that many lines; `grow` lets it take the rest of a row; `tabular` lines figures up.
+ * Text, by what it is rather than by size: `caption` (a note, a time, meta), `body` (most text), `message` (messages,
+ * what people type), `title` (a section or a panel), `display` (a page); each a step larger on touch screens. Titles
+ * default to semibold. `tone` is the foreground at full strength (`default`), weaker (`muted`, `faint`), the attention
+ * color (only for what waits on you) or a status. `lines` cuts it to that many lines; `grow` lets it take the rest of
+ * a row; `tabular` lines figures up.
  */
 export function Txt(props: {
   variant?: TextVariant;
@@ -34,10 +33,10 @@ export function Txt(props: {
     <Text
       testID={props.testID}
       style={{
-        fontSize: scale.text[v()],
-        lineHeight: lineHeights[v()],
+        fontSize: size.text[v()],
+        lineHeight: size.leading[v()],
         fontWeight: weights[weight()],
-        color: toneColor(props.tone ?? "default"),
+        color: tone(props.tone ?? "default").fg,
         numberOfLines: props.lines,
         flex: props.grow ? 1 : undefined,
         flexShrink: props.grow ? 1 : undefined,

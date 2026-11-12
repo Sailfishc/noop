@@ -2,10 +2,10 @@
 import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Avatar, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
+import { Avatar, Btn, StateMark, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
 import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
+import { agentState, stateLine, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { ChannelTriggers } from "./duties";
 import { Composer } from "./composer";
@@ -58,22 +58,22 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
             accessibilityState={{ selected: props.side?.kind === "members" }}
             onPress={props.onMembers}
             hoverStyle={hovered()}
-            style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingHorizontal: 8, borderRadius: 8, backgroundColor: props.side?.kind === "members" ? alpha(colors.text, 0.08) : "transparent" }}
+            style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 32, paddingHorizontal: 8, borderRadius: 8, backgroundColor: props.side?.kind === "members" ? colors.selected : "transparent" }}
           >
             <View style={{ flexDirection: "row" }}>
               <Each of={faces()} key={(m) => `${m.kind}:${m.id}`}>
                 {(m, i) => (
-                  <View style={{ marginLeft: i() ? -6 : 0, borderRadius: m().kind === "agent" ? 7 : 12, borderWidth: 2, borderColor: colors.background }}>
+                  <View style={{ marginLeft: i() ? -6 : 0, borderRadius: m().kind === "agent" ? 7 : 12, borderWidth: 2, borderColor: colors.page }}>
                     <Avatar name={authorOf(t, m()).name} agent={m().kind === "agent"} size={22} />
                   </View>
                 )}
               </Each>
             </View>
-            <Text testID="channel-counts" style={{ fontSize: 13, color: colors.muted }}>{L(`${people().length} people · ${agents().length} agents`, `${people().length} 人 · ${agents().length} Agent`)}</Text>
+            <Text testID="channel-counts" style={{ fontSize: 13, color: colors.fg2 }}>{L(`${people().length} people · ${agents().length} agents`, `${people().length} 人 · ${agents().length} Agent`)}</Text>
           </View>
         }
       />
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.hairline }}>
         <Tabs
           testID="channel-tab"
           value={tab()}
@@ -99,7 +99,7 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           estimatedItemSize={72}
           onLoadMoreAtStart={() => t.loadOlder(props.id)}
           contentStyle={{ paddingVertical: 12 }}
-          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{channel()?.dm_agent ? L("No messages yet. Say what you need; no @ needed.", "还没有消息。直接说要它做什么，不用 @。") : L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
+          empty={<Text style={{ padding: 24, fontSize: 14.5, color: colors.fg2, textAlign: "center" }}>{channel()?.dm_agent ? L("No messages yet. Say what you need; no @ needed.", "还没有消息。直接说要它做什么，不用 @。") : L("No messages yet. Say hello, or @ an agent to give it work.", "还没有消息。打个招呼，或者 @ 一个 Agent 给它派活。")}</Text>}
           style={{ flex: 1 }}
         >
           {(m) => <MessageRow team={t} m={m()} onThread={() => props.onThread(m().id)} />}
@@ -109,14 +109,14 @@ export function ChannelView(props: { team: Team; id: string; back: boolean; onBa
           else={
             // a private channel takes no joining (its members bring people in), and one sees it only when in it
             <If when={!channel()?.private}>
-              <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.border }}>
-                <Text style={{ fontSize: 14, color: colors.muted }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
+              <View style={{ padding: 14, gap: 8, alignItems: "center", borderTopWidth: 1, borderTopColor: colors.hairline }}>
+                <Text style={{ fontSize: 14, color: colors.fg2 }}>{L("You’re not in this channel.", "你还不在这个频道里。")}</Text>
                 <Btn testID="join" kind="primary" label={L("Join channel", "加入频道")} busy={joining()} onPress={async () => { joining.set(true); await t.join(props.id); joining.set(false); }} />
               </View>
             </If>
           }
         >
-          <If when={!dmClosed()} else={<View style={{ padding: 12, borderTopWidth: 1, borderTopColor: colors.border }}><Txt testID="dm-closed" tone="muted" center>{dmClosed()}</Txt></View>}>
+          <If when={!dmClosed()} else={<View style={{ padding: 12, borderTopWidth: 1, borderTopColor: colors.hairline }}><Txt testID="dm-closed" tone="muted" center>{dmClosed()}</Txt></View>}>
             <Composer
               team={t}
               channelId={props.id}
@@ -179,12 +179,12 @@ function ChannelRepo(props: { team: Team; channelId: string }) {
     <View testID="channel-repo" style={{ gap: 6, paddingTop: 10 }}>
       <Noted
         testID="channel-repo-head"
-        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>}
+        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{L("USUAL REPOSITORY", "常用仓库")}</Text>}
         note={L("A hint for agents: tasks start without a repository, and the agent checks one out when the work needs to read or change its code. PR and CI status needs no checkout. A repository named in the message is used from the start.", "给 Agent 的提示：任务开始时不带仓库，Agent 判断要看或改代码时再检出；看 PR、CI 状态不用检出。消息里写了仓库地址的，一开始就用那个。")}
       />
       <If when={!editing()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.text : colors.muted }}>
+          <Text testID="channel-repo-label" style={{ flex: 1, fontSize: 13.5, color: repo() ? colors.fg : colors.fg2 }}>
             {repo() ? repoLabel(repo()) : L("None", "没有")}
           </Text>
           <Btn small kind="ghost" testID="channel-repo-edit" label={repo() ? L("Change", "更换") : L("Set", "设置")} onPress={() => editing.set(true)} />
@@ -224,7 +224,7 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
   const draft = signal("");
   const busy = signal(false);
   const error = signal("");
-  const box = { padding: 8, borderRadius: radius.control, borderWidth: 1, borderColor: colors.fieldBorder, backgroundColor: colors.field } as const;
+  const box = { padding: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.edge, backgroundColor: colors.field } as const;
   function edit() {
     draft.set(untracked(now));
     error.set("");
@@ -242,7 +242,7 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
     <View testID="channel-conventions" style={{ gap: 6, paddingTop: 10 }}>
       <Noted
         testID="channel-conventions-head"
-        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("HOW WE WORK HERE", "频道约定")}</Text>}
+        label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{L("HOW WE WORK HERE", "频道约定")}</Text>}
         note={L("Every agent working in this channel reads this with its task.", "在这个频道干活的 Agent 每次开工都会读。")}
       />
       <If when={!editing()}>
@@ -251,10 +251,10 @@ function ChannelConventions(props: { team: Team; channelId: string }) {
           testID="channel-conventions-box"
           accessibilityLabel={L("Edit how we work here", "编辑频道约定")}
           onPress={edit}
-          hoverStyle={{ borderColor: colors.faint }}
+          hoverStyle={{ borderColor: colors.fg3 }}
           style={{ ...box, minHeight: 64 }}
         >
-          <Text testID="channel-conventions-text" style={{ fontSize: 13, lineHeight: 19, color: now() ? colors.text : colors.faint }}>
+          <Text testID="channel-conventions-text" style={{ fontSize: 13, lineHeight: 19, color: now() ? colors.fg : colors.fg3 }}>
             {now() || L("- PR titles in Chinese\n- Say so in #ops before a release", "- PR 标题用中文\n- 发布前在 #ops 说一声")}
           </Text>
         </View>
@@ -326,14 +326,14 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
     const r = await t.removeMember(props.channelId, m);
     if (!r.ok) error.set(failed(r));
   }
-  const head = (s: string) => <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint, paddingTop: 10, paddingBottom: 2 }}>{s}</Text>;
+  const head = (s: string) => <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3, paddingTop: 10, paddingBottom: 2 }}>{s}</Text>;
   const removeBtn = (m: Member, handle: string) => (
     <View role="button" testID={`members-remove-${handle}`} accessibilityLabel={L(`Remove @${handle} from the channel`, `把 @${handle} 移出频道`)} onPress={() => void remove(m)} hoverStyle={hovered()} style={{ width: 26, height: 26, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-      <Icon name="close" size={12} tint={colors.faint} />
+      <Icon name="close" size={12} tint={colors.fg3} />
     </View>
   );
   return (
-    <View testID="members" style={{ flex: 1, backgroundColor: colors.background }}>
+    <View testID="members" style={{ flex: 1, backgroundColor: colors.page }}>
       <Header
         title={L("Members", "成员")}
         subtitle={channel()?.private ? L(`${channel()!.name} (private)`, `${channel()!.name}（私有）`) : `# ${channel()?.name ?? ""}`}
@@ -344,7 +344,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
             <Btn small testID="members-add" icon="plus" label={L("Add", "添加")} onPress={() => adding.update((v) => !v)} />
             <If when={!props.back}>
               <View role="button" testID="close-members" accessibilityLabel={L("Close", "关闭")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-                <Icon name="close" size={16} tint={colors.muted} />
+                <Icon name="close" size={16} tint={colors.fg2} />
               </View>
             </If>
           </View>
@@ -356,8 +356,8 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
         <ChannelConventions team={t} channelId={props.channelId} />
         <ChannelTriggers team={t} channelId={props.channelId} agents={agents()} />
         <If when={adding()}>
-          <View style={{ gap: 2, marginTop: 10, padding: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.border }}>
-            <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.muted }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>
+          <View style={{ gap: 2, marginTop: 10, padding: 6, borderRadius: 10, borderWidth: 1, borderColor: colors.hairline }}>
+            <If when={outside().length} else={<Text style={{ padding: 8, fontSize: 13, color: colors.fg2 }}>{L("Everyone is already here.", "大家都在这个频道里了。")}</Text>}>
               <Each of={outside()} key={(o) => `${o.m.kind}:${o.m.id}`}>
                 {(o) => (
                   <If when={mayBring(o().agent)} else={
@@ -367,7 +367,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                       <View style={{ flex: 1 }}>
                         <Noted
                           testID={`members-add-${o().handle}-why`}
-                          label={<Text style={{ flexShrink: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>}
+                          label={<Text style={{ flexShrink: 1, fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.fg2 }}>@{o().handle}</Text></Text>}
                           note={L("Only its owner can bring it into a private channel.", "只有它的主人能拉进私有频道。")}
                         />
                       </View>
@@ -375,17 +375,17 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                   }>
                     <View role="button" testID={`members-add-${o().handle}`} onPress={() => void add(o().m)} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, height: 36, paddingHorizontal: 8, borderRadius: 8 }}>
                       <Avatar name={o().name} agent={!!o().agent} size={22} />
-                      <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.muted }}>@{o().handle}</Text></Text>
+                      <Text style={{ flex: 1, fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{o().name} <Text style={{ color: colors.fg2 }}>@{o().handle}</Text></Text>
                       <If when={o().agent}>{(a) => <RuntimeBadge runtime={a().runtime} />}</If>
-                      <Icon name="plus" size={14} tint={colors.accent} />
+                      <Icon name="plus" size={14} tint={colors.fg} />
                     </View>
                   </If>
                 )}
               </Each>
               <If when={confirming()}>
                 {(a) => (
-                  <View testID="members-host-warning" style={{ gap: 8, margin: 4, padding: 10, borderRadius: 8, backgroundColor: alpha(colors.warn, 0.1) }}>
-                    <Text style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>
+                  <View testID="members-host-warning" style={{ gap: 8, margin: 4, padding: 10, borderRadius: 8, backgroundColor: colors.attentionTint }}>
+                    <Text style={{ fontSize: 13, lineHeight: 19, color: colors.fg }}>
                       {L(`@${a().handle} runs on ${agentHost(t, a())}; this channel's messages go there.`, `@${a().handle} 运行在${agentHost(t, a())}上，频道内容会发到那里。`)}
                     </Text>
                     <View style={{ flexDirection: "row", gap: 6 }}>
@@ -403,19 +403,19 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
           {(u) => (
             <View testID={`member-${u().handle}`} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 38 }}>
               <Avatar name={u().name} size={28} />
-              <Text style={{ flex: 1, fontSize: 14, color: colors.text, numberOfLines: 1 }}>{u().name} <Text style={{ color: colors.muted }}>@{u().handle}</Text></Text>
+              <Text style={{ flex: 1, fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{u().name} <Text style={{ color: colors.fg2 }}>@{u().handle}</Text></Text>
               <If when={u().id === t.me()?.id}><Tag label={L("you", "你")} /></If>
-              <If when={u().role === "admin"}><Tag label={L("admin", "管理员")} tone="accent" /></If>
+              <If when={u().role === "admin"}><Tag label={L("admin", "管理员")} tone="default" /></If>
               <If when={u().id !== t.me()?.id}>{removeBtn({ kind: "user", id: u().id }, u().handle)}</If>
             </View>
           )}
         </Each>
         {head(L(`AGENTS · ${agents().length}`, `Agent · ${agents().length}`))}
-        <If when={agents().length} else={<Text style={{ fontSize: 13, color: colors.faint }}>{L("No agents here yet. Add one to hand it work in this channel.", "这里还没有 Agent。加一个进来，才能在这个频道给它派活。")}</Text>}>
+        <If when={agents().length} else={<Text style={{ fontSize: 13, color: colors.fg3 }}>{L("No agents here yet. Add one to hand it work in this channel.", "这里还没有 Agent。加一个进来，才能在这个频道给它派活。")}</Text>}>
           <Each of={owners()}>
             {(owner) => (
               <View style={{ gap: 2 }}>
-                <Text style={{ fontSize: 12, color: colors.muted, paddingTop: 4 }}>{L(`${t.users().find((u) => u.id === owner())?.name ?? "?"}’s agents`, `${t.users().find((u) => u.id === owner())?.name ?? "?"}的 Agent`)}</Text>
+                <Text style={{ fontSize: 12, color: colors.fg2, paddingTop: 4 }}>{L(`${t.users().find((u) => u.id === owner())?.name ?? "?"}’s agents`, `${t.users().find((u) => u.id === owner())?.name ?? "?"}的 Agent`)}</Text>
                 <Each of={agents().filter((a) => a.owner_id === owner())} key={(a) => a.id}>
                   {(a) => {
                     const st = () => agentState(t, a());
@@ -425,15 +425,11 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                         <Avatar name={a().name} agent size={28} />
                         <View role={mine() ? "button" : undefined} onPress={mine() ? () => props.onAgent(a().handle) : undefined} style={{ flex: 1, gap: 2 }}>
                           <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-                            <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{a().name} <Text style={{ color: colors.muted }}>@{a().handle}</Text></Text>
+                            <Text style={{ fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{a().name} <Text style={{ color: colors.fg2 }}>@{a().handle}</Text></Text>
                             <RuntimeBadge runtime={a().runtime} />
                           </View>
-                          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                            <Dot tone={st().tone} />
-                            <Text testID={`member-${a().handle}-state`} style={{ flex: 1, fontSize: 12, color: st().blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>
-                              {st().blocked ? st().label : [machineNow(t, a())?.name, st().label].filter(Boolean).join(" · ")}
-                            </Text>
-                          </View>
+                          <StateMark testID={`member-${a().handle}-state`} state={st().state}
+                            text={st().blocked ? stateLine(st()) : [machineNow(t, a())?.name, st().word].filter(Boolean).join(" · ")} />
                         </View>
                         {removeBtn({ kind: "agent", id: a().id }, a().handle)}
                       </View>
@@ -448,13 +444,13 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
           <View testID="channel-publish" style={{ gap: 6, paddingTop: 16 }}>
             <Noted
               testID="channel-publish-about"
-              label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("PRIVATE CHANNEL", "私有频道")}</Text>}
+              label={<Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{L("PRIVATE CHANNEL", "私有频道")}</Text>}
               note={L("Only its members see it, admins included. When the team should, make it public; its history comes along.", "只有成员看得到，管理员也一样。该给团队看时转为公开，历史都在。")}
               right={<If when={!publishing()}><Btn small testID="channel-publish-start" label={L("Make public", "转为公开")} onPress={() => publishing.set(true)} /></If>}
             />
             <If when={publishing()}>
-              <View style={{ gap: 8, padding: 10, borderRadius: 8, backgroundColor: alpha(colors.warn, 0.1) }}>
-                <Text testID="channel-publish-warning" style={{ fontSize: 13, lineHeight: 19, color: colors.text }}>
+              <View style={{ gap: 8, padding: 10, borderRadius: 8, backgroundColor: colors.attentionTint }}>
+                <Text testID="channel-publish-warning" style={{ fontSize: 13, lineHeight: 19, color: colors.fg }}>
                   {L("Its whole history becomes visible to the team, for good.", "所有历史消息都会对全队可见，不能再转回私有。")}
                 </Text>
                 <View style={{ flexDirection: "row", gap: 6 }}>
@@ -504,7 +500,7 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
   };
   const task = () => tasks()[tasks().length - 1];
   return (
-    <View testID="thread" style={{ flex: 1, backgroundColor: colors.background }}>
+    <View testID="thread" style={{ flex: 1, backgroundColor: colors.page }}>
       <Header
         title={L("Thread", "线程")}
         subtitle={channel() ? `# ${channel()!.name}` : undefined}
@@ -512,11 +508,11 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
         onBack={props.onClose}
         right={props.back ? undefined : (
           <View role="button" testID="close-thread" accessibilityLabel={L("Close thread", "关闭线程")} onPress={props.onClose} hoverStyle={hovered()} style={{ width: 30, height: 30, borderRadius: 8, alignItems: "center", justifyContent: "center" }}>
-            <Icon name="close" size={16} tint={colors.muted} />
+            <Icon name="close" size={16} tint={colors.fg2} />
           </View>
         )}
       />
-      <If when={shown()} else={<View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner size={18} tint={colors.muted} /></View>}>
+      <If when={shown()} else={<View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner size={18} tint={colors.fg2} /></View>}>
         {(r) => (
           <>
             <Scroll style={{ flex: 1 }} contentStyle={{ paddingVertical: 10 }}>
@@ -528,7 +524,7 @@ export function ThreadView(props: { team: Team; rootId: string; back?: boolean; 
                 )}
               </Each>
               <MessageRow team={t} m={r()} noTask />
-              <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.border }} />
+              <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.hairline }} />
               <Each of={flow()} key={(x) => x.key}>
                 {(x) => <If when={x().m} else={<StatusLine text={x().line!} at={x().at} testID={x().key} />}>{(m) => <MessageRow team={t} m={m()} />}</If>}
               </Each>
@@ -580,12 +576,12 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
         <Field label={L("What it’s for (optional)", "做什么的（可选）")} value={topic()} onChange={(v) => topic.set(v)} testID="channel-topic" />
         <Noted
           testID="channel-private"
-          label={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{L("Private", "私有频道")}</Text>}
+          label={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg }}>{L("Private", "私有频道")}</Text>}
           note={L("Only its members see it in Remi, admins included; whoever runs the server can still get at the database file. It can be made public later, never private again.",
             "只有成员能在 Remi 里看到，管理员也一样；服务器管理员仍能接触数据库文件。以后可以转为公开，公开后不能再转回私有。")}
           right={<Toggle testID="channel-private-toggle" value={priv()} label={L("Private channel", "私有频道")} onChange={(v) => priv.set(v)} />}
         />
-        <Text style={{ fontSize: 14, fontWeight: "600", color: colors.text }}>{L("Members", "成员")}</Text>
+        <Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg }}>{L("Members", "成员")}</Text>
         <View style={{ gap: 4 }}>
           <Each of={others()} key={(o) => `${o.m.kind}:${o.m.id}`}>
             {(o) => (
@@ -597,13 +593,13 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
                 hoverStyle={hovered()}
                 style={{ height: 38, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, borderRadius: 8 }}
               >
-                <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: has(o().m) ? colors.accentFill : colors.fieldBorder, backgroundColor: has(o().m) ? colors.accentFill : "transparent", alignItems: "center", justifyContent: "center" }}>
-                  <If when={has(o().m)}><Icon name="check" size={12} tint={colors.onAccent} /></If>
+                <View style={{ width: 18, height: 18, borderRadius: 5, borderWidth: 1.5, borderColor: has(o().m) ? colors.primary : colors.edge, backgroundColor: has(o().m) ? colors.primary : "transparent", alignItems: "center", justifyContent: "center" }}>
+                  <If when={has(o().m)}><Icon name="check" size={12} tint={colors.onPrimary} /></If>
                 </View>
                 <Avatar name={o().label} agent={o().agent} size={24} />
-                <Text style={{ fontSize: 14.5, color: colors.text }}>{o().label}</Text>
+                <Text style={{ fontSize: 14.5, color: colors.fg }}>{o().label}</Text>
                 <If when={o().note}>
-                  <Text testID={`pick-${o().m.id}-host`} style={{ flex: 1, fontSize: 12.5, color: colors.warn, numberOfLines: 1 }}>{o().note}</Text>
+                  <Text testID={`pick-${o().m.id}-host`} style={{ flex: 1, fontSize: 12.5, color: colors.attention, numberOfLines: 1 }}>{o().note}</Text>
                 </If>
               </View>
             )}
@@ -619,6 +615,6 @@ export function NewChannel(props: { team: Team; back: boolean; onBack: () => voi
 /** A task's status change between a thread's replies: one quiet centred line. */
 function StatusLine(props: { text: string; at: number; testID: string }) {
   return (
-    <Text testID={props.testID} style={{ paddingVertical: 4, paddingHorizontal: 16, fontSize: 12, color: colors.faint, textAlign: "center" }}>{`${props.text} · ${time(props.at)}`}</Text>
+    <Text testID={props.testID} style={{ paddingVertical: 4, paddingHorizontal: 16, fontSize: 12, color: colors.fg3, textAlign: "center" }}>{`${props.text} · ${time(props.at)}`}</Text>
   );
 }

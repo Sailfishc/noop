@@ -6,7 +6,7 @@ import { signal, View } from "nsh";
 import { L } from "../i18n";
 import { Btn, Card, Choice, ErrorNote, Field, Label, Noted, Tag, Toggle, Txt } from "../ui";
 import { repoLabel, type Agent, type Team, type Trigger, type TriggerOutcome, type TriggerRun } from "./api";
-import { repeatLabel } from "./reminders";
+import { ReminderTag, repeatLabel } from "./reminders";
 import { failed, time } from "./ui";
 
 /** The repeats to pick from; "every" takes an interval (10m, 2h). */
@@ -71,6 +71,8 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
   const check = signal("");
   const load = async () => { const r = await t.triggers(props.channelId); if (r.ok) list.set(r.data.triggers as Trigger[]); };
   void load();
+  void t.loadChannelReminders(props.channelId);
+  const temporary = () => t.channelReminders()[props.channelId] ?? [];
   async function run(p: Promise<{ ok: boolean; status: number; data: any }>) {
     error.set("");
     const r = await p;
@@ -104,6 +106,27 @@ export function ChannelTriggers(props: { team: Team; channelId: string; agents: 
       <Each of={groupTriggers(list())} key={(g) => g.key}>
         {(g) => <DutyCard team={t} group={g()} run={run} />}
       </Each>
+      <If when={temporary().length}>
+        <Card tight flat testID="channel-temporary">
+          <Noted
+            testID="channel-temporary-about"
+            label={<Txt weight="semibold">{L("Temporary", "临时")}</Txt>}
+            note={L("Repeating reminders that bring an agent back here, set by a person or by the agent while it worked. Who set one, the agent’s owner and an admin may pause or cancel it.",
+              "提醒 Agent 回来干活的重复提醒，有人设的，也有 Agent 干活时自己设的。设的人、Agent 的主人和管理员可以暂停或取消。")}
+          />
+          <Each of={temporary()} key={(r) => r.id}>
+            {(r) => (
+              <View testID={`temporary-${r().id}`} style={{ gap: 4 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                  <Txt lines={1}>@{t.agentById(r().target.id)?.handle ?? "?"}</Txt>
+                  <ReminderTag team={t} r={r()} onError={(e) => error.set(e)} />
+                </View>
+                <Txt tone="muted" lines={2}>{r().text}</Txt>
+              </View>
+            )}
+          </Each>
+        </Card>
+      </If>
       <If when={adding()}>
         <Card tight flat>
           <Choice testID="trigger-agent" options={props.agents.map((a) => ({ value: a.id, label: "@" + a.handle }))} value={agent()} onChange={(v) => agent.set(v)} />
@@ -196,7 +219,7 @@ function DutyCard(props: { team: Team; group: Group; run: Run }) {
           <If when={history()!.length} else={<Txt variant="caption" tone="faint">{L("None", "没有")}</Txt>}>
             <Each of={history()!} key={(r) => `${r.trigger_id}-${r.at}-${r.outcome}`}>
               {(r) => (
-                <Txt variant="caption" tone={r().outcome === "failed" ? "warn" : "muted"} lines={1}>
+                <Txt variant="caption" tone={r().outcome === "failed" ? "danger" : "muted"} lines={1}>
                   {`${time(r().at)} · ${OUTCOME[r().outcome]?.() ?? r().outcome}${r().note ? ` · ${r().note}` : ""}${r().task_id ? ` · ${r().task_id}` : ""}`}
                 </Txt>
               )}
@@ -212,6 +235,25 @@ function DutyCard(props: { team: Team; group: Group; run: Run }) {
 function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run: Run }) {
   const t = props.team;
   const x = () => props.trigger;
+  const editing = signal(false);
+  const text = signal("");
+  const repeat = signal("");
+  const every = signal("");
+  const when = signal("");
+  function edit() {
+    text.set(x().text);
+    const interval = /^\d+[mh]$/.test(x().repeat ?? "");
+    repeat.set(interval ? "every" : x().repeat ?? "daily");
+    every.set(interval ? x().repeat! : "10m");
+    const d = x().due ? new Date(x().due!) : null;
+    when.set(d ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}` : "9:00");
+    editing.set(true);
+  }
+  async function save() {
+    const body: { text: string; repeat?: string; when?: string } = { text: text().trim() };
+    if (x().kind === "schedule") Object.assign(body, repeat() === "every" ? { repeat: every().trim(), when: "" } : { repeat: repeat(), when: when().trim() });
+    if (await props.run(t.patchTrigger(x().id, body))) editing.set(false);
+  }
   const a = () => t.agents().find((g) => g.id === x().agent_id);
   const owner = () => t.users().find((u) => u.id === a()?.owner_id)?.handle ?? "?";
   // a check command runs on the owner's computer: only the owner confirms it (and again when it changes)
@@ -232,22 +274,38 @@ function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run
       <Noted
         testID={`trigger-limits-${x().id}`}
         note={x().max_per_day ? limits() : undefined}
-        label={<Txt variant="caption" tone={!x().confirmed_by || x().check_waits ? "warn" : "faint"}>
+        label={<Txt variant="caption" tone={!x().confirmed_by || x().check_waits ? "attention" : "faint"}>
           {!x().confirmed_by ? L(`Waits for @${owner()} to confirm once`, `等 @${owner()} 确认一次`)
             : x().check_waits ? L(`Its check command changed: waits for @${owner()} to confirm`, `检查命令改了，等 @${owner()} 确认`)
             : !x().enabled ? L("Paused", "已暂停") : x().fires ? L(`Fired ${x().fires} times, last ${time(x().fired!)}`, `触发过 ${x().fires} 次，上次 ${time(x().fired!)}`) : L("Not fired yet", "还没触发过")}
         </Txt>}
       />
       <If when={x().skipped_run}>
-        <Txt variant="caption" tone="warn" testID={`trigger-stuck-${x().id}`}>
+        <Txt variant="caption" tone="danger" testID={`trigger-stuck-${x().id}`}>
           {x().skip_reason === "limit"
             ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
             : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} is still queued or running`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还在排队或运行`)}
         </Txt>
       </If>
+      <If when={editing()}>
+        <Card tight flat testID={`trigger-edit-${x().id}`}>
+          <If when={x().kind === "schedule"}>
+            <Choice testID={`trigger-edit-${x().id}-repeat`} options={Object.keys(REPEAT).map((k) => ({ value: k, label: REPEAT[k]!() }))} value={repeat()} onChange={(v) => repeat.set(v)} />
+            <If when={repeat() === "every"} else={<Field label={L("At", "时间")} value={when()} onChange={(v) => when.set(v)} placeholder="9:00" testID={`trigger-edit-${x().id}-when`} />}>
+              <Field label={L("Every (10 min at least)", "每隔（最短 10 分钟）")} value={every()} onChange={(v) => every.set(v)} placeholder="10m / 2h" testID={`trigger-edit-${x().id}-every`} />
+            </If>
+          </If>
+          <Field label={L("What to ask", "让它做什么")} value={text()} onChange={(v) => text.set(v)} testID={`trigger-edit-${x().id}-text`} />
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <Btn small kind="primary" testID={`trigger-edit-${x().id}-save`} label={L("Save", "保存")} disabled={!text().trim()} onPress={() => void save()} />
+            <Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => editing.set(false)} />
+          </View>
+        </Card>
+      </If>
       <View style={{ flexDirection: "row", gap: 6 }}>
         <If when={canConfirm()}><Btn small kind="primary" testID={`trigger-confirm-${x().id}`} label={L("Confirm", "确认")} onPress={() => void props.run(t.confirmTrigger(x().id, x().check_cmd))} /></If>
         <If when={x().confirmed_by && !props.grouped}><Btn small kind="ghost" testID={`trigger-toggle-${x().id}`} label={x().enabled ? L("Pause", "暂停") : L("Resume", "恢复")} onPress={() => void props.run(t.patchTrigger(x().id, { enabled: !x().enabled }))} /></If>
+        <If when={!editing()}><Btn small kind="ghost" testID={`trigger-edit-${x().id}`} label={L("Edit", "修改")} onPress={edit} /></If>
         <Btn small kind="ghost" testID={`trigger-remove-${x().id}`} label={L("Remove", "删除")} onPress={() => void props.run(t.deleteTrigger(x().id))} />
       </View>
     </View>

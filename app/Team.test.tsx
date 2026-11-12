@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { URL, SESSION, T0, zw, wl, mac, acha, pay, ops, msg, m1, r1, type Log, task, server, newLog } from "./fixtures";
+import { URL, SESSION, T0, zw, wl, mac, acha, pay, ops, msg, m1, r1, type Log, task, server, newLog, rem } from "./fixtures";
 
 describe("team sign in", () => {
   test("an invite link: name and @handle, then the workspace", async () => {
@@ -41,12 +41,18 @@ describe("team sign in", () => {
     const phone = await open("./App.tsx", { platform: "ios", network: server(newLog()) });
     await phone.waitFor("id:team-signin");
     expect(phone.shows("id:scan-camera")).toBe(false);
+    // a phone starts from one 扫码登录; the other ways are a page each, with a way back
+    expect(phone.shows("id:team-code")).toBe(false);
+    for (const way of ["signin-code", "signin-invite", "signin-ask"]) expect(phone.shows(`id:${way}`)).toBe(true);
+    await phone.press("id:signin-invite");
+    await phone.waitFor("id:invite-link");
+    await phone.press("id:back");
+    await phone.waitFor("id:signin-home");
+    // headless has no web page to answer the scanner: it falls back to typing the code, saying why
     await phone.press("id:team-scan");
-    await phone.waitFor("id:scan-camera");
-    // headless has no web page to answer: the box says why instead of staying black
-    await phone.waitFor("id:scan-camera-problem", { timeout: 5000 });
-    await phone.press("id:scan-close");
+    await phone.waitFor("id:team-code");
     await phone.waitFor("id:scan-camera", { state: "gone" });
+    expect(phone.shows("text:/scanner page/")).toBe(true);
 
     const web = await open("./App.tsx", { platform: "web", width: 1200, height: 800, network: server(newLog()) });
     await web.waitFor("id:team-signin");
@@ -221,8 +227,12 @@ describe("team channels", () => {
       },
     });
     await app.waitFor("id:team-composer");
+    // ⌘K: the palette; what's typed there is searched as its last group
     await app.press("id:open-search");
-    await app.type("id:search-input", "慢查询");
+    await app.waitFor("id:palette");
+    await app.type("id:palette-command", "慢查询");
+    await app.waitFor("text:Search messages for “慢查询”");
+    await app.press("text:Search messages for “慢查询”");
     await app.waitFor("id:search-msg-msg_1");
     expect(asked.at(-1)).toBe("慢查询");
     expect(app.shows("id:search-task-T-0001")).toBe(true);
@@ -400,6 +410,17 @@ describe("team channels", () => {
     await app.waitFor("id:team-composer");
     await app.press("id:back");
     await app.waitFor("id:channel-ops");
+    // the system's back (a swipe from the left edge on iOS, back on Android) goes back a page the same way
+    await app.press("id:channel-pay");
+    await app.waitFor("id:team-composer");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("收到，在看");
+    await app.back();
+    await app.waitFor("id:team-composer");
+    expect(app.shows("收到，在看")).toBe(false);
+    await app.back();
+    await app.waitFor("id:channel-ops");
+    expect(app.shows("id:tab-chat")).toBe(true);
   });
 });
 
@@ -864,16 +885,31 @@ describe("channel v2", () => {
     await app.waitFor("id:team-composer");
     await app.type("id:team-composer", "@ro");
     await app.waitFor("id:mention-roam");
-    expect(app.shows("text:/joins this channel when called/")).toBe(true);
+    expect(app.shows("text:/OTHER AGENTS · JOIN WHEN CALLED/")).toBe(true);
+    expect(app.shows("text:/AGENTS · THIS CHANNEL/")).toBe(false); // it isn't in this one
     await app.submit("id:team-composer");
     await app.type("id:team-composer", "看下");
     await app.waitFor("text:/To 游侠 · Codex · 张伟的 Mac, starts without confirmation, and it joins this channel/");
+  });
+
+  test("the picker offers only the channel's people: an @ never reaches someone outside it", async () => {
+    const lin = { ...wl, id: "u_3", handle: "linfang", name: "林芳", email: "lf@example.com" };
+    const net = { ...server(newLog()), [`GET ${URL}/api/v1/users`]: { body: { users: [zw, wl, lin] } } };
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: net });
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@");
+    await app.waitFor("id:mention-wanglei"); // in #支付后端
+    expect(app.shows("id:mention-linfang")).toBe(false); // not in it
+    expect(app.shows("text:/not in this channel/")).toBe(false);
   });
 
   test("an agent that can't take work says why: its runtime isn't logged in", async () => {
     const out = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: false }] };
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/machines`]: { body: { machines: [out] } } } });
     await app.waitFor("id:side-agent-acha-state");
+    expect(app.shows("text:/Stuck/")).toBe(true); // the sidebar has the word; the members panel says why
+    await app.press("id:channel-members");
+    await app.waitFor("id:member-acha-state");
     expect(app.shows("text:/Codex isn’t logged in on 张伟的 Mac/")).toBe(true);
   });
 
@@ -1294,8 +1330,9 @@ describe("team ownership", () => {
     expect(app.shows("text:Every agent working in this channel reads this with its task.")).toBe(false);
     await app.press("id:channel-conventions-head-info");
     expect(app.shows("id:channel-conventions-head-note")).toBe(true);
-    await app.press("id:channel-conventions-head-info");
-    expect(app.shows("id:channel-conventions-head-note")).toBe(false);
+    // on a touch screen the note is a sheet from the bottom; back (or the backdrop, or a swipe) closes it
+    await app.back();
+    await app.waitFor("id:channel-conventions-head-note", { state: "gone" });
     await app.press("id:channel-conventions-box");
     await app.waitFor("id:channel-conventions-input");
     await app.press("id:channel-conventions-cancel");
@@ -1372,7 +1409,7 @@ describe("passing the ball", () => {
     expect(app.shows("text:球在 王磊 手里 · 决定要不要交接")).toBe(true);
     expect(app.shows("id:task-T-0001-handoff-ho_1-accept")).toBe(false);
     expect(app.shows("id:task-T-0001-handoff-ho_1-decline")).toBe(true);
-    expect(app.shows("id:task-T-0001-handoff-ho_1-who-info")).toBe(true);
+    expect(app.shows("id:task-T-0001-handoff-ho_1-kind-info")).toBe(true);
   });
 
   test("a person the agent handed the ball to sees it as theirs", async () => {
@@ -1414,6 +1451,72 @@ describe("passing the ball", () => {
     expect(app.shows("id:trigger-readonly-trg_3")).toBe(true); // read-only unless switched off
     await app.press("id:trigger-limits-trg_3-info");
     await app.waitFor("text:每天最多 3 次"); // a PR is never skipped for an open task
+  });
+
+  test("a trigger's words and time can be changed", async () => {
+    const log = newLog();
+    const daily = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "汇总告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 2, created: T0, max_per_day: 10, skipped: 0, readonly: true };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [daily] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.press("id:trigger-edit-trg_1");
+    await app.press("id:trigger-edit-trg_1-repeat-every");
+    await app.clear("id:trigger-edit-trg_1-every");
+    await app.type("id:trigger-edit-trg_1-every", "30m");
+    await app.clear("id:trigger-edit-trg_1-text");
+    await app.type("id:trigger-edit-trg_1-text", "汇总告警和慢查询");
+    await app.press("id:trigger-edit-trg_1-save");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ trigger: "trg_1", text: "汇总告警和慢查询", repeat: "30m", when: "" });
+    await app.waitFor("text:汇总告警和慢查询");
+    expect(app.shows("id:trigger-edit-trg_1-save")).toBe(false);
+  });
+
+  test("a repeating reminder for an agent: on its task card, paused and cancelled there; the ⏰ message stops it; the channel lists it", async () => {
+    const log = newLog();
+    const r = rem();
+    const t1 = task({ id: "T-0001", state: "done", tracked: true, title: "汇报 MR 进展", created_by: "u_1", reminders: [r] });
+    const fired = msg({ id: "msg_9", seq: 3, thread_id: "msg_1", author: { kind: "user", id: "u_1" }, text: `⏰ @acha ${r.text}` });
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log, { __reminders: [r] }, [t1]),
+      [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1, fired] } },
+    } });
+    await app.waitFor("id:reminder-tag-rem_1");
+    expect(app.shows("text:/每 10 分钟 · 下次/")).toBe(true); // on the card even when the task is done
+    await app.press("id:reminder-tag-rem_1");
+    await app.waitFor("text:/自动结束/"); // when it stops by itself, on top of its menu
+    await app.press("id:reminder-tag-rem_1-pause");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ reminder: "rem_1", paused: true });
+    await app.waitFor("text:每 10 分钟 · 已暂停");
+
+    await app.press("id:channel-members");
+    await app.waitFor("id:temporary-rem_1"); // the channel's 临时 duties
+    await app.press("id:channel-members");
+
+    await app.press("id:thread-msg_1");
+    await app.waitFor("id:msg-msg_9");
+    await app.press("id:remind-msg_9");
+    await app.press("id:remind-msg_9-stop");
+    await app.waitUntil(() => log.acts.includes("rem_1 cancel"));
+  });
+
+  test("a scheduled repeating reminder in 待你决定 can be paused", async () => {
+    const log = newLog();
+    let list = [rem({ target: { kind: "user", id: "u_1" }, by_agent: null, repeat: "daily", text: "交日报" })];
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: {
+      ...server(log),
+      [`GET ${URL}/api/v1/reminders`]: () => ({ body: { reminders: list } }),
+      [`PATCH ${URL}/api/v1/reminders/*`]: (q: { body?: string | null }) => { list = [{ ...list[0]!, paused: JSON.parse(q.body!).paused }]; log.patches.push(JSON.parse(q.body!)); return { body: list[0] }; },
+    } });
+    await app.press("id:open-inbox");
+    await app.waitFor("id:reminder-rem_1");
+    expect(app.shows("text:/每天 · 下次 .* · .*自动结束/")).toBe(true);
+    await app.press("id:reminder-rem_1-pause");
+    await app.waitUntil(() => log.patches.length === 1);
+    expect(log.patches[0]).toEqual({ paused: true });
+    await app.waitFor("text:/每天 · 已暂停/");
+    expect(app.shows("text:恢复")).toBe(true);
   });
 
   test("a duty: its triggers in one group with how the week went, one switch pauses them all, its history", async () => {
@@ -1584,6 +1687,8 @@ describe("private channels", () => {
     expect(app.shows("id:members-add-bei-why-note")).toBe(false);
     await app.press("id:members-add-bei-why-info");
     await app.waitFor("text:/只有它的主人能拉进私有频道/");
+    await app.back();
+    await app.waitFor("id:members-add-bei-why-note", { state: "gone" });
     await app.press("id:members-add-helper");
     await app.waitFor("id:members-host-warning");
     expect(app.shows("text:/@helper 运行在王磊的电脑上，频道内容会发到那里/")).toBe(true);
@@ -1599,7 +1704,7 @@ describe("private channels", () => {
     expect(log.patches[0]).toEqual({ private: false });
   });
 
-  test("私聊: the agents I may hand work are listed; the first message makes the chat, and needs no @", async () => {
+  test("私聊: my agents and my chats are listed, others' team-wide agents behind the +; the first message makes the chat, and needs no @", async () => {
     const log = newLog();
     const made: any[] = [];
     const chat = { id: "c_9", slug: "p-9f9f9f9f", name: "helper", topic: "", archived: false, created: T0, private: true, created_by: "u_1", dm_agent: "a_3",
@@ -1610,11 +1715,15 @@ describe("private channels", () => {
       [`GET ${URL}/api/v1/channels/c_9/messages?*`]: () => ({ body: { messages: log.posts.map((p, i) => msg({ id: `msg_9${i}`, seq: i + 1, channel_id: "c_9", text: p.text })), more: false } }),
     }) });
     await app.waitFor("id:side-agent-acha");
-    expect(app.shows("id:side-agent-helper")).toBe(true); // 王磊's, takes the whole team's work
+    expect(app.shows("id:side-agent-helper")).toBe(false); // 王磊's: not listed until I start a chat with it
     expect(app.shows("id:side-agent-bei")).toBe(false); // 王磊's, his channels' only
-    expect(app.shows("text:/^王磊的 · /")).toBe(true);
-    await app.press("id:side-agent-helper");
+    await app.press("id:side-chat-new");
+    await app.waitFor("id:side-chat-new-helper"); // takes the whole team's work
+    expect(app.shows("id:side-chat-new-bei")).toBe(false);
+    await app.press("id:side-chat-new-helper");
     await app.waitFor("id:dm-draft-helper");
+    expect(app.shows("id:side-agent-helper")).toBe(true); // the chat being started
+    expect(app.shows("text:/^王磊的 · /")).toBe(true);
     expect(app.shows("text:私聊 · 运行在王磊的电脑上")).toBe(true);
     expect(made.length).toBe(0); // nothing made by opening it
     await app.type("id:team-composer", "整理一下菜谱");
@@ -1671,5 +1780,97 @@ describe("private channels", () => {
     await app.press("id:task-T-0008-handoff-ho_7-accept");
     await app.waitUntil(() => log.acts.length === 1);
     expect(log.acts[0]).toBe("T-0008 handoff");
+  });
+});
+
+describe("desktop shell", () => {
+  // two tasks wait for 张伟 (u_1): a decision, then an acceptance
+  const two = () => [
+    task({ id: "T-0001", created_by: "u_1", state: "needs_decision", tracked: true, title: "退款接口重构", updated: T0 + 2,
+      decision: { question: "兼容旧版签名吗？", options: ["兼容 v1，半年后下线", "只支持 v2"], recommendation: "兼容 v1" } }),
+    task({ id: "T-0002", thread_id: "msg_t2", created_by: "u_1", state: "review", tracked: true, title: "订单导出加时区", updated: T0 + 1 }),
+  ];
+
+  test("a phone opens on 待你决定 when something waits: the first one open with its buttons, a held row's menu from the bottom", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, network: server(newLog(), {}, two()) });
+    await app.waitFor("id:task-T-0001");
+    expect(app.shows("id:tab-inbox-badge")).toBe(true);
+    // the first is open (its card and buttons), the next a row; pressing the row opens it instead
+    expect(app.shows("id:triage-T-0002")).toBe(true);
+    expect(app.shows("id:task-T-0002")).toBe(false);
+    await app.longPress("id:triage-T-0002");
+    await app.waitFor("id:triage-T-0002-later-1");
+    await app.back();
+    await app.waitFor("id:triage-T-0002-later-1", { state: "gone" });
+    await app.press("id:triage-T-0002");
+    await app.waitFor("id:task-T-0002");
+    expect(app.shows("id:triage-T-0001")).toBe(true);
+    // 消息 is the next tab; going there stays there
+    await app.press("id:tab-chat");
+    await app.waitFor("id:channel-pay");
+  });
+
+  test("⌘K opens the palette; G I and G T go to 待你决定 and 我的任务; C starts a dispatch", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+k");
+    await app.waitFor("id:palette");
+    await app.type("id:palette-command", "New channel");
+    await app.press("text:New channel");
+    await app.waitFor("id:channel-name");
+    await app.keyboard.press("g");
+    await app.keyboard.press("i");
+    await app.waitFor("id:inbox-empty");
+    await app.keyboard.press("g");
+    await app.keyboard.press("t");
+    await app.waitFor("text:Tasks");
+    // 派任务: the palette at its dispatch commands; in a channel it writes @acha into the box
+    await app.press("id:channel-pay");
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("c");
+    await app.waitFor("text:Dispatch to @acha");
+    await app.press("text:Dispatch to @acha");
+    await app.waitUntil(() => app.value("id:team-composer") === "@acha ");
+  });
+
+  test("待你决定 is a triage desk: the first one picked, J and K move, acting picks the next, H reminds me later", async () => {
+    const log = newLog();
+    const made: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: server(log, { [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); made.push(b); return { body: { id: "rem_9", by: "u_1", target: { kind: "user", id: "u_1" }, channel_id: "c_1", thread_id: null, message_id: b.message_id, text: "", due: Date.now() + 3600_000, repeat: "", created: Date.now(), fired: null, seen: null, done: false } }; } }, two()),
+    });
+    await app.waitFor("id:open-inbox-unread");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:triage-T-0001");
+    expect(app.shows("id:triage-detail")).toBe(true);
+    expect(app.shows("id:task-T-0001-ask")).toBe(true); // the decision: options first, then 回复…
+    expect(app.shows("id:task-T-0001-ask-reply")).toBe(true);
+    await app.keyboard.press("j");
+    await app.waitFor("id:task-T-0002-review");
+    await app.keyboard.press("k");
+    await app.waitFor("id:task-T-0001-ask");
+    await app.press("id:task-T-0001-option-0");
+    await app.waitFor("id:task-T-0002-review"); // decided: the next one is up
+    expect(log.acts).toEqual(["T-0001 decide 兼容 v1，半年后下线"]);
+    await app.keyboard.press("h");
+    await app.waitUntil(() => made.length === 1);
+    expect(made[0]).toEqual({ message_id: "msg_t2", when: "1h" });
+    await app.waitFor("id:inbox-empty"); // put off until the reminder goes off
+  });
+
+  test("an agent's state is one of five words; only 等你 and 卡住 are colored", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [two()[0]].map((x) => ({ ...x, agent_id: "a_1" }))) });
+    await app.waitFor("id:side-agent-acha-state");
+    await app.waitFor("text:Codex · Waiting on you");
+  });
+
+  test("a channel's right click (a held finger on phones): the same commands as the palette", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, platform: "macos", network: server(newLog()) });
+    await app.waitFor("id:channel-pay");
+    await app.rightClick("id:channel-pay");
+    await app.waitFor("text:Dispatch to @acha");
+    await app.press("id:ctx-dispatch-acha");
+    await app.waitUntil(() => app.value("id:team-composer") === "@acha ");
   });
 });

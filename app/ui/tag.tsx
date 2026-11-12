@@ -1,13 +1,12 @@
 import { Text, View } from "nsh";
-import { alpha, colors, scale, tints } from "./theme";
+import { radius, size, space, tone, type Tone } from "./theme";
 
-/** A small pill: a runtime, a role, a state. Keep tones scarce: ordinary metadata stays `muted`. */
-export function Tag(props: { label: string; tone?: "accent" | "muted" | "warn" | "up" | "danger"; testID?: string }) {
-  const fg = () => ({ accent: colors.accent, warn: colors.warn, up: colors.up, danger: colors.danger, muted: colors.muted })[props.tone ?? "muted"];
-  const bg = () => ({ accent: tints.accent, warn: tints.warn, up: alpha(colors.up, 0.12), danger: tints.danger, muted: alpha(colors.text, 0.06) })[props.tone ?? "muted"];
+/** A small pill: a runtime, a role, a state. Keep tones scarce: ordinary metadata stays `muted`; amber (`attention`) only for what waits on you. */
+export function Tag(props: { label: string; tone?: Tone; testID?: string }) {
+  const t = () => tone(props.tone ?? "muted");
   return (
-    <View style={{ height: 20, paddingHorizontal: 6, borderRadius: scale.radius.sm, justifyContent: "center", backgroundColor: bg() }}>
-      <Text testID={props.testID} style={{ fontSize: scale.text.caption, fontWeight: "600", color: fg(), numberOfLines: 1 }}>{props.label}</Text>
+    <View style={{ minHeight: size.mark.tag, paddingHorizontal: space.sm, borderRadius: radius.sm, justifyContent: "center", backgroundColor: t().tint }}>
+      <Text testID={props.testID} style={{ fontSize: size.text.caption, fontWeight: "600", color: t().fg, numberOfLines: 1 }}>{props.label}</Text>
     </View>
   );
 }

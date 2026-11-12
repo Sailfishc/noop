@@ -7,13 +7,15 @@ import { channelLabel, type Message, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { authorOf, Header, time } from "./ui";
 
-export function SearchPage(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void }) {
+export function SearchPage(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void; query?: string }) {
   const t = props.team;
   const q = signal("");
   const busy = signal(false);
   const found = signal<{ messages: Message[]; tasks: Task[] } | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined, asked = 0;
   cleanup(() => clearTimeout(timer));
+  // from the palette: what was typed there is the first search
+  queueMicrotask(() => { if (props.query?.trim()) look(props.query); });
   function look(v: string) {
     q.set(v);
     clearTimeout(timer);
@@ -37,13 +39,13 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
       </View>
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 6, maxWidth: 640 }}>
         <If when={busy()}>
-          <Spinner size={16} tint={colors.muted} />
+          <Spinner size={16} tint={colors.fg2} />
         </If>
         <If when={nothing()}>
-          <Text testID="search-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing found.", "没有找到。")}</Text>
+          <Text testID="search-empty" style={{ padding: 24, fontSize: 14.5, color: colors.fg2, textAlign: "center" }}>{L("Nothing found.", "没有找到。")}</Text>
         </If>
         <If when={found()?.tasks.length}>
-          <Text style={{ paddingTop: 4, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("TASKS", "任务")}</Text>
+          <Text style={{ paddingTop: 4, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{L("TASKS", "任务")}</Text>
           <Each of={found()!.tasks} key={(x) => x.id}>
             {(x) => (
               <View
@@ -53,16 +55,16 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
                 hoverStyle={hovered()}
                 style={{ flexDirection: "row", alignItems: "center", gap: 8, padding: 10, borderRadius: 8 }}
               >
-                <Icon name="lists" size={15} tint={colors.muted} />
-                <Text style={{ fontSize: 13, color: colors.faint }}>{x().id}</Text>
-                <Text style={{ flex: 1, fontSize: 14.5, color: colors.text, numberOfLines: 1 }}>{x().title}</Text>
-                <Text style={{ fontSize: 12.5, color: colors.muted }}>{STATUS[statusOf(x().state).status].label()} · {channelName(x().channel_id)}</Text>
+                <Icon name="lists" size={15} tint={colors.fg2} />
+                <Text style={{ fontSize: 13, color: colors.fg3 }}>{x().id}</Text>
+                <Text style={{ flex: 1, fontSize: 14.5, color: colors.fg, numberOfLines: 1 }}>{x().title}</Text>
+                <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{STATUS[statusOf(x().state).status].label()} · {channelName(x().channel_id)}</Text>
               </View>
             )}
           </Each>
         </If>
         <If when={found()?.messages.length}>
-          <Text style={{ paddingTop: 10, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>{L("MESSAGES", "消息")}</Text>
+          <Text style={{ paddingTop: 10, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>{L("MESSAGES", "消息")}</Text>
           <Each of={found()!.messages} key={(m) => m.id}>
             {(m) => {
               const a = () => authorOf(t, m().author);
@@ -76,10 +78,10 @@ export function SearchPage(props: { team: Team; back: boolean; onBack: () => voi
                 >
                   <Avatar name={a().name} agent={a().agent} size={28} />
                   <View style={{ flex: 1, gap: 3 }}>
-                    <Text style={{ fontSize: 12.5, color: colors.faint }}>
+                    <Text style={{ fontSize: 12.5, color: colors.fg3 }}>
                       {`${channelName(m().channel_id)}${m().thread_id ? L(" · in a thread", " · 线程里") : ""} · ${a().name} · ${time(m().created)}`}
                     </Text>
-                    <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.text, numberOfLines: 3 }}>{m().text || L("(a file)", "（文件）")}</Text>
+                    <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.fg, numberOfLines: 3 }}>{m().text || L("(a file)", "（文件）")}</Text>
                   </View>
                 </View>
               );

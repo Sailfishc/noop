@@ -1,14 +1,21 @@
-import { View } from "nsh";
-import { colors } from "./theme";
+import { reduceMotion, View } from "nsh";
+import { colors, motion, radius, size, tone, type Tone } from "./theme";
 
 /**
- * A status dot: `on` green or grey (a machine online), or a `tone` (an agent's state: `up` ready, `warn` working,
- * `danger` an error, anything else grey).
+ * A status dot: `on` ok or quiet (a machine online), or a `tone` (an agent's state). `breathe` (an agent at work)
+ * pulses slowly: the one motion that repeats, and it stands still under reduced motion.
  */
-export function Dot(props: { on?: boolean; tone?: string }) {
-  const c = () =>
-    props.tone !== undefined
-      ? ({ up: colors.up, warn: colors.warn, danger: colors.danger, accent: colors.accent } as Record<string, string>)[props.tone] ?? colors.faint
-      : props.on ? colors.up : colors.faint;
-  return <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: c() }} />;
+export function Dot(props: { on?: boolean; tone?: Tone; breathe?: boolean }) {
+  const c = () => (props.tone !== undefined ? tone(props.tone).fg : props.on ? colors.ok : colors.fg3);
+  return (
+    <View
+      style={{
+        width: size.mark.dot,
+        height: size.mark.dot,
+        borderRadius: radius.full,
+        backgroundColor: c(),
+        ...(props.breathe && !reduceMotion() ? { animationName: "pulse", animationDuration: motion.breathe.duration, animationIterationCount: "infinite" } : {}),
+      }}
+    />
+  );
 }

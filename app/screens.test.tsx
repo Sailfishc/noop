@@ -1,5 +1,5 @@
 import { describe, expect, open, test } from "nsh/test";
-import { acha, m1, mac, msg, ops, pay, r1, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
+import { acha, m1, mac, msg, ops, pay, r1, rem, SESSION, server, newLog, T0, task, URL, zw } from "./fixtures";
 
 // The main desktop screens, with the pretend team from fixtures.ts.
 //
@@ -9,11 +9,13 @@ import { acha, m1, mac, msg, ops, pay, r1, SESSION, server, newLog, T0, task, UR
 // - `scripts/check-layout.ts` reads the `--trace` of a headless run and checks the layouts
 //   that tests can't see (the task board's columns side by side).
 //
-// Desktop at 1280×800, and the phone layout (bottom tabs, one page at a time) at 390×844 in Chinese.
-const SIZE = { width: 1280, height: 800 };
+// Desktop at 1280×800 as macOS (the pointer density), and the phone layout (bottom tabs, one page at a time, the
+// touch density) at 390×844 in Chinese.
+const SIZE = { width: 1280, height: 800, platform: "macos" as const };
 
 async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
   try {
+    await app.wait(400); // a page pushed on a phone has slid in
     await app.screenshot(`.nsh/screens/${name}.png`);
   } catch (e) {
     // Headless runs draw nothing, so there is no picture to take; real targets must take it.
@@ -26,7 +28,8 @@ const tasks = [
     holder: { kind: "user", id: "u_2", why: "handoff_card" }, mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0001", runtime: "codex", trigger: "trg_1" },
     handoffs: [{ id: "ho_1", to: "a_2", what: "加完索引后跑一遍压测，把 P99 贴回线程", message: "msg_5", at: Date.now(), state: "proposed" }],
     checkpoint: { at: T0, checked: T0 + 600_000, machine: "m_1", repos: [{ repo: "github.com/acme/pay", branch: "agent/T-0001-wip", commit: "a".repeat(40), head: "b".repeat(40) }] },
-    calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }] }),
+    calls: [{ at: T0, who: "u_1", kind: "decide", class: "decide" }, { at: T0, who: "u_1", kind: "unblock", class: "outside" }, { at: T0, who: "u_1", kind: "handoff_card", class: "decide" }],
+    reminders: [rem()] }),
   task({ id: "T-0002", thread_id: "msg_t2", state: "blocked", tracked: true, title: "加索引", summary: "没有数据库权限" }),
   task({ id: "T-0003", thread_id: "msg_t3", state: "review", tracked: true, title: "写周报", created_by: "u_1",
     pr: { provider: "github", url: "https://github.com/acme/pay/pull/3", number: 3, state: "open", checks: "success" } }),
@@ -126,17 +129,43 @@ const engineNet = (t: ReturnType<typeof task>) => server(newLog(), {
   [`GET ${URL}/api/v1/messages/msg_1/thread`]: { body: { root: m1, replies: [r1] } },
 }, [t, ...tasks.slice(1)]);
 
-// The component showcase (app/ui/showcase.tsx), light and dark: every component and its states on one page.
+// The component showcase (app/ui/showcase.tsx): every component and its states, light and dark, desktop (pointer
+// density) and phone (touch density), and its Tokens tab, every token listed from the generated file.
+const DESK_SHOW = { width: 1280, height: 1700, platform: "macos" as const };
+const PHONE_SHOW = { width: 390, height: 2600 };
 describe("showcase", () => {
   for (const scheme of ["light", "dark"] as const) {
     test(`showcase-${scheme}`, async () => {
-      const app = await open("./Showcase.tsx", { width: 1280, height: 1700, colorScheme: scheme });
+      const app = await open("./Showcase.tsx", { ...DESK_SHOW, colorScheme: scheme });
       await app.waitFor("id:showcase");
       await shot(app, `showcase-${scheme}`);
     });
+    test(`showcase-phone-${scheme}`, async () => {
+      const app = await open("./Showcase.tsx", { ...PHONE_SHOW, colorScheme: scheme });
+      await app.waitFor("id:showcase");
+      await shot(app, `showcase-phone-${scheme}`);
+    });
+    test(`showcase-tokens-${scheme}`, async () => {
+      const app = await open("./Showcase.tsx", { ...DESK_SHOW, height: 2000, colorScheme: scheme });
+      await app.press("id:showcase-page-tokens");
+      await app.waitFor("id:showcase-tokens");
+      await shot(app, `showcase-tokens-${scheme}`);
+    });
   }
+  test("showcase-phone-sheets: a Modal and an ⓘ note rise from the bottom on a phone", async () => {
+    const app = await open("./Showcase.tsx", PHONE_SHOW);
+    await app.waitFor("id:showcase");
+    await app.press("id:showcase-label-info");
+    await app.waitFor("id:showcase-label-note");
+    await shot(app, "showcase-phone-note");
+    await app.back();
+    await app.waitFor("id:showcase-label-note", { state: "gone" });
+    await app.press("id:showcase-dialog-open");
+    await app.waitFor("id:showcase-dialog");
+    await shot(app, "showcase-phone-sheet");
+  });
   test("showcase-overlays", async () => {
-    const app = await open("./Showcase.tsx", { width: 1280, height: 1700 });
+    const app = await open("./Showcase.tsx", DESK_SHOW);
     await app.waitFor("id:showcase");
     await app.press("id:showcase-label-info");
     await app.waitFor("id:showcase-label-note");
@@ -169,6 +198,9 @@ describe("screens", () => {
     await app.waitFor("text:收到，在看"); // the reply, not the spinner
     expect(app.shows("id:task-T-0001-checkpoint-at")).toBe(true); // where it got to, a line with its ⓘ
     await shot(app, "thread");
+    await app.press("id:reminder-tag-rem_1 >> nth=1"); // the ⏰ on its card (in the thread): pause or cancel it there
+    await app.waitFor("id:reminder-tag-rem_1-pause");
+    await shot(app, "thread-reminder-menu");
   });
 
   test("thread-align: the align card, its criteria editable", async () => {
@@ -243,7 +275,7 @@ describe("screens", () => {
   });
 
   test("members", async () => {
-    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: { ...net(), [`GET ${URL}/api/v1/triggers?*`]: { body: { triggers: [
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: { ...net({ __reminders: [rem(), rem({ id: "rem_2", by_agent: null, repeat: "2h", text: "看一下告警有没有新的", paused: true })] }), [`GET ${URL}/api/v1/triggers?*`]: { body: { triggers: [
       { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "schedule", text: "汇总一下昨晚的告警", repeat: "weekdays", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 4, created: T0, max_per_day: 10, skipped: 2, skipped_run: 2, skip_reason: "busy", last_task: "T-0003" },
       { id: "trg_2", channel_id: "c_1", agent_id: "a_1", created_by: "u_2", kind: "pr", text: "review 这个 PR", repo: "github.com/acme/pay", confirmed_by: null, enabled: true, fired: null, fires: 0, created: T0, max_per_day: 10, skipped: 0 },
       { id: "trg_3", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "看主干最新一次 CI，红了就查原因", repeat: "daily", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 40, created: T0, max_per_day: 24, skipped: 0,
@@ -259,6 +291,10 @@ describe("screens", () => {
     await app.press("id:channel-members");
     await app.waitFor("id:trigger-trg_2");
     await shot(app, "members");
+    await app.scroll("id:channel-temporary", 900); // the channel's 临时 duties: reminders that bring an agent back
+    await app.waitFor("id:temporary-rem_2");
+    await shot(app, "members-temporary");
+    await app.scroll("id:channel-temporary", -900);
     await app.press("id:duty-trg_3-history");
     await app.waitFor("id:duty-trg_3-runs");
     await shot(app, "members-duty");
@@ -293,6 +329,30 @@ describe("screens", () => {
     await app.press("id:tasks-filter-all");
     await app.waitFor("id:taskrow-T-0001");
     await shot(app, "tasks-page");
+  });
+
+  test("triage", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, ...SIZE, network: net() });
+    await app.waitFor("id:open-inbox");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:triage-detail");
+    await shot(app, "triage");
+  });
+
+  test("palette", async () => {
+    const app = await start();
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+k");
+    await app.waitFor("id:palette");
+    await shot(app, "palette");
+  });
+
+  test("context-menu", async () => {
+    const app = await start();
+    await app.waitFor("id:channel-pay");
+    await app.rightClick("id:channel-pay");
+    await app.waitFor("id:ctx-open");
+    await shot(app, "context-menu");
   });
 
   test("inbox-proposals", async () => {
@@ -356,6 +416,16 @@ describe("screens", () => {
     await shot(app, "signin-ask");
   });
 
+  test("phone sign-in: scan first, the other ways a page each", async () => {
+    // headless runs as iOS (扫码登录 first); the web screenshot has no camera, so the code comes first there
+    const app = await open("./App.tsx", { width: 390, height: 844, storage: { "hub.lang": "zh" }, network: net() });
+    await app.waitFor("id:signin-home");
+    await shot(app, "phone-signin");
+    await app.press("id:signin-code");
+    await app.waitFor("id:team-code");
+    await shot(app, "phone-signin-code");
+  });
+
   test("settings-people", async () => {
     const asking = { id: "s_1", email: "li@corp.com", handle: "lina", name: "李娜", note: "支付组新人，想加入一起做对账", state: "pending", created: Date.now() - 600_000 };
     const app = await open("./App.tsx", {
@@ -409,6 +479,8 @@ describe("quota", () => {
 
   test("on a phone", async () => {
     const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 390, height: 844, network: quotaNet() });
+    await app.waitFor("id:tab-chat");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-pay");
     await app.press("id:channel-pay");
     await app.waitFor("id:thread-msg_1");
@@ -459,13 +531,16 @@ const phone = () => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" 
 describe("phone", () => {
   test("messages tab, a channel, a thread", async () => {
     const app = await phone();
-    await app.waitFor("id:tab-chat");
+    // something waits for me, so the phone opens on 待你决定; 消息 is the next tab
+    await app.waitFor("text:写周报");
+    await shot(app, "phone-0-launch");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-pay");
     expect(app.shows("id:open-inbox")).toBe(false); // a tab on phones
     await shot(app, "phone-1-messages");
     await app.press("id:channel-pay");
     await app.waitFor("text:今天下午三点发版，大家注意一下");
-    expect(app.shows("id:tabbar")).toBe(false);
+    expect(app.shows("id:tab-me")).toBe(false);
     await shot(app, "phone-2-channel");
     await app.press("id:thread-msg_1");
     await app.waitFor("text:收到，在看");
@@ -495,7 +570,7 @@ describe("phone", () => {
     await shot(app, "phone-6-me");
     await app.press("id:settings-nav-agents");
     await app.waitFor("id:agent-acha");
-    expect(app.shows("id:tabbar")).toBe(false);
+    expect(app.shows("id:tab-me")).toBe(false);
     await app.press("id:agent-acha");
     await app.waitFor("text:阿查");
     expect(app.shows("id:agent-acha")).toBe(false); // the page, not the list beside it
@@ -503,7 +578,7 @@ describe("phone", () => {
     await app.press("id:back");
     await app.waitFor("id:agent-acha");
     await app.press("id:back");
-    await app.waitFor("id:tabbar");
+    await app.waitFor("id:tab-me");
   });
 });
 
@@ -528,7 +603,7 @@ const privNet = () => ({
 });
 
 describe("private", () => {
-  const privStart = (size = SIZE) => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...size, network: privNet() });
+  const privStart = (size: { width: number; height: number; platform?: "macos" } = SIZE) => open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, ...size, network: privNet() });
 
   test("private-channel, its members panel, the inbox", async () => {
     const app = await privStart();
@@ -556,9 +631,20 @@ describe("private", () => {
     await app.press("id:side-agent-acha");
     await app.waitFor("text:好的，整理好放在 out/meetings.md 了。");
     await shot(app, "private-dm");
-    await app.press("id:side-agent-helper");
+    await app.press("id:side-chat-new");
+    await app.waitFor("id:side-chat-new-helper");
+    await shot(app, "private-dm-more");
+    await app.press("id:side-chat-new-helper");
     await app.waitFor("id:dm-draft-helper");
     await shot(app, "private-dm-new");
+  });
+
+  test("mention-picker: the channel's agents, team-wide ones that join when called, then the channel's people", async () => {
+    const app = await privStart();
+    await app.waitFor("id:team-composer");
+    await app.type("id:team-composer", "@");
+    await app.waitFor("id:mention-picker");
+    await shot(app, "mention-picker");
   });
 
   test("private-new-channel", async () => {
@@ -573,6 +659,8 @@ describe("private", () => {
 
   test("phone: the channel list with a private one, and the channel", async () => {
     const app = await privStart(PHONE);
+    await app.waitFor("id:tab-chat");
+    await app.press("id:tab-chat");
     await app.waitFor("id:channel-p-1a2b3c4d");
     await shot(app, "phone-private-1-list");
     await app.press("id:channel-p-1a2b3c4d");

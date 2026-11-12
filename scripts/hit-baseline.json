@@ -1,0 +1,33 @@
+{
+  "$comment": "Pages' pressables smaller than 44 x 44 on phones, from before the rule: this list only shrinks (scripts/check-layout.ts --update).",
+  "allowed": [
+    "agent-model-acha-default",
+    "channel-members",
+    "channel-tab-chat",
+    "channel-tab-tasks",
+    "settings-nav-account",
+    "settings-nav-agents",
+    "settings-nav-general",
+    "settings-nav-git",
+    "settings-nav-machines",
+    "settings-nav-metrics",
+    "settings-nav-people",
+    "settings-nav-teamconfig",
+    "task-T-0001-fold-acceptance",
+    "task-T-0001-fold-log",
+    "task-T-0001-fold-mandate",
+    "task-T-0001-fold-repo",
+    "tasks-filter-agents",
+    "tasks-filter-all",
+    "tasks-filter-mine",
+    "tasks-filter-needs",
+    "tasks-filter-related",
+    "tasks-pick-agent",
+    "tasks-pick-channel",
+    "tasks-pick-creator",
+    "team-composer-at",
+    "team-composer-attach",
+    "thread-composer-at",
+    "thread-composer-attach"
+  ]
+}

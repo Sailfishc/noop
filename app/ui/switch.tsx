@@ -1,35 +1,10 @@
 import type { ViewStyle } from "nsh";
-import { type AnimatedValue, createAnimatedValue, effect, platform, reduceMotion } from "nsh";
 import { Switch } from "nsh/base";
-import { colors, finish, motion } from "./theme";
-
-/** A pointer and a keyboard: the compact sizes of desktops. */
-const pointer = platform.idiom === "desktop" || platform.idiom === "mac";
+import { colors, elevation, follow, motion, radius, size, slop, stroke } from "./theme";
 
 /**
- * An animated value that springs to `target` each time it changes (a
- * control's state: 1 while on, 0 while off), natively: JS only starts each
- * spring. A change mid-way turns it from where it is, with its velocity;
- * with reduced motion it lands at once. For discrete changes only: what
- * the pointer drives (a dragged thumb, a hover's place) is set in the same
- * frame, never sprung toward the pointer.
- */
-export function follow(target: () => number, spring: { stiffness: number; damping: number } = motion.control): AnimatedValue {
-  const v = createAnimatedValue(target());
-  let shown = target();
-  effect(() => {
-    const next = target();
-    if (next === shown) return;
-    shown = next;
-    if (reduceMotion()) v.set(next);
-    else v.spring(next, spring);
-  });
-  return v;
-}
-
-/**
- * An on / off switch (`nsh/base`'s `Switch`, in the gallery's look): the
- * knob springs across, the track changes color natively.
+ * An on / off switch (nsh/base's `Switch`): the knob slides across on the `select` spring, the track turns `ok`.
+ * Desktop and touch sizes come from the density; on touch it takes presses over the full hit target.
  */
 export function Toggle(props: { value: boolean; onChange: (value: boolean) => void; label?: string; testID?: string }) {
   const look = switchLook(() => props.value);
@@ -39,9 +14,7 @@ export function Toggle(props: { value: boolean; onChange: (value: boolean) => vo
       checked={props.value}
       onChange={({ checked }) => props.onChange(checked)}
       accessibilityLabel={props.label}
-      // 8 pt more to press on every side (a hit slop around the small
-      // track), without taking more room.
-      style={{ margin: -8, padding: 8 }}
+      hitSlop={slop(size.switch.height)}
       trackStyle={look.trackStyle}
       thumbStyle={look.thumbStyle}
     />
@@ -49,51 +22,36 @@ export function Toggle(props: { value: boolean; onChange: (value: boolean) => vo
 }
 
 /**
- * The gallery's switch, as the styles of `Switch`'s parts: a track sunk
- * into the surface that turns citrus, and a knob that springs across, both
- * natively. The knob keeps its size on and off; on, it is white with an
- * olive edge. `on` is the value the app owns: the knob follows it, from a
- * press or from elsewhere. 28 × 16 on a desktop; on a touch screen 42 × 24
- * (`small`: 34 × 20). Read the styles in JSX, so the appearance is followed.
+ * The switch's parts as styles: a track that turns `ok` when on and a knob that springs across, both natively. `on`
+ * is the value the app owns: the knob follows it, from a press or from elsewhere. Read the styles in JSX, so the
+ * appearance is followed.
  */
-export function switchLook(on: () => boolean, size: "small" | "regular" = "regular"): { readonly trackStyle: ViewStyle; readonly thumbStyle: ViewStyle } {
-  // The track's size and inset, and the knob: it travels what is left inside
-  // the border and the padding.
-  const [width, height, inset, knob] = pointer ? [28, 16, 1, 12] : size === "small" ? [34, 20, 1, 16] : [42, 24, 1, 20];
-  // The knob travels as gpui-kit's does (`spring_move`), the track's color
-  // with it; with reduced motion both change in place.
-  const t = follow(() => (on() ? 1 : 0), motion.move);
-  const x = t.interpolate({ inputRange: [0, 1], outputRange: [0, width - 2 - 2 * inset - knob] });
+export function switchLook(on: () => boolean): { readonly trackStyle: ViewStyle; readonly thumbStyle: ViewStyle } {
+  const width = size.switch.width, height = size.switch.height, knob = size.switch.knob;
+  const inset = (height - knob) / 2 - stroke.edge;
+  const t = follow(() => (on() ? 1 : 0), motion.select.spring);
+  const x = t.interpolate({ inputRange: [0, 1], outputRange: [0, width - knob - 2 * (inset + stroke.edge)] });
   return {
     get trackStyle(): ViewStyle {
       return {
         width,
         height,
-        borderRadius: height / 2,
+        borderRadius: radius.full,
         padding: inset,
-        backgroundColor: t.interpolate({ inputRange: [0, 1], outputRange: [colors.track, colors.switchOn] }),
-        borderWidth: 1,
-        borderColor: on() ? colors.switchOn : finish.track.borderColor,
-        boxShadow: on() ? "none" : finish.track.boxShadow,
-        transitionProperty: "border-color, box-shadow",
-        transitionDuration: 150,
+        backgroundColor: t.interpolate({ inputRange: [0, 1], outputRange: [colors.track, colors.ok] }),
+        borderWidth: stroke.edge,
+        borderColor: on() ? colors.ok : "transparent",
+        transitionProperty: "border-color",
+        transitionDuration: motion.fade.duration,
       };
     },
     get thumbStyle(): ViewStyle {
       return {
         width: knob,
         height: knob,
-        borderRadius: knob / 2,
-        borderWidth: 1,
-        ...finish.knob,
-        ...(on()
-          ? {
-              backgroundColor: "#ffffff",
-              backgroundImage: "none",
-              borderColor: "transparent",
-              boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
-            }
-          : {}),
+        borderRadius: radius.full,
+        backgroundColor: colors.knob,
+        boxShadow: elevation.knob,
         transform: [{ translateX: x }],
       };
     },

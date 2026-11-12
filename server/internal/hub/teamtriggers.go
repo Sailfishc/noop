@@ -202,28 +202,14 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	repeat, repo, branch := "", "", trimmed(strings.TrimSpace(b.Branch), 120)
 	switch b.Kind {
 	case "schedule":
-		r, ok, bad := normRepeat(b.Repeat)
+		r, t, bad := h.schedule(b.Repeat, b.When)
 		if bad != "" {
 			errJSON(w, 400, bad)
 			return
 		}
-		if !ok || r == "" {
-			errJSON(w, 400, "定时触发要选重复：daily、weekdays、weekly 或间隔（如 10m、2h）")
-			return
-		}
-		now := h.now()
-		words := strings.Fields(b.When)
-		t, n := parseWhen(words, now)
-		every := interval(r)
-		if every > 0 && len(words) == 0 { // an interval from now
-			t, n = now.Add(every), 0
-		} else if n == 0 || n != len(words) {
-			errJSON(w, 400, "看不懂这个时间："+b.When)
-			return
-		}
-		repeat, due = r, t.UnixMilli()
-		if every > 0 && b.MaxPerDay == nil { // as often as the interval allows, unless set lower
-			perDay = min(int64(ceilingMaxPerDay), int64(24*time.Hour/every))
+		repeat, due = r, t
+		if every := interval(r); every > 0 && b.MaxPerDay == nil { // as often as the interval allows, unless set lower
+			perDay = intervalPerDay(every)
 		}
 	default:
 		repo = normRemote(b.Repo)
@@ -253,6 +239,32 @@ func (h *Hub) v1TriggerCreate(w http.ResponseWriter, q *request) {
 	}
 	h.triggerChanged(t, false)
 	writeJSON(w, 200, t)
+}
+
+// schedule: a schedule trigger's repeat and first time, from how people write them ("" when: an interval from now);
+// or what is wrong with them.
+func (h *Hub) schedule(repeat, when string) (string, int64, string) {
+	r, ok, bad := normRepeat(repeat)
+	if bad != "" {
+		return "", 0, bad
+	}
+	if !ok || r == "" {
+		return "", 0, "定时触发要选重复：daily、weekdays、weekly 或间隔（如 10m、2h）"
+	}
+	now := h.now()
+	words := strings.Fields(when)
+	t, n := parseWhen(words, now)
+	if every := interval(r); every > 0 && len(words) == 0 { // an interval from now
+		t = now.Add(every)
+	} else if n == 0 || n != len(words) {
+		return "", 0, "看不懂这个时间：" + when
+	}
+	return r, t.UnixMilli(), ""
+}
+
+// intervalPerDay: as many firings a day as an interval allows, within the ceiling.
+func intervalPerDay(every time.Duration) int64 {
+	return min(int64(ceilingMaxPerDay), int64(24*time.Hour/every))
 }
 
 // askTriggerConfirm: the agent's owner is asked, in the channel, to confirm a trigger (its check command shown);
@@ -346,8 +358,52 @@ func (h *Hub) v1TriggerPatch(w http.ResponseWriter, q *request) {
 		Duty      *string `json:"duty"`
 		Readonly  *bool   `json:"readonly"`
 		CheckCmd  *string `json:"check_cmd"`
+		Text      *string `json:"text"`   // what the agent is asked
+		Repeat    *string `json:"repeat"` // schedule: how often (with when: from then)
+		When      *string `json:"when"`   // schedule: the next time, in parseWhen's words ("" with an interval: from now)
 	}
 	_ = q.json(&b)
+	if b.Repeat != nil || b.When != nil {
+		if t.Kind != "schedule" {
+			errJSON(w, 400, "只有定时触发器有时间")
+			return
+		}
+		repeat, when := t.Repeat, ""
+		if b.Repeat != nil {
+			repeat = *b.Repeat
+		}
+		if b.When != nil {
+			when = *b.When
+		} else if kept, _, _ := normRepeat(repeat); interval(kept) == 0 && t.Due != nil { // a new repeat keeps the time of day
+			when = time.UnixMilli(*t.Due).In(h.now().Location()).Format("15:04")
+		}
+		r, due, bad := h.schedule(repeat, when)
+		if bad != "" {
+			errJSON(w, 400, bad)
+			return
+		}
+		h.must(h.db.Exec("UPDATE triggers SET repeat = ?, due = ? WHERE id = ?", r, due, t.ID))
+		if every := interval(r); every > 0 && b.MaxPerDay == nil && r != t.Repeat {
+			h.must(h.db.Exec("UPDATE triggers SET max_per_day = ? WHERE id = ?", intervalPerDay(every), t.ID))
+		}
+	}
+	if b.Text != nil {
+		text := trimmed(strings.TrimSpace(*b.Text), 2000)
+		if text == "" {
+			errJSON(w, 400, "要 Agent 做什么？")
+			return
+		}
+		if text != t.Text {
+			a, _ := h.agent(t.AgentID)
+			h.must(h.db.Exec("UPDATE triggers SET text = ? WHERE id = ?", text, t.ID))
+			// someone else's words for the owner's agent: as when it was set up, they wait for the owner again
+			if q.who.userID != a.OwnerID && (a.Confirm || t.CheckCmd != "") {
+				h.must(h.db.Exec("UPDATE triggers SET confirmed_by = NULL WHERE id = ?", t.ID))
+				t, _ = h.trigger(t.ID)
+				h.askTriggerConfirm(t, a, q.who.userID, false)
+			}
+		}
+	}
 	if b.CheckCmd != nil {
 		check, bad := checkCmdOf(t.Kind, *b.CheckCmd)
 		if bad != "" {

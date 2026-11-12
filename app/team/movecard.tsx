@@ -39,7 +39,7 @@ export function MoveCard(props: { team: Team; task: Task; move: Move; busy: bool
         wrap
         testID={`task-${id()}-move-what`}
         note={note()}
-        label={<Txt variant="caption" weight="semibold" tone="accent">{L(`${name(props.move.from)} has been offline ${gone()} min; ${id()} stopped on it`, `${name(props.move.from)} 离线 ${gone()} 分钟了，${id()} 停在上面`)}</Txt>}
+        label={<Txt variant="caption" weight="semibold" tone="default">{L(`${name(props.move.from)} has been offline ${gone()} min; ${id()} stopped on it`, `${name(props.move.from)} 离线 ${gone()} 分钟了，${id()} 停在上面`)}</Txt>}
       />
       <Txt variant="caption" tone="muted" testID={`task-${id()}-move-lost`}>{lost()}</Txt>
       <View style={{ flexDirection: "row", gap: 6 }}>

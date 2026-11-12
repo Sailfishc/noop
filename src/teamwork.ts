@@ -881,9 +881,12 @@ export const REMI_CLI = `#!/bin/sh
 #                                                          propose work for a person to say yes to (it is not done now)
 #   remi remind [daily|weekdays|weekly|every 30m] [WHEN] [@WHO] TEXT    remind @WHO (default: you, in this thread)
 #                                                          at WHEN: 20m, 2h, 9:30, tomorrow 9:00, fri 15:00, 2026-12-01 10:00
+#   remi reminders                                         the reminders you set or that bring you back (id, next, until)
+#   remi remind pause|resume ID... | --here                hold a repeating one, or go on (--here: yours in this thread)
+#   remi remind cancel ID... | --here                      stop them (--here: the ones for you in this thread)
 api="$REMI_URL/api/v1/agent"
 auth="Authorization: Bearer $REMI_TOKEN"
-usage() { sed -n '2,22p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
+usage() { sed -n '2,25p' "$0" | sed 's/^# \\{0,1\\}//'; exit 2; }
 case "$1" in
   read|search|tasks) path=$1 ;;
   task) [ -n "$2" ] || usage; path="tasks/$2"; shift ;;
@@ -892,7 +895,13 @@ case "$1" in
   file) [ -n "$2" ] || usage; exec curl -sS -f -G "$api/file" -H "$auth" --data-urlencode "path=$2" ;;
   memory) exec curl -sS "$api/memory" -H "$auth" ;;
   say) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/say" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
-  remind) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+  reminders) exec curl -sS "$api/reminders" -H "$auth" ;;
+  remind) shift; [ -n "$*" ] || usage
+    case "$1" in
+      cancel|pause|resume) act=$1; shift; [ -n "$*" ] || usage
+        printf '%s' "$*" | curl -sS "$api/remind/$act" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
+    esac
+    printf '%s' "$*" | curl -sS "$api/remind" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   ask) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/ask" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   handoff) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/handoff" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
   delegate) shift; [ -n "$*" ] || usage; printf '%s' "$*" | curl -sS "$api/delegate" -H "$auth" -H "content-type: text/plain; charset=utf-8" --data-binary @-; exit $? ;;
@@ -967,7 +976,11 @@ most every 5 minutes, only when people would want to know), and hand over a file
 \`remi remind [daily|weekdays|weekly] WHEN [@WHO] TEXT\` (WHEN: 2m, 1h, 3d, 9:30, tomorrow 9:00, fri 17:00), then finish
 at once. For "every N minutes / hours" (report on a merge request every 10 minutes), \`remi remind every 10m TEXT\` (at
 least 10m) brings you back to this thread each time: look, say what changed in your result, and finish. It is skipped
-while you are still on it and stops by itself after a day; a person who wants it longer sets it themselves. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
+while you are still on it and stops by itself after a day; a person who wants it longer sets it themselves. When the
+person says to stop or that it is no longer needed, run \`remi remind cancel --here\` (or
+\`remi remind cancel ID\` with an id from \`remi reminders\`); when they say to pause or hold it for now,
+\`remi remind pause --here\` (and \`remi remind resume --here\` when they say go on). Then say in the thread what you
+did; never say a reminder can't be stopped. Never wait or sleep to reply later yourself: a reply in the thread reaches nobody, while a reminder goes to the
 person's "Waiting for you" and their system notifications. When you notice work worth doing beyond what you were asked
 (a failing check, an outdated dependency), do not do it: propose it with
 \`remi propose --key SHORT-WORD TITLE --why WHAT-YOU-SAW --plan WHAT-DONE-LOOKS-LIKE\`. It reaches the person this task
