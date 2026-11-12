@@ -746,6 +746,7 @@ func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
 		summary += "：" + r
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "summary": summary})
+	h.endThreadReminders(t)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
 	writeJSON(w, 200, h.taskOut(q, t))
@@ -757,6 +758,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
+	h.endThreadReminders(t) // "stop" or "close" means its "every 10m" stops too
 	h.taskChanged(t.ID)
 	h.cancelDelegates(t.ID) // what it delegated and is not back yet goes too
 	t, _ = h.task(t.ID)

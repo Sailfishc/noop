@@ -276,6 +276,7 @@ func (h *Hub) cancelDelegates(id string) {
 			continue
 		}
 		h.setTask(c.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(c.Summary + "\n上级任务取消了"), "cancelled_at": h.nowMs()})
+		h.endThreadReminders(c)
 		h.taskChanged(c.ID)
 		h.cancelDelegates(c.ID)
 	}
