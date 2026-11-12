@@ -73,7 +73,7 @@ export function ReminderTag(props: { team: Team; r: Reminder; onError?: (e: stri
   const done = (r: { ok: boolean; data: any }) => { if (!r.ok) props.onError?.(String(r.data?.error ?? L("Couldn’t change it", "没改成"))); };
   return (
     <If when={may()} else={<Tag testID={`reminder-tag-${id()}`} label={`⏰ ${dueText(props.r)}`} />}>
-      <TagMenu testID={`reminder-tag-${id()}`} icon="bell" tone={props.r.paused ? "muted" : "accent"} label={dueText(props.r)}>
+      <TagMenu testID={`reminder-tag-${id()}`} icon="bell" tone={props.r.paused ? "muted" : "default"} label={dueText(props.r)}>
         <If when={untilText(props.r)}>{(s) => <MenuHeading text={s()} />}</If>
         <If when={props.r.paused} else={<MenuRow testID={`reminder-tag-${id()}-pause`} icon="pause" label={L("Pause", "暂停")} onSelect={async () => done(await t.pauseReminder(id(), true))} />}>
           <MenuRow testID={`reminder-tag-${id()}-resume`} icon="play" label={L("Resume", "恢复")} onSelect={async () => done(await t.pauseReminder(id(), false))} />

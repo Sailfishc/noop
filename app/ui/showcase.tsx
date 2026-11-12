@@ -202,7 +202,7 @@ export function Showcase() {
           <Tag label="ok" tone="ok" />
           <Tag label="info" tone="info" />
           <Tag label="danger" tone="danger" />
-          <TagMenu testID="showcase-tagmenu" icon="bell" tone="accent" label="every 10 min · next 10:32">
+          <TagMenu testID="showcase-tagmenu" icon="bell" tone="default" label="every 10 min · next 10:32">
             <MenuRow label="Pause" onSelect={() => {}} />
             <MenuRow label="Cancel" danger onSelect={() => {}} />
           </TagMenu>
