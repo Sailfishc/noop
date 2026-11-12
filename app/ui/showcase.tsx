@@ -22,6 +22,7 @@ import { QrCode } from "./qr-code";
 import { Spinner } from "./spinner";
 import { Toggle } from "./switch";
 import { Tag } from "./tag";
+import { TagMenu } from "./tag-menu";
 import { Modal } from "./dialog";
 import { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
 import { Dropdown } from "./select";
@@ -187,6 +188,11 @@ export function Showcase() {
           <Tag label="up" tone="up" />
           <Tag label="warn" tone="warn" />
           <Tag label="danger" tone="danger" />
+          <TagMenu testID="showcase-tagmenu" icon="bell" tone="accent" label="every 10 min · next 10:32">
+            <MenuRow label="Pause" onSelect={() => {}} />
+            <MenuRow label="Cancel" danger onSelect={() => {}} />
+          </TagMenu>
+          <TagMenu icon="bell" label="paused"><MenuRow label="Resume" onSelect={() => {}} /></TagMenu>
           <Count n={3} />
           <Count n={128} />
           <Dot on />

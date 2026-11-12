@@ -18,6 +18,7 @@ export { Dot } from "./dot";
 export { Label, Noted } from "./noted";
 export { Card, Panel } from "./panel";
 export { Tag } from "./tag";
+export { TagMenu } from "./tag-menu";
 export { PickCard } from "./pick-card";
 export { confirm, Modal } from "./dialog";
 export { toast, Toaster } from "./toast";

@@ -2,8 +2,8 @@
 // in the composer and an agent's `remi remind` make them too; the server parses the time words (reminders.go).
 import { signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { Btn, colors, hovered, Icon, MenuHeading, MenuRow, PopMenu } from "../ui";
-import { reminderUp, type Reminder, type Team } from "./api";
+import { Btn, colors, hovered, Icon, MenuHeading, MenuLine, MenuRow, PopMenu, Tag, TagMenu } from "../ui";
+import { mayStopReminder, reminderUp, type Message, type Reminder, type Team } from "./api";
 import { time } from "./ui";
 
 export const REPEAT: Record<string, () => string> = {
@@ -52,10 +52,30 @@ function zhTime(num: string, unit: string): [number, string] {
   return [/^\d+$/.test(num) ? Number(num) : CN_NUM[num], ZH_UNIT[unit]];
 }
 
-/** When it fires next, and how often. */
+/** When it fires next, and how often; a paused one says so instead of its next time. */
 export function dueText(r: Reminder): string {
+  if (r.paused) return `${repeatLabel(r.repeat)} · ${L("paused", "已暂停")}`;
   const when = time(r.due);
   return r.repeat ? `${repeatLabel(r.repeat)} · ${L("next", "下次")} ${when}` : when;
+}
+
+/** A repeating reminder for an agent, small, where it shows up (a task card, the channel's 临时 duties): its next
+ * time, grey while paused, and a menu to pause, resume or cancel it for whoever may. */
+export function ReminderTag(props: { team: Team; r: Reminder; onError?: (e: string) => void }) {
+  const t = props.team;
+  const may = () => mayStopReminder(props.r, t.me(), props.r.target.kind === "agent" ? t.agentById(props.r.target.id) : undefined);
+  const id = () => props.r.id;
+  const done = (r: { ok: boolean; data: any }) => { if (!r.ok) props.onError?.(String(r.data?.error ?? L("Couldn’t change it", "没改成"))); };
+  return (
+    <If when={may()} else={<Tag testID={`reminder-tag-${id()}`} label={`⏰ ${dueText(props.r)}`} />}>
+      <TagMenu testID={`reminder-tag-${id()}`} icon="bell" tone={props.r.paused ? "muted" : "accent"} label={dueText(props.r)}>
+        <If when={props.r.paused} else={<MenuRow testID={`reminder-tag-${id()}-pause`} icon="pause" label={L("Pause", "暂停")} onSelect={async () => done(await t.pauseReminder(id(), true))} />}>
+          <MenuRow testID={`reminder-tag-${id()}-resume`} icon="play" label={L("Resume", "恢复")} onSelect={async () => done(await t.pauseReminder(id(), false))} />
+        </If>
+        <MenuRow testID={`reminder-tag-${id()}-cancel`} danger label={L("Cancel this reminder", "取消这个提醒")} onSelect={async () => done(await t.cancelReminder(id()))} />
+      </TagMenu>
+    </If>
+  );
 }
 
 /** The later times a message's menu (and a reminder that went off) offers. */
@@ -67,8 +87,12 @@ const LATER: { when: string; label: () => string }[] = [
   { when: "mon 9:00", label: () => L("Monday at 9:00", "周一 9:00") },
 ];
 
-/** A bell on a message: remind me of it later. */
-export function RemindMenu(props: { team: Team; messageId: string; onError: (e: string) => void }) {
+/** A bell on a message: remind me of it later; on a ⏰ message, also stop the reminder it came from. */
+export function RemindMenu(props: { team: Team; messageId: string; m?: Message; onError: (e: string) => void }) {
+  const from = () => {
+    const r = props.m ? props.team.reminderOfMessage(props.m) : undefined;
+    return r && mayStopReminder(r, props.team.me(), r.target.kind === "agent" ? props.team.agentById(r.target.id) : undefined) ? r : null;
+  };
   return (
     <PopMenu
       align="end"
@@ -85,6 +109,15 @@ export function RemindMenu(props: { team: Team; messageId: string; onError: (e: 
         <MenuRow testID={`remind-${props.messageId}-${x.when.replace(/\W+/g, "-")}`} label={x.label()}
           onSelect={async () => props.onError((await props.team.remind({ message_id: props.messageId, when: x.when })) ?? "")} />
       ))}
+      <If when={from()}>
+        {(r) => (
+          <>
+            <MenuLine />
+            <MenuRow testID={`remind-${props.messageId}-stop`} danger label={L("Stop this reminder", "停止这个提醒")}
+              onSelect={async () => { const x = await props.team.cancelReminder(r().id); props.onError(x.ok ? "" : String(x.data?.error ?? L("Couldn’t stop it", "没停成"))); }} />
+          </>
+        )}
+      </If>
     </PopMenu>
   );
 }
@@ -138,7 +171,13 @@ function ReminderCard(props: { team: Team; r: Reminder; up?: boolean; onOpen: ()
         <Text style={{ fontSize: 14.5, lineHeight: 21, color: colors.text }}>{props.r.text}</Text>
       </View>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-        <If when={props.up} else={<Btn small kind="ghost" testID={`reminder-${props.r.id}-cancel`} label={L("Cancel", "取消")} onPress={() => run(() => t.cancelReminder(props.r.id))} />}>
+        <If when={props.up} else={<>
+          <If when={props.r.repeat}>
+            <Btn small kind="ghost" testID={`reminder-${props.r.id}-pause`} label={props.r.paused ? L("Resume", "恢复") : L("Pause", "暂停")}
+              onPress={() => run(async () => { await t.pauseReminder(props.r.id, !props.r.paused); })} />
+          </If>
+          <Btn small kind="ghost" testID={`reminder-${props.r.id}-cancel`} label={L("Cancel", "取消")} onPress={() => run(async () => { await t.cancelReminder(props.r.id); })} />
+        </>}>
           <Btn small kind="primary" testID={`reminder-${props.r.id}-done`} label={L("Done", "完成")} onPress={() => run(() => t.reminderSeen(props.r.id))} />
           <Btn small kind="plain" testID={`reminder-${props.r.id}-1h`} label={L("In 1 hour", "1 小时后")} onPress={() => run(() => t.reminderSeen(props.r.id, "1h"))} />
           <Btn small kind="plain" testID={`reminder-${props.r.id}-tomorrow`} label={L("Tomorrow", "明天")} onPress={() => run(() => t.reminderSeen(props.r.id, "tomorrow 9:00"))} />
