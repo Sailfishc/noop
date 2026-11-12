@@ -42,7 +42,7 @@ export function ProposalCard(props: { team: Team; batch: ProposalBatch }) {
     <Card testID={`proposals-${b().id}`}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Txt weight="semibold" grow>{title()}</Txt>
-        <If when={b().urgent}><Tag tone="warn" label={L("urgent", "紧急")} /></If>
+        <If when={b().urgent}><Tag tone="danger" label={L("urgent", "紧急")} /></If>
         <Txt variant="caption" tone="faint">{time(b().at)}</Txt>
       </View>
       <Each of={b().proposals} key={(p) => p.id}>

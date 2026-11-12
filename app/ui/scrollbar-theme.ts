@@ -1,7 +1,5 @@
-import { platform } from "nsh";
 import type { ScrollbarTheme } from "nsh/base";
-
-const touch = !(platform.idiom === "desktop" || platform.idiom === "mac");
+import { touch } from "./theme";
 
 /**
  * The gallery's scroll bars, gpui-component's, which `Scrollbar.setTheme`

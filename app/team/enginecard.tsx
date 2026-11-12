@@ -35,7 +35,7 @@ export function EngineCard(props: { team: Team; task: Task; engine: Engine; busy
         wrap
         testID={`task-${id()}-engine-what`}
         note={note()}
-        label={<Txt variant="caption" weight="semibold" tone="accent">{L(`${from()} on ${m()?.name ?? "?"} ${held(props.engine, m()?.runtime_status?.[props.engine.from]?.until)}; ${id()} is stopped`, `${m()?.name ?? "?"} 上的 ${from()} ${held(props.engine, m()?.runtime_status?.[props.engine.from]?.until)}，${id()} 停着`)}</Txt>}
+        label={<Txt variant="caption" weight="semibold" tone="default">{L(`${from()} on ${m()?.name ?? "?"} ${held(props.engine, m()?.runtime_status?.[props.engine.from]?.until)}; ${id()} is stopped`, `${m()?.name ?? "?"} 上的 ${from()} ${held(props.engine, m()?.runtime_status?.[props.engine.from]?.until)}，${id()} 停着`)}</Txt>}
       />
       <Txt variant="caption" tone="muted" testID={`task-${id()}-engine-how`}>{L(`${to()} there can take it: same work directory, a fresh session, its default model`, `同一台电脑上的 ${to()} 能接：同一个工作目录，新开会话，用它的默认模型`)}</Txt>
       <View style={{ flexDirection: "row", gap: 6 }}>

@@ -192,6 +192,10 @@ func initSchema(db *sql.DB) error {
 	if _, err := db.Exec("ALTER TABLE reminders ADD COLUMN until INTEGER"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 		return err
 	}
+	// a repeating reminder on hold (reminders.go)
+	if _, err := db.Exec("ALTER TABLE reminders ADD COLUMN paused INTEGER NOT NULL DEFAULT 0"); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+		return err
+	}
 	if _, err := db.Exec(runtimeStatusSchema); err != nil {
 		return err
 	}

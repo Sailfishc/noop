@@ -2,7 +2,7 @@
 import { Clipboard, Image, openUrl, signal, Text, View } from "nsh";
 import { TextView, type MarkdownExtension } from "nsh/base";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, hovered, Icon } from "../ui";
+import { Avatar, colors, hovered, Icon, IconBtn, Link } from "../ui";
 import { type Attachment, type Mention, type Message, type Team } from "./api";
 import { RemindMenu } from "./reminders";
 import { authorOf, RuntimeBadge, time } from "./ui";
@@ -40,10 +40,10 @@ function MessageText(props: { text: string; mentions: readonly Mention[] | null 
       selectable
       onLinkPress={({ url }) => { if (/^(https?|mailto):/i.test(url)) void openUrl(url).catch(() => {}); }}
       styles={{
-        root: { gap: 6, fontSize: 15, lineHeight: 22, color: colors.text },
-        code: { fontFamily: "monospace", fontSize: 13.5, color: colors.text, backgroundColor: alpha(colors.text, 0.07) },
-        link: { color: colors.accent },
-        highlight: { color: colors.accent, fontWeight: "500", backgroundColor: "transparent" },
+        root: { gap: 6, fontSize: 15, lineHeight: 22, color: colors.fg },
+        code: { fontFamily: "monospace", fontSize: 13.5, color: colors.fg, backgroundColor: colors.selected },
+        link: { color: colors.fg },
+        highlight: { color: colors.fg, fontWeight: "500", backgroundColor: "transparent" },
       }}
     />
   );
@@ -70,7 +70,7 @@ function MessageFiles(props: { team: Team; messageId: string }) {
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
           <Each of={pictures()} key={(a) => a.path}>
             {(a) => (
-              <View role="link" testID="message-picture" accessibilityLabel={a().name} onPress={() => open(a())} style={{ borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
+              <View role="link" testID="message-picture" accessibilityLabel={a().name} onPress={() => open(a())} style={{ borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.hairline }}>
                 <Image src={a().thumb ?? a().url!} accessibilityLabel={a().name} style={{ width: box(a()).width, height: box(a()).height, objectFit: box(a()).fit }} />
               </View>
             )}
@@ -82,11 +82,11 @@ function MessageFiles(props: { team: Team; messageId: string }) {
       </Each>
       <Each of={others()} key={(a) => a.path}>
         {(a) => (
-          <View role="link" testID="message-file" accessibilityLabel={a().name} onPress={() => open(a())} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 360 }}>
-            <Icon name="file" size={16} tint={colors.muted} />
-            <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{a().name}</Text>
-            <Text style={{ fontSize: 11, fontWeight: "600", color: colors.muted }}>{fileKind(a())}</Text>
-            <Text style={{ fontSize: 12, color: colors.faint }}>{fileSize(a().size)}</Text>
+          <View role="link" testID="message-file" accessibilityLabel={a().name} onPress={() => open(a())} hoverStyle={hovered()} style={{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, maxWidth: 360 }}>
+            <Icon name="file" size={16} tint={colors.fg2} />
+            <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.fg, numberOfLines: 1 }}>{a().name}</Text>
+            <Text style={{ fontSize: 11, fontWeight: "600", color: colors.fg2 }}>{fileKind(a())}</Text>
+            <Text style={{ fontSize: 12, color: colors.fg3 }}>{fileSize(a().size)}</Text>
           </View>
         )}
       </Each>
@@ -107,16 +107,16 @@ function TextFile(props: { a: Attachment; onOpen: () => void }) {
   const shown = () => (wide() ? lines() : lines().slice(0, 8)).join("\n");
   const cut = () => !wide() && lines().length > 8;
   return (
-    <View testID="message-text-file" style={{ maxWidth: 560, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, overflow: "hidden" }}>
-      <View role="link" accessibilityLabel={props.a.name} onPress={props.onOpen} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
-        <Icon name="document" size={15} tint={colors.muted} />
-        <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.text, numberOfLines: 1 }}>{props.a.name}</Text>
-        <Text style={{ fontSize: 12, color: colors.faint }}>{fileSize(props.a.size)}</Text>
+    <View testID="message-text-file" style={{ maxWidth: 560, borderRadius: 8, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, overflow: "hidden" }}>
+      <View role="link" accessibilityLabel={props.a.name} onPress={props.onOpen} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 6, paddingHorizontal: 10, borderBottomWidth: 1, borderBottomColor: colors.hairline }}>
+        <Icon name="document" size={15} tint={colors.fg2} />
+        <Text style={{ flexShrink: 1, fontSize: 13.5, color: colors.fg, numberOfLines: 1 }}>{props.a.name}</Text>
+        <Text style={{ fontSize: 12, color: colors.fg3 }}>{fileSize(props.a.size)}</Text>
       </View>
-      <Text testID="message-text-preview" style={{ paddingHorizontal: 10, paddingVertical: 8, fontFamily: "monospace", fontSize: 12.5, lineHeight: 18, color: colors.text }}>{shown()}</Text>
+      <Text testID="message-text-preview" style={{ paddingHorizontal: 10, paddingVertical: 8, fontFamily: "monospace", fontSize: 12.5, lineHeight: 18, color: colors.fg }}>{shown()}</Text>
       <If when={cut() || props.a.more}>
         <View role="button" testID="message-text-more" onPress={() => (cut() ? wide.set(true) : props.onOpen())} hoverStyle={hovered()} style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
-          <Text style={{ fontSize: 12.5, color: colors.accent }}>{cut() ? L(`Show ${lines().length} lines`, `展开 ${lines().length} 行`) : L("Open the whole file", "打开完整文件")}</Text>
+          <Text style={{ fontSize: 12.5, color: colors.fg }}>{cut() ? L(`Show ${lines().length} lines`, `展开 ${lines().length} 行`) : L("Open the whole file", "打开完整文件")}</Text>
         </View>
       </If>
     </View>
@@ -146,10 +146,7 @@ function CopyButton(props: { id: string; text: string }) {
   };
   const label = () => (done() ? L("Copied", "已复制") : L("Copy text", "复制文本"));
   return (
-    <View role="button" testID={`copy-${props.id}`} accessibilityLabel={label()} tooltip={<Text>{label()}</Text>}
-      onPress={() => void copy().catch(() => {})} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-      <Icon name={done() ? "check" : "copy"} size={13} tint={done() ? colors.accent : colors.faint} />
-    </View>
+    <IconBtn testID={`copy-${props.id}`} size="sm" label={label()} icon={done() ? "check" : "copy"} tone={done() ? "default" : "faint"} onPress={() => void copy().catch(() => {})} />
   );
 }
 
@@ -162,16 +159,16 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
       <Avatar name={a().name} agent={a().agent} />
       <View style={{ flex: 1, gap: 3 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <Text style={{ fontSize: 14.5, fontWeight: "600", color: colors.text }}>{a().name}</Text>
+          <Text style={{ fontSize: 14.5, fontWeight: "600", color: colors.fg }}>{a().name}</Text>
           <If when={agent()}>
             {(ag) => <RuntimeBadge runtime={ag().runtime} />}
           </If>
-          <Text style={{ fontSize: 12, color: colors.faint }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
+          <Text style={{ fontSize: 12, color: colors.fg3 }}>{time(props.m.created)}{props.m.edited ? L(" · edited", " · 已编辑") : ""}</Text>
           <View style={{ flex: 1 }} />
           <If when={props.m.text.trim()}>
             <CopyButton id={props.m.id} text={props.m.text} />
           </If>
-          <RemindMenu team={props.team} messageId={props.m.id} onError={(e) => note.set(e)} />
+          <RemindMenu team={props.team} messageId={props.m.id} m={props.m} onError={(e) => note.set(e)} />
         </View>
         <If when={note()}>
           <Text testID={`msg-${props.m.id}-note`} style={{ fontSize: 12.5, color: colors.danger }}>{note()}</Text>
@@ -187,9 +184,9 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
               <Each of={groups()} key={(g) => g.emoji}>
                 {(g) => (
-                  <View testID={`msg-${props.m.id}-reaction`} accessibilityLabel={`${g().emoji} ${g().names.join("、")}`} style={{ height: 24, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+                  <View testID={`msg-${props.m.id}-reaction`} accessibilityLabel={`${g().emoji} ${g().names.join("、")}`} style={{ height: 24, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, borderRadius: 12, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
                     <Text style={{ fontSize: 13 }}>{g().emoji}</Text>
-                    <Text style={{ fontSize: 12, color: colors.muted }}>{g().names.length > 1 ? String(g().names.length) : g().names[0]}</Text>
+                    <Text style={{ fontSize: 12, color: colors.fg2 }}>{g().names.length > 1 ? String(g().names.length) : g().names[0]}</Text>
                   </View>
                 )}
               </Each>
@@ -202,12 +199,8 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           </Each>
         </If>
         <If when={props.onThread}>
-          <View role="button" testID={`thread-${props.m.id}`} onPress={() => props.onThread!()} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 26, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6 }}>
-            <Icon name="reply" size={14} tint={props.m.reply_count ? colors.accent : colors.faint} />
-            <Text style={{ fontSize: 13, color: props.m.reply_count ? colors.accent : colors.faint }}>
-              {props.m.reply_count ? L(`${props.m.reply_count} replies`, `${props.m.reply_count} 条回复`) : L("Reply in thread", "在线程里回复")}
-            </Text>
-          </View>
+          <Link testID={`thread-${props.m.id}`} icon="reply" tone={props.m.reply_count ? "default" : "faint"} onPress={() => props.onThread!()}
+            label={props.m.reply_count ? L(`${props.m.reply_count} replies`, `${props.m.reply_count} 条回复`) : L("Reply in thread", "在线程里回复")} />
         </If>
       </View>
     </View>

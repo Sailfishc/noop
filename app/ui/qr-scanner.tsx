@@ -1,8 +1,8 @@
-import { cleanup, platform, signal, View, WebView } from "nsh";
+import { cleanup, effect, platform, signal, untracked, View, WebView } from "nsh";
 import { L } from "../i18n";
 import { scannerPage } from "./qr-scanner-page";
 import { Txt } from "./text";
-import { scale } from "./theme";
+import { radius, space } from "./theme";
 
 /**
  * Whether this platform can show the scanner: a web view whose page may use the camera (`capabilities.webview.media`)
@@ -20,9 +20,10 @@ const ORIGIN = "https://localhost/";
  * Without a live camera (refused, none, or a web view that won't give one) the page offers to take a photo instead,
  * through the system's camera, and reads that. When the page itself doesn't come up (no web view, the page refused,
  * or no word from it in 3 s) the box says so with the code, instead of staying black. Test ids: `<testID>` the web
- * view, `<testID>-problem` that note.
+ * view, `<testID>-problem` that note. `onFail(why)` hears that too, once, so a caller can offer another way in (the
+ * photo still covers a camera that is refused or missing, so that doesn't count).
  */
-export function QrScanner(props: { onScan: (text: string) => void; height?: number; testID?: string }) {
+export function QrScanner(props: { onScan: (text: string) => void; onFail?: (why: string) => void; height?: number; testID?: string }) {
   const text = {
     aim: L("Point the camera at the QR code", "把二维码放进框里"),
     starting: L("Starting the camera…", "正在打开摄像头…"),
@@ -39,9 +40,14 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
   const problem = () =>
     failed() || (late() && !heard() ? L("The scanner page didn't load (no answer in 3 s). Install a full build of the app (NSH 0.5).", "扫码页面没有加载出来（3 秒无响应）。请安装完整重新打包的 App（NSH 0.5）") : "");
   const wait = setTimeout(() => late.set(true), 3000);
+  let told = false;
+  effect(() => {
+    const p = problem();
+    if (p && !told && props.onFail) { told = true; untracked(() => props.onFail!(p)); }
+  });
   cleanup(() => clearTimeout(wait));
   return (
-    <View style={{ height: props.height ?? 320, borderRadius: scale.radius.md, overflow: "hidden", backgroundColor: "#000000" }}>
+    <View style={{ height: props.height ?? 320, borderRadius: radius.md, overflow: "hidden", backgroundColor: "#000000" }}>
       <WebView
         testID={props.testID}
         html={scannerPage(text)}
@@ -59,7 +65,7 @@ export function QrScanner(props: { onScan: (text: string) => void; height?: numb
         }}
       />
       <If when={problem()}>
-        <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center", padding: 16, backgroundColor: "#000000" }}>
+        <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, alignItems: "center", justifyContent: "center", padding: space.xl, backgroundColor: "#000000" }}>
           <Txt testID={props.testID ? `${props.testID}-problem` : undefined} tone="faint">{problem()}</Txt>
         </View>
       </If>

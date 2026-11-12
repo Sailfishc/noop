@@ -2,7 +2,7 @@ import { Text, View, type JSX } from "nsh";
 import { Avatar } from "./avatar";
 import { Dot } from "./dot";
 import { Icon } from "./icons";
-import { colors, hovered, scale } from "./theme";
+import { colors, hovered, radius, size, space } from "./theme";
 
 /**
  * The sidebar's bottom row: me (an avatar, my name, a dot and the connection's state) and a gear at the end. Its
@@ -12,17 +12,17 @@ import { colors, hovered, scale } from "./theme";
 export function AccountRow(props: { name: string; status: string; live: boolean; label?: string; testID?: string; nameTestID?: string; statusTestID?: string }): JSX.Element {
   return (
     <View role="button" testID={props.testID} accessibilityLabel={props.label} hoverStyle={hovered()}
-      style={{ flexDirection: "row", alignItems: "center", gap: 8, minHeight: 44, paddingHorizontal: 10, borderRadius: scale.radius.md }}>
-      <Avatar name={props.name || "?"} size={22} />
-      <View style={{ flex: 1, gap: 1 }}>
-        <Text testID={props.nameTestID} style={{ fontSize: scale.text.message, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{props.name}</Text>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+      style={{ flexDirection: "row", alignItems: "center", gap: space.md, minHeight: size.row.md, paddingHorizontal: space.md, borderRadius: radius.md }}>
+      <Avatar name={props.name || "?"} size="sm" />
+      <View style={{ flex: 1, gap: space.xxs }}>
+        <Text testID={props.nameTestID} style={{ fontSize: size.text.message, fontWeight: "600", color: colors.fg, numberOfLines: 1 }}>{props.name}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
           <Dot on={props.live} />
-          <Text testID={props.statusTestID} style={{ flex: 1, fontSize: scale.text.caption, color: colors.muted, numberOfLines: 1 }}>{props.status}</Text>
+          <Text testID={props.statusTestID} style={{ flex: 1, fontSize: size.text.caption, color: colors.fg2, numberOfLines: 1 }}>{props.status}</Text>
         </View>
       </View>
-      <View style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center" }}>
-        <Icon name="settings" size={14} tint={colors.muted} />
+      <View style={{ width: size.iconButton.sm, height: size.iconButton.sm, alignItems: "center", justifyContent: "center" }}>
+        <Icon name="settings" size={size.icon.sm} tint={colors.fg2} />
       </View>
     </View>
   );

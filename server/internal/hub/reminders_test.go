@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -273,11 +274,96 @@ func TestAgentCancelsReminders(t *testing.T) {
 	// closing or cancelling the task stops its thread's repeating reminders; done does not
 	id, tok, _ = e.claimed("@acha 每 30 分钟看一下 CI")
 	rid = strings.TrimSuffix(strings.Fields(strings.TrimPrefix(text(remind(tok, "every 30m 看 CI")), "reminder "))[0], ":")
-	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "done", "summary": "CI 绿了"})
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "CI 绿了"})
+	check(t, "accepted", e.do("POST", "/api/v1/tasks/"+id+"/accept", e.zw.session, nil).status == 200 && e.task(id)["status"] == "done")
 	rem, _ = e.h.reminder(rid)
 	check(t, "done: it goes on", !rem.Done)
 	e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, nil)
 	r = e.do("POST", "/api/v1/tasks/"+id+"/cancel", e.zw.session, nil)
 	rem, _ = e.h.reminder(rid)
 	check(t, "closed: it stops", r.status == 200 && rem.Done, r)
+}
+
+func TestPauseAndWhoMayStop(t *testing.T) {
+	e := newTaskEnv(t, "channel", false) // @acha is 王磊's; 张伟 is an admin; 刘丽 is neither
+	r := e.do("POST", "/api/v1/reminders", e.ll.session, map[string]any{"command": "每 10 分钟 @acha 看一下 MR 的进展", "channel_id": e.cid})
+	check(t, "刘丽 has @acha report every 10 minutes", r.status == 200 && r.body["paused"] == false, r)
+	rid := r.body["id"].(string)
+	e.advance(10*time.Minute + time.Second)
+	e.h.Tick()
+	rem, _ := e.h.reminder(rid)
+	thread := *rem.ThreadID
+	task := e.do("GET", "/api/v1/tasks?thread="+thread, e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
+	rs := task["reminders"].([]any)
+	check(t, "its task carries it (the ⏰ on the card)", len(rs) == 1 && rs[0].(map[string]any)["id"] == rid, resp{raw: []byte(fmt.Sprint(task["reminders"]))})
+	ch := e.do("GET", "/api/v1/reminders/channel?channel="+e.cid, e.wl.session, nil)
+	check(t, "and the channel's 临时 duties", ch.status == 200 && len(ch.body["reminders"].([]any)) == 1, ch)
+	once := e.do("POST", "/api/v1/reminders", e.ll.session, map[string]any{"command": "2h @acha 看一下", "channel_id": e.cid, "thread_id": thread})
+	check(t, "a one-off is not a duty", len(e.do("GET", "/api/v1/reminders/channel?channel="+e.cid, e.wl.session, nil).body["reminders"].([]any)) == 1)
+
+	// who may stop one for an agent: who set it, the agent's owner, an admin
+	pause := func(s string, paused bool) resp {
+		return e.do("PATCH", "/api/v1/reminders/"+rid, s, map[string]any{"paused": paused})
+	}
+	check(t, "the agent's owner may pause it", pause(e.wl.session, true).status == 200)
+	rem, _ = e.h.reminder(rid)
+	check(t, "paused", rem.Paused && !rem.Done)
+	id := task["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "还在等 CI"})
+	n := len(e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, nil).body["messages"].([]any))
+	e.advance(30 * time.Minute)
+	e.h.Tick()
+	rem, _ = e.h.reminder(rid)
+	check(t, "paused: it does not go off, and its time moves on", e.task(id)["state"] != "queued" && rem.Due > e.now().UnixMilli() &&
+		len(e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.zw.session, nil).body["messages"].([]any)) == n)
+	check(t, "an admin may resume it", pause(e.zw.session, false).status == 200)
+	e.advance(10 * time.Minute)
+	e.h.Tick()
+	rem, _ = e.h.reminder(rid)
+	check(t, "resumed: it brings the agent back", e.task(id)["state"] == "queued", resp{raw: []byte(fmt.Sprint(e.task(id)["state"], rem.Fired, rem.Due, e.now().UnixMilli(), rem.Paused))})
+	check(t, "a one-off can't be paused", e.do("PATCH", "/api/v1/reminders/"+once.body["id"].(string), e.ll.session, map[string]any{"paused": true}).status == 409)
+
+	// someone else's reminder for a person stays theirs
+	mine := e.do("POST", "/api/v1/reminders", e.ll.session, map[string]any{"command": "每天 9:00 交日报", "channel_id": e.cid})
+	check(t, "not even an admin pauses someone's own reminder", e.do("PATCH", "/api/v1/reminders/"+mine.body["id"].(string), e.zw.session, map[string]any{"paused": true}).status == 404)
+	check(t, "or cancels it", e.do("DELETE", "/api/v1/reminders/"+mine.body["id"].(string), e.zw.session, nil).status == 404)
+	check(t, "the owner cancels the one for its agent", e.do("DELETE", "/api/v1/reminders/"+rid, e.wl.session, nil).status == 200)
+	_, ok := e.h.reminder(rid)
+	check(t, "gone", !ok)
+}
+
+func TestAgentPausesReminders(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	act := func(tok, verb, s string) resp {
+		return e.do("POST", "/api/v1/agent/remind/"+verb, tok, bytes.NewBufferString(s), "content-type", "text/plain")
+	}
+	id, tok, _ := e.claimed("@acha 每 10 分钟汇报一下 MR 的进展")
+	r := e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("every 10m 看 MR"), "content-type", "text/plain")
+	rid := strings.TrimSuffix(strings.Fields(strings.TrimPrefix(string(r.raw), "reminder "))[0], ":")
+	e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("2h 再看一次"), "content-type", "text/plain")
+
+	r = act(tok, "pause", "--here")
+	check(t, "remi remind pause --here: the repeating one", r.status == 200 && strings.HasPrefix(string(r.raw), "paused "+rid) &&
+		strings.Count(string(r.raw), "\n") == 1, r)
+	check(t, "remi reminders says so", strings.Contains(string(e.do("GET", "/api/v1/agent/reminders", tok, nil).raw), "paused"))
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "先停"})
+	e.advance(25 * time.Minute)
+	e.h.Tick()
+	check(t, "it does not come back while paused", e.task(id)["state"] != "queued", resp{raw: []byte(e.task(id)["state"].(string))})
+	e.do("POST", "/api/v1/tasks/"+id+"/accept", e.zw.session, nil)
+	check(t, "reopened", e.do("POST", "/api/v1/tasks/"+id+"/reopen", e.zw.session, map[string]any{"note": "继续吧"}).status == 200)
+	tok = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil).body["read_token"].(string)
+	r = act(tok, "resume", rid)
+	check(t, "remi remind resume ID", r.status == 200 && strings.HasPrefix(string(r.raw), "resumed "+rid), r)
+	rem, _ := e.h.reminder(rid)
+	check(t, "on again", !rem.Paused)
+	check(t, "not someone else's", act(tok, "pause", "rem_nope").status == 404)
+
+	// paused, it still ends on time
+	act(tok, "pause", rid)
+	e.advance(25 * time.Hour)
+	e.h.Tick()
+	rem, _ = e.h.reminder(rid)
+	check(t, "a paused one still stops after a day", rem.Done)
 }

@@ -180,6 +180,7 @@ type taskView struct {
 	Aligned     bool            `json:"aligned"`            // its agent aligned with people once (teamalign.go): it may not again
 	Holder      *holderView     `json:"holder"`             // who has the ball now: whose move it is (teamhandoff.go); nil once it ended
 	Delegates   []delegateView  `json:"delegates"`          // the tasks its agent delegated (teamdelegate.go), oldest first
+	Reminders   []reminderView  `json:"reminders"`          // the repeating reminders that bring its agent back to its thread (the ⏰ on its card)
 	Calls       []callView      `json:"calls"`              // each time it needed a person, and why (calls.go)
 	Checkpoint  *checkpointView `json:"checkpoint"`         // where it got to, kept off its computer (teamcheckpoint.go); nil: none yet
 	Moves       int64           `json:"moves"`              // times it moved to another computer (teammove.go)
@@ -285,7 +286,7 @@ func redact(t taskView) taskView {
 	r := taskView{ID: t.ID, AgentID: t.AgentID, CreatedBy: t.CreatedBy, Handler: t.Handler, State: t.State, Status: t.Status,
 		Needs: t.Needs, Runs: t.Runs, Tracked: t.Tracked, Created: t.Created, Updated: t.Updated, Redacted: true,
 		Outputs: []outputView{}, Events: []taskEvent{}, Calls: []callView{}, Asked: []askedView{}, Repos: []string{}, Handoffs: []handoffView{}, Submits: []submitView{}, Evidence: []evidenceView{},
-		Holder: t.Holder, Delegates: []delegateView{}, Moves: t.Moves, Move: t.Move, Runtime: t.Runtime, Engine: t.Engine}
+		Holder: t.Holder, Delegates: []delegateView{}, Reminders: []reminderView{}, Moves: t.Moves, Move: t.Move, Runtime: t.Runtime, Engine: t.Engine}
 	// a handoff card still to click: its owner may be outside the channel (the card waits for them), so the row keeps
 	// which card and which agent, not its words
 	for _, x := range t.Handoffs {
