@@ -775,9 +775,11 @@ const gateBin = () => gateCreds.dir ?? join(process.env.NOOP_HOME || join(homedi
 const sq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const DENY = "推分支和开 PR 由机器做，合并由人做";
 
-/** `gh api` / `glab api`: GET only (a request with fields and no method is a POST); a GraphQL query, not a mutation. */
+/** `gh api` / `glab api`: GET only (a request with fields and no method is a POST); a GraphQL query, not a mutation.
+ * A GraphQL query must be written in the arguments: one read from a file or stdin (a field value starting with @,
+ * --input) could hide a mutation. */
 const API_CHECK = `api)
-    method=""; body=""; graphql=""; prev=""
+    method=""; body=""; graphql=""; fromfile=""; prev=""
     for a in "$@"; do
       case "$prev" in -X|--method) method=$a ;; esac
       case "$a" in
@@ -786,9 +788,12 @@ const API_CHECK = `api)
         -f|-F|--field|--raw-field|--input|-f?*|-F?*|--field=*|--raw-field=*|--input=*) body=1 ;;
         graphql) graphql=1 ;;
       esac
+      case "$a" in --input|--input=*|*=@*) fromfile=1 ;; esac
+      case "$prev" in --input) fromfile=1 ;; esac
       case "$a" in *mutation*) no "api（GraphQL mutation）" ;; esac
       prev=$a
     done
+    [ -n "$graphql" ] && [ -n "$fromfile" ] && no "api graphql（查询从文件或标准输入读）：把查询直接写在参数里"
     method=$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')
     if [ -n "$method" ]; then [ "$method" = GET ] || [ "$method" = HEAD ] || { [ -n "$graphql" ] && [ "$method" = POST ]; } || no "api -X $method"
     elif [ -n "$body" ] && [ -z "$graphql" ]; then no "api（带字段就是 POST，读用 -X GET）"; fi ;;`;

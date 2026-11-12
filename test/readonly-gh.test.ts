@@ -46,6 +46,22 @@ test("gh refuses what writes, and says who does it", () => {
   }
 });
 
+test("a GraphQL query from a file or stdin is refused: it could hide a mutation; written inline it passes", () => {
+  writeFileSync(join(W, "merge.graphql"), "mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }");
+  for (const tool of ["gh", "glab"]) {
+    for (const cmd of [`${tool} api graphql -F query=@merge.graphql`, `${tool} api graphql -f query=@merge.graphql`, `${tool} api graphql -Fquery=@merge.graphql`,
+      `${tool} api graphql --field query=@- < merge.graphql`, `${tool} api graphql --input merge.graphql`, `${tool} api graphql --input=merge.graphql`]) {
+      const r = run(cmd);
+      expect(r.code, cmd).toBe(1);
+      expect(r.out).toBe("");
+      expect(r.err).toContain("把查询直接写在参数里");
+    }
+    const ok = run(`${tool} api graphql -f query='{ viewer { login } }'`);
+    expect(ok.code).toBe(0);
+    expect(ok.out).toStartWith(`${tool} api graphql`);
+  }
+});
+
 test("glab reads merge requests and pipelines on the internal GitLab", () => {
   const r = run("glab mr list -R fin/ledger");
   expect(r.code).toBe(0);
