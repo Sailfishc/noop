@@ -1,11 +1,12 @@
 import { Text, View } from "nsh";
-import { colors, radius, tints } from "./theme";
+import { colors, radius, size, space } from "./theme";
 
+/** What went wrong, in danger's tint, where it went wrong (a form, a panel). Nothing for an empty text. */
 export function ErrorNote(props: { text: string; testID?: string }) {
   return (
     <If when={props.text}>
-      <View style={{ paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.control, backgroundColor: tints.danger }}>
-        <Text testID={props.testID} style={{ fontSize: 14, lineHeight: 20, color: colors.danger }}>{props.text}</Text>
+      <View style={{ paddingHorizontal: space.lg, paddingVertical: space.md, borderRadius: radius.md, backgroundColor: colors.dangerTint }}>
+        <Text testID={props.testID} style={{ fontSize: size.text.message, lineHeight: size.leading.message, color: colors.danger }}>{props.text}</Text>
       </View>
     </If>
   );

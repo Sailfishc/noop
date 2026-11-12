@@ -1,230 +1,154 @@
-// Remi's design tokens: the colors, the type, radius, spacing and control scales of app/theme.json, and the
-// finishes (shadows and gradients) the popups and the switch use. Components in app/ui read these; pages don't.
-import type { Tokens, ViewStyle } from "nsh";
-import { token } from "nsh";
-import { Easing } from "nsh";
-import { colorScheme } from "nsh";
-import finishes from "./finishes.json";
+// The design system's middle tier as app/ui's components read it: the semantic tokens generated from
+// app/design/tokens.ts (./tokens.gen.ts), the density this device draws at, and a few helpers built only of tokens
+// (hover, focus, the floating surface, the press motion). Components in app/ui read these; pages (app/team) don't:
+// they use components (AGENTS.md, "Client components"; scripts/check-ui.ts enforces it).
+import type { AnimatedValue, Theme, ViewStyle } from "nsh";
+import { colorScheme, createAnimatedValue, effect, platform, reduceMotion } from "nsh";
+import base from "../theme.json";
+import * as gen from "./tokens.gen";
 
-/** Whether the shared example UI shows its dark palette (reactive: reading it subscribes). */
+export { backdrop, colors, type ColorRole, identities, measure, motion, opacity, radius, space, stroke } from "./tokens.gen";
+const { colors } = gen;
+
+/**
+ * Touch density: a finger instead of a pointer. Decided by the device (NSH's `platform.desktop`: macOS, Windows,
+ * Linux and browsers with a mouse and a wide window), never by the window's width, and only here: pages never read
+ * the platform for their look.
+ */
+export const touch = !platform.desktop;
+
+/** The sizes this device draws with: `densities.touch` on phones and pads, `densities.pointer` on desktops. */
+export const size = touch ? gen.densities.touch : gen.densities.pointer;
+
+/** Whether the dark (or black) appearance shows (reactive: reading it subscribes). */
 export const isDark = () => colorScheme() !== "light";
 
-/**
- * An object with `dark`'s keys whose getters read `dark` or `light` by the
- * appearance shown, for the finishes below: shadows and gradients are no
- * design tokens, so they stay here while every color is the theme's.
- */
-function themed<T extends object>(dark: T, light: T): T {
-  const out = {} as T;
-  for (const key of Object.keys(dark) as (keyof T)[]) {
-    Object.defineProperty(out, key, { enumerable: true, get: () => (isDark() ? dark : light)[key] });
-  }
-  return out;
-}
-
-/** The roles of the palette. */
-export interface Palette {
-  /** The page behind the cards. */
-  background: string;
-  /** A card. */
-  surface: string;
-  /** A surface inside a card. */
-  inset: string;
-  /** A control on a card (buttons, fields, tracks). */
-  raised: string;
-  /** An input's well: below the card and the insets it sits on. */
-  field: string;
-  /** An input's edge. */
-  fieldBorder: string;
-  border: string;
-  /** Hairlines inside insets. */
-  line: string;
-  text: string;
-  muted: string;
-  faint: string;
-  /** The accent as a foreground: text, icons, lines, small marks. */
-  accent: string;
-  /** The accent as a fill (buttons, bubbles), with `onAccent` on it. */
-  accentFill: string;
-  /** Text on the accent fill. */
-  onAccent: string;
-  /** The main action's button: light on the dark page, dark on the light one. */
-  light: string;
-  /** Text on `light`. */
-  onLight: string;
-  /** The app's sidebar, beside the page. */
-  sidebar: string;
-  /** A switch's track when off. */
-  track: string;
-  /** A switch's knob when off. */
-  knob: string;
-  /** Code inside insets. */
-  code: string;
-  info: string;
-  warn: string;
-  danger: string;
-  up: string;
-  switchOn: string;
-  down: string;
-}
-
-/** An object whose getters read the theme's tokens: reads in a reactive
- * scope (JSX, a `draw`, an effect) follow the appearance and the theme. */
-function tokens<K extends string>(names: Record<K, keyof Tokens>): Record<K, string> {
-  const out = {} as Record<K, string>;
-  for (const key of Object.keys(names) as K[]) {
-    Object.defineProperty(out, key, { enumerable: true, get: () => token(names[key]) });
-  }
-  return out;
-}
-
-/**
- * The shared example UI's look: a graphite page (or a paper one in light
- * appearance), cards with an inset surface, tabular numbers and one citrus
- * accent, its colors the tokens of `theme.json`. Desktops are compact
- * (28-point controls, 13-point labels), touch screens roomier (36 to 40
- * points).
- */
-export const colors: Palette = tokens<keyof Palette>({
-  background: "background",
-  surface: "card",
-  inset: "inset",
-  raised: "raised",
-  field: "field",
-  fieldBorder: "input",
-  border: "border",
-  line: "line",
-  text: "foreground",
-  muted: "muted-foreground",
-  faint: "faint",
-  accent: "brand",
-  accentFill: "brand-fill",
-  onAccent: "on-brand",
-  light: "primary",
-  onLight: "primary-foreground",
-  sidebar: "sidebar",
-  track: "track",
-  knob: "knob",
-  code: "code",
-  info: "info",
-  warn: "warn",
-  danger: "destructive",
-  up: "up",
-  switchOn: "switch-on",
-  down: "down",
-});
-
-/** `color` at opacity `a`. */
-export function alpha(color: string, a: number) {
-  return `color-mix(in srgb, ${color} ${a * 100}%, transparent)`;
-}
-
-/** Translucent tints of the tones, for fills behind text. */
-export const tints = tokens({
-  accent: "brand-tint",
-  info: "info-tint",
-  warn: "warn-tint",
-  danger: "destructive-tint",
-  up: "up-tint",
-  down: "down-tint",
-});
-
-/** A surface's finish: a gradient over its color and its shadows. */
-export interface Finish {
-  backgroundColor?: string;
-  backgroundImage?: string;
-  boxShadow: string;
-  borderColor?: string;
-  backdropFilter?: string;
-}
-
-/**
- * Light and depth, kept quiet: one-color edges (corners join cleanly), a
- * hard 1-point drop under what stands up and a 1-point inner shade in what
- * is sunk; only floating surfaces (menus, glass) cast a soft
- * shadow. `hover` and `pressed` are a raised control's states, `fill` a
- * slider's or a meter's run of the accent.
- */
-export const finish = themed<
-  Record<"card" | "inset" | "field" | "raised" | "hover" | "pressed" | "light" | "accent" | "track" | "fill" | "knob" | "pill" | "chip" | "glass" | "menu", Finish>
->(finishes.dark, finishes.light);
-
-/**
- * Corner radii in use today (`theme.json`'s `radius-card`, `radius`, `radius-control`). New code takes a step of
- * `scale.radius` instead; these go once the components that read them move onto it.
- */
-export const radius = {
-  get card() {
-    return token("radius-card");
+/** Shadows by appearance: read them in JSX so a change of appearance is followed. */
+export const elevation = {
+  get float() {
+    return gen.elevation[isDark() ? "dark" : "light"].float;
   },
-  get inset() {
-    return token("radius");
-  },
-  get control() {
-    return token("radius-control");
+  get knob() {
+    return gen.elevation[isDark() ? "dark" : "light"].knob;
   },
 };
 
+/** Whether the platform draws a backdrop blur (Linux's native views don't: floating surfaces go opaque there). */
+const blurs = platform.os !== "linux";
 
 /**
- * The motion every control shares: quick, slightly springy. `control` and
- * `move` are gpui-kit's `spring_control` (a 180 ms response, no overshoot:
- * a mark or a fill coming and going) and `spring_move` (280 ms, a damping
- * ratio of 0.85: a thumb or an indicator traveling) as a unit mass's
- * stiffness (2π / response)² and damping 2 · ratio · 2π / response.
+ * The floating surface every menu, popover, tooltip, toast, dialog and the command palette share: glass (the float
+ * color, translucent, over a blur) where the platform draws blur and opaque where it doesn't, a hairline edge, three
+ * faint shadow layers and the floating radius.
  */
-export const motion = {
-  press: { stiffness: 520, damping: 34 },
-  settle: { stiffness: 320, damping: 30 },
-  control: { stiffness: 1218, damping: 70 },
-  move: { stiffness: 504, damping: 38 },
-  enter: { duration: 420, easing: Easing.out(Easing.cubic) },
-} as const;
+export const floatSurface = (): ViewStyle => ({
+  backgroundColor: blurs ? colors.float : colors.floatSolid,
+  backdropFilter: blurs ? gen.backdrop : undefined,
+  borderRadius: gen.radius.float,
+  borderWidth: gen.stroke.hairline,
+  borderColor: colors.hairline,
+  boxShadow: elevation.float,
+});
 
 /**
- * A pressable under the pointer (`hoverStyle`): a whisper of the text color
- * over its surface, quieter than pressed and than selected. Leave it off a
- * disabled control and off a selected one, whose own fill shows.
+ * A pressable under the pointer (`hoverStyle`): a whisper of the foreground over its surface, quieter than pressed and
+ * than selected. Leave it off a disabled control and off a selected one, whose own fill shows.
  */
-export const hovered = (): ViewStyle => ({ backgroundColor: alpha(colors.text, 0.05) });
+export const hovered = (): ViewStyle => ({ backgroundColor: colors.hover });
 
 /**
- * The keyboard focus (`focusStyle`): the edge turns the theme's muted olive
- * `ring` and a 3-point halo of it lies around the view (`offset` moves the
- * halo out from the edge).
+ * The keyboard focus (`focusStyle`): the edge turns `focus` and a halo of `focusHalo` lies around the view: on its
+ * edge (`inset`, rows that fill their column), just outside (`edge`, small controls) or clear of it (`out`, buttons).
  */
-export const focusRing = (offset = 0): ViewStyle => ({
-  borderColor: token("ring"),
+export const focusRing = (where: "inset" | "edge" | "out" = "inset"): ViewStyle => ({
+  borderColor: colors.focus,
   outlineStyle: "solid",
-  outlineWidth: 3,
-  outlineColor: isDark() ? "rgba(245,245,245,0.12)" : "rgba(17,17,17,0.10)",
-  outlineOffset: offset,
+  outlineWidth: gen.stroke.focus,
+  outlineColor: colors.focusHalo,
+  outlineOffset: where === "inset" ? 0 : where === "edge" ? gen.stroke.edge : gen.stroke.underline,
 });
 
+/** The `hitSlop` that grows a `box`-sized pressable to the density's smallest hit target (44 on touch). */
+export const slop = (box: number) => Math.max(0, Math.ceil((size.hit - box) / 2));
 
 /**
- * The scales every component draws with (`theme.json`, under `cssVars.theme`). Text sizes: `caption` 12 (secondary
- * notes, meta), `body` 13 (most text), `message` 14 (messages and inputs), `title` 16 (headings), `display` 22 (a
- * page's big title). Radii: `sm` 6 (tags, small marks), `md` 8 (buttons, inputs), `lg` 12 (cards, panels, popups).
- * Spacing is Tailwind's steps 0.5, 1, 1.5, 2, 3, 4, 6 (2, 4, 6, 8, 12, 16, 24 points) and nothing else. Controls are
- * `sm` 30 or `md` 40 tall. Read them in JSX so a theme change is followed.
+ * An animated value that springs to `target` each time it changes, natively: JS only starts each spring. A change
+ * mid-way turns it from where it is, with its velocity; with reduced motion it lands at once.
  */
-export const scale = {
-  text: {
-    get caption() { return token("text-caption"); },
-    get body() { return token("text-body"); },
-    get message() { return token("text-message"); },
-    get title() { return token("text-title"); },
-    get display() { return token("text-display"); },
-  },
-  radius: {
-    get sm() { return token("radius-sm"); },
-    get md() { return token("radius-md"); },
-    get lg() { return token("radius-lg"); },
-  },
-  space: [2, 4, 6, 8, 12, 16, 24] as const,
-  control: {
-    get sm() { return token("control-sm"); },
-    get md() { return token("control-md"); },
-  },
+export function follow(target: () => number, spring: { stiffness: number; damping: number }): AnimatedValue {
+  const v = createAnimatedValue(target());
+  let shown = target();
+  effect(() => {
+    const next = target();
+    if (next === shown) return;
+    shown = next;
+    if (reduceMotion()) v.set(next);
+    else v.spring(next, spring);
+  });
+  return v;
+}
+
+/**
+ * Moment 1 of the motion budget: pressing gives a little (`motion.press.scale`) and springs back. Spread `handlers`
+ * on the pressable and add `style` to its style. Nothing moves under reduced motion.
+ */
+export function pressMotion() {
+  const v = createAnimatedValue(1);
+  const to = (x: number) => (reduceMotion() ? v.set(x) : void v.spring(x, gen.motion.press.spring));
+  return {
+    handlers: { onPressDown: () => to(gen.motion.press.scale), onPressUp: () => to(1) },
+    style: { transform: [{ scale: v }] } satisfies ViewStyle,
+  };
+}
+
+/** A tone of text, an icon or a tag: the foreground's strengths, the attention color, or a status. */
+export type Tone = "default" | "muted" | "faint" | "attention" | "danger" | "ok" | "info";
+/**
+ * The old tone names pages still pass: `accent` (now the foreground), `warn` (now `attention`), `up` (now `ok`).
+ * @deprecated Use `Tone`; these go when the pages that pass them are next touched.
+ */
+export type OldTone = "accent" | "warn" | "up";
+
+const toneColor: Record<Tone | OldTone, () => string> = {
+  default: () => colors.fg,
+  accent: () => colors.fg,
+  muted: () => colors.fg2,
+  faint: () => colors.fg3,
+  attention: () => colors.attention,
+  warn: () => colors.attention,
+  danger: () => colors.danger,
+  ok: () => colors.ok,
+  up: () => colors.ok,
+  info: () => colors.info,
 };
+const toneTint: Record<Tone | OldTone, () => string> = {
+  default: () => colors.selected,
+  accent: () => colors.selected,
+  muted: () => colors.hover,
+  faint: () => colors.hover,
+  attention: () => colors.attentionTint,
+  warn: () => colors.attentionTint,
+  danger: () => colors.dangerTint,
+  ok: () => colors.okTint,
+  up: () => colors.okTint,
+  info: () => colors.infoTint,
+};
+
+/** A tone's color (`fg`) and its fill (`tint`) behind text of that color. Unknown names are muted. */
+export function tone(t: Tone | OldTone | (string & {}) | undefined): { fg: string; tint: string } {
+  const k = (t && t in toneColor ? t : "muted") as Tone;
+  return { fg: toneColor[k](), tint: toneTint[k]() };
+}
+
+/** An agent's identity color, picked by its name (the same name, the same color, everywhere). */
+export function identityOf(name: string): string {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)!) >>> 0;
+  return colors[gen.identities[h % gen.identities.length]];
+}
+
+/** The black appearance's theme: the dark theme with the generated black surfaces over it. */
+export function blackTheme(): Theme {
+  const t = base as unknown as Theme;
+  return { ...t, cssVars: { ...t.cssVars, dark: { ...t.cssVars.dark, ...gen.blackTokens } } } as Theme;
+}

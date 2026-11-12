@@ -146,17 +146,17 @@ export function SignIn(props: { url: string; email: string; notice: string; link
   }
 
   return (
-    <Scroll style={{ flex: 1, backgroundColor: colors.background }} keyboardShouldPersistTaps="handled">
+    <Scroll style={{ flex: 1, backgroundColor: colors.page }} keyboardShouldPersistTaps="handled">
       <View testID="team-signin" style={{ minHeight: windowSize().height, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, paddingVertical: 48 }}>
         <View style={{ width: "100%", maxWidth: 440, gap: 22 }}>
           <View style={{ alignItems: "center", gap: 10 }}>
             <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
-            <Text style={{ fontSize: 28, fontWeight: "600", color: colors.text }}>Remi</Text>
-            <Text style={{ fontSize: 15, lineHeight: 22, color: colors.muted, textAlign: "center" }}>
+            <Text style={{ fontSize: 28, fontWeight: "600", color: colors.fg }}>Remi</Text>
+            <Text style={{ fontSize: 15, lineHeight: 22, color: colors.fg2, textAlign: "center" }}>
               {mode() === "login" ? L("Sign in with a login code from a device you’re already signed in on, or a login link from your admin.", "用已登录设备上生成的登录码，或管理员发给你的登录链接登录。") : mode() === "invite" ? L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。") : L("Ask to join your team. An admin approves, then this device signs you in.", "申请加入团队。管理员通过后，这台设备会自动登录。")}
             </Text>
           </View>
-          <View style={{ gap: 16, padding: 22, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface }}>
+          <View style={{ gap: 16, padding: 22, borderRadius: 16, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised }}>
             <Choice
               testID="signin-mode"
               options={[{ value: "login", label: L("Sign in", "登录") }, { value: "invite", label: L("I have an invite", "我有邀请") }, { value: "ask", label: L("Ask to join", "申请加入") }]}
@@ -179,7 +179,7 @@ export function SignIn(props: { url: string; email: string; notice: string; link
               >
                 {(a) => (
                   <View testID="ask-waiting" style={{ gap: 12 }}>
-                    <Text style={{ fontSize: 15, lineHeight: 22, color: colors.text }}>
+                    <Text style={{ fontSize: 15, lineHeight: 22, color: colors.fg }}>
                       {status() === "rejected"
                         ? L(`An admin of ${a().team || a().server} didn’t approve this request. Ask them for an invite link, or ask again.`, `${a().team || a().server} 的管理员没有通过这个申请。可以找管理员要邀请链接，或重新申请。`)
                         : L(`Request sent to ${a().team || a().server} as ${a().email}. Waiting for an admin to approve; this device signs you in as soon as they do.`, `已用 ${a().email} 向 ${a().team || a().server} 提交申请，等管理员审批。通过后这台设备会自动登录。`)}
@@ -220,7 +220,7 @@ export function SignIn(props: { url: string; email: string; notice: string; link
               >
                 {(iv) => (
                   <>
-                    <Text style={{ fontSize: 14, color: colors.muted }}>{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Text>
+                    <Text style={{ fontSize: 14, color: colors.fg2 }}>{L(`Joining as ${iv().email}`, `以 ${iv().email} 加入`)}</Text>
                     <Field label={L("Your name", "你的名字")} value={name()} onChange={(v) => name.set(v)} placeholder={L("Wang Lei", "王磊")} testID="invite-name" autoFocus />
                     <Field label={L("Your @handle", "你的 @名")} value={handle()} onChange={(v) => handle.set(v)} onSubmit={join} placeholder="wanglei" testID="invite-handle" hint={L("How people and agents mention you: 2–32 lowercase letters, digits, - or _.", "大家和 Agent 用它 @你：2 到 32 位，小写字母开头，可含数字、- 和 _")} />
                     <Btn testID="invite-join" kind="primary" grow label={L("Join", "加入")} busy={busy()} disabled={!name().trim() || !handle().trim()} onPress={join} />

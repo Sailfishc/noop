@@ -22,14 +22,14 @@ export function Inbox(props: { team: Team; back: boolean; onBack: () => void; on
       <Scroll style={{ flex: 1 }} contentStyle={{ padding: 16, gap: 10, maxWidth: 640 }}>
         <SignupSection team={t} />
         <ProposalSection team={t} />
-        <If when={items().length || up() || t.signups().length || t.proposals().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.muted, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
+        <If when={items().length || up() || t.signups().length || t.proposals().length} else={<Text testID="inbox-empty" style={{ padding: 24, fontSize: 14.5, color: colors.fg2, textAlign: "center" }}>{L("Nothing waits for you.", "没有等你处理的事。")}</Text>}>
           <Each of={items()} key={(x) => x.id}>
             {(x) => <TaskCard team={t} task={x()} channelName={t.channels().find((c) => c.id === x().channel_id)?.name} onOpen={x().redacted ? undefined : () => props.onOpen(x().channel_id, x().thread_id)} />}
           </Each>
         </If>
         <ReminderSections team={t} onOpen={(r) => props.onOpen(r.channel_id, r.thread_id)} />
         <If when={waits().length}>
-          <Text testID="inbox-waiting" style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.faint }}>
+          <Text testID="inbox-waiting" style={{ paddingTop: 14, fontSize: 12.5, fontWeight: "600", color: colors.fg3 }}>
             {L("Waiting for outside results (the agent is woken, not you)", "等外部结果（到时叫醒 Agent，不打扰你）")}
           </Text>
           <Each of={waits()} key={(x) => x.id}>

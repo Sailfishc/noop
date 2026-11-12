@@ -2,7 +2,7 @@
 import { computed, effect, Image, type InputRef, keymap, Picker, signal, Text, untracked, View } from "nsh";
 import fs from "fs/promises";
 import { L, lang } from "../i18n";
-import { alpha, Avatar, Btn, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
+import { Avatar, Btn, colors, Dot, ErrorNote, hovered, Icon, type IconName, TextArea } from "../ui";
 import { blockedReason, dispatchFor, machineNow, isMember, mentionAt, runtimeLabel, type Agent, type Team } from "./api";
 import { agentState, COMPOSER_GAP, COMPOSER_TEXT, COMPOSER_TOOLBAR, RuntimeBadge, time } from "./ui";
 import { naturalRemind } from "./reminders";
@@ -46,12 +46,12 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
     { up: () => props.onMove(-1), down: () => props.onMove(1), tab: () => props.items[props.index] && props.onPick(props.items[props.index]), escape: props.onClose },
     { when: "always", repeat: true },
   );
-  const head = (s: string) => <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.faint, paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2 }}>{s}</Text>;
+  const head = (s: string) => <Text style={{ fontSize: 11.5, fontWeight: "600", color: colors.fg3, paddingHorizontal: 10, paddingTop: 6, paddingBottom: 2 }}>{s}</Text>;
   const firstUser = () => props.items.findIndex((c) => c.kind === "user");
   const firstOther = () => props.items.findIndex((c) => c.kind === "agent" && !c.here);
   return (
-    <View testID="mention-picker" role="menu" style={{ gap: 1, padding: 4, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, boxShadow: "0 6px 24px rgba(0,0,0,0.12)" }}>
-      <If when={props.items.length} else={<Text style={{ padding: 10, fontSize: 13, color: colors.muted }}>{L("No one by that name", "没有找到")}</Text>}>
+    <View testID="mention-picker" role="menu" style={{ gap: 1, padding: 4, borderRadius: 12, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, boxShadow: "0 6px 24px rgba(0,0,0,0.12)" }}>
+      <If when={props.items.length} else={<Text style={{ padding: 10, fontSize: 13, color: colors.fg2 }}>{L("No one by that name", "没有找到")}</Text>}>
         <Each of={props.items} key={(c) => `${c.kind}:${c.id}`}>
           {(c, i) => {
             const st = () => (c().agent ? agentState(t, c().agent!) : null);
@@ -66,19 +66,19 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
                   accessibilityState={{ selected: i() === props.index }}
                   onPress={() => props.onPick(c())}
                   hoverStyle={hovered()}
-                  style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 40, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: i() === props.index ? alpha(colors.text, 0.07) : "transparent", opacity: st()?.blocked ? 0.6 : 1 }}
+                  style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 40, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: i() === props.index ? colors.selected : "transparent", opacity: st()?.blocked ? 0.6 : 1 }}
                 >
                   <Avatar name={c().name} agent={c().kind === "agent"} size={26} />
                   <View style={{ flex: 1, gap: 1 }}>
-                    <Text style={{ fontSize: 14, color: colors.text, numberOfLines: 1 }}>{c().name} <Text style={{ color: colors.muted }}>@{c().handle}</Text></Text>
-                    <If when={c().note}><Text style={{ fontSize: 12, color: colors.faint, numberOfLines: 1 }}>{c().note}</Text></If>
+                    <Text style={{ fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{c().name} <Text style={{ color: colors.fg2 }}>@{c().handle}</Text></Text>
+                    <If when={c().note}><Text style={{ fontSize: 12, color: colors.fg3, numberOfLines: 1 }}>{c().note}</Text></If>
                   </View>
                   <If when={c().agent}>
                     {(a) => (
                       <>
                         <RuntimeBadge runtime={a().runtime} />
                         <Dot tone={st()!.tone} />
-                        <Text style={{ maxWidth: 160, fontSize: 12, color: st()!.blocked ? colors.danger : colors.muted, numberOfLines: 1 }}>{st()!.label}</Text>
+                        <Text style={{ maxWidth: 160, fontSize: 12, color: st()!.blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>{st()!.label}</Text>
                       </>
                     )}
                   </If>
@@ -88,7 +88,7 @@ function MentionPicker(props: { team: Team; items: Candidate[]; index: number; o
           }}
         </Each>
       </If>
-      <Text style={{ fontSize: 11.5, color: colors.faint, paddingHorizontal: 10, paddingVertical: 4 }}>{L("↑↓ to choose · Enter to insert · Esc to close", "↑↓ 选择 · 回车插入 · Esc 关闭")}</Text>
+      <Text style={{ fontSize: 11.5, color: colors.fg3, paddingHorizontal: 10, paddingVertical: 4 }}>{L("↑↓ to choose · Enter to insert · Esc to close", "↑↓ 选择 · 回车插入 · Esc 关闭")}</Text>
     </View>
   );
 }
@@ -264,8 +264,8 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
   }
   const tool = (testID: string, icon: IconName | null, label: string, onPress: () => void, glyph?: string, glyphStyle?: Record<string, unknown>) => (
     <View role="button" testID={testID} accessibilityLabel={label} tooltip={<Text>{label}</Text>} onPress={onPress} hoverStyle={hovered()} style={{ width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" }}>
-      <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.muted, ...glyphStyle }}>{glyph}</Text>}>
-        <Icon name={icon!} size={16} tint={colors.muted} />
+      <If when={icon} else={<Text style={{ fontSize: 14, fontWeight: "600", color: colors.fg2, ...glyphStyle }}>{glyph}</Text>}>
+        <Icon name={icon!} size={16} tint={colors.fg2} />
       </If>
     </View>
   );
@@ -278,15 +278,15 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
     >
       <ErrorNote text={error()} testID={`${props.testID}-error`} />
       <If when={sent() && !text()}>
-        <Text testID={`${props.testID}-sent`} style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.muted }}>{sent()}</Text>
+        <Text testID={`${props.testID}-sent`} style={{ paddingHorizontal: 4, fontSize: 12.5, color: colors.fg2 }}>{sent()}</Text>
       </If>
       <If when={preview()}>
-        {(p) => <Text testID={`${props.testID}-preview`} style={{ paddingHorizontal: 4, fontSize: 12, lineHeight: 17, color: p().warn ? colors.warn : colors.muted }}>{p().text}</Text>}
+        {(p) => <Text testID={`${props.testID}-preview`} style={{ paddingHorizontal: 4, fontSize: 12, lineHeight: 17, color: p().warn ? colors.attention : colors.fg2 }}>{p().text}</Text>}
       </If>
       <If when={open()}>
         <MentionPicker team={t} items={items()} index={pick()} onMove={(d) => pick.set(Math.max(0, Math.min(untracked(items).length - 1, untracked(pick) + d)))} onPick={insert} onClose={() => dismissed.set(untracked(text))} />
       </If>
-      <View testID={`${props.testID}-box`} style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.accent : colors.fieldBorder, backgroundColor: colors.field }}>
+      <View testID={`${props.testID}-box`} style={{ borderRadius: 12, borderWidth: 1, borderColor: dropping() ? colors.fg : colors.edge, backgroundColor: colors.field }}>
         <TextArea
           bare
           testID={props.testID}
@@ -307,16 +307,16 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
           <View testID={`${props.testID}-files`} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, paddingHorizontal: 10, paddingBottom: 6 }}>
             <Each of={files()} key={(f) => f.id}>
               {(f) => (
-                <View testID={`${props.testID}-file`} style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 40, paddingLeft: 4, paddingRight: 2, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, maxWidth: 240 }}>
-                  <If when={f().preview} else={<View style={{ width: 32, height: 32, alignItems: "center", justifyContent: "center" }}><Icon name="file" size={16} tint={colors.muted} /></View>}>
+                <View testID={`${props.testID}-file`} style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 40, paddingLeft: 4, paddingRight: 2, borderRadius: 8, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, maxWidth: 240 }}>
+                  <If when={f().preview} else={<View style={{ width: 32, height: 32, alignItems: "center", justifyContent: "center" }}><Icon name="file" size={16} tint={colors.fg2} /></View>}>
                     <Image src={f().preview!} accessibilityLabel={f().name} style={{ width: 32, height: 32, borderRadius: 5, objectFit: "cover" }} />
                   </If>
                   <View style={{ flexShrink: 1 }}>
-                    <Text style={{ fontSize: 12.5, color: colors.text, numberOfLines: 1 }}>{f().name}</Text>
-                    <Text style={{ fontSize: 11, color: colors.faint }}>{fileSize(f().size)}</Text>
+                    <Text style={{ fontSize: 12.5, color: colors.fg, numberOfLines: 1 }}>{f().name}</Text>
+                    <Text style={{ fontSize: 11, color: colors.fg3 }}>{fileSize(f().size)}</Text>
                   </View>
                   <View role="button" testID={`${props.testID}-unattach`} accessibilityLabel={L(`Remove ${f().name}`, `移除 ${f().name}`)} onPress={() => unattach(f().id)} hoverStyle={hovered()} style={{ width: 22, height: 22, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-                    <Icon name="close" size={12} tint={colors.faint} />
+                    <Icon name="close" size={12} tint={colors.fg3} />
                   </View>
                 </View>
               )}
@@ -331,10 +331,10 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
             <View role="checkbox" testID={`${props.testID}-as-task`} accessibilityState={{ checked: asTask() }} accessibilityLabel={L("As task", "作为任务")}
               onPress={() => asTask.update((v) => !v)} hoverStyle={hovered()}
               style={{ flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingHorizontal: 8, marginRight: 4, borderRadius: 7 }}>
-              <View style={{ width: 15, height: 15, borderRadius: 4, borderWidth: asTask() ? 0 : 1.5, borderColor: colors.fieldBorder, backgroundColor: asTask() ? colors.accentFill : "transparent", alignItems: "center", justifyContent: "center" }}>
-                <If when={asTask()}><Icon name="check" size={11} tint={colors.onAccent} /></If>
+              <View style={{ width: 15, height: 15, borderRadius: 4, borderWidth: asTask() ? 0 : 1.5, borderColor: colors.edge, backgroundColor: asTask() ? colors.primary : "transparent", alignItems: "center", justifyContent: "center" }}>
+                <If when={asTask()}><Icon name="check" size={11} tint={colors.onPrimary} /></If>
               </View>
-              <Text style={{ fontSize: 12.5, color: colors.muted }}>{L("As task", "作为任务")}</Text>
+              <Text style={{ fontSize: 12.5, color: colors.fg2 }}>{L("As task", "作为任务")}</Text>
             </View>
           </If>
           <Btn small testID={`${props.testID}-send`} kind="primary" label={L("Send", "发送")} busy={busy()} disabled={!text().trim() && !files().length} onPress={send} />
