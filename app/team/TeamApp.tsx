@@ -319,10 +319,7 @@ function Sidebar(props: { team: Team; page: Page; inset: boolean; onOpen: (p: Pa
                   minWidth={220}
                   maxHeight={360}
                   trigger={
-                    <View role="button" testID="side-chat-new" accessibilityLabel={L("Chat with another agent", "和其他 Agent 私聊")} tooltip={<Text>{L("Chat with another agent", "和其他 Agent 私聊")}</Text>}
-                      hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-                      <Icon name="plus" size={14} tint={colors.muted} />
-                    </View>
+                    <IconBtn testID="side-chat-new" icon="plus" label={L("Chat with another agent", "和其他 Agent 私聊")} size="sm" tone="muted" onPress={() => {}} />
                   }
                 >
                   <MenuHeading text={L("Team agents", "团队的 Agent")} />
