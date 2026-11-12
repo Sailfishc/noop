@@ -85,7 +85,7 @@ export function ReminderTag(props: { team: Team; r: Reminder; onError?: (e: stri
 }
 
 /** The later times a message's menu (and a reminder that went off) offers. */
-const LATER: { when: string; label: () => string }[] = [
+export const LATER: { when: string; label: () => string }[] = [
   { when: "20m", label: () => L("In 20 minutes", "20 分钟后") },
   { when: "1h", label: () => L("In 1 hour", "1 小时后") },
   { when: "3h", label: () => L("In 3 hours", "3 小时后") },

@@ -221,8 +221,12 @@ describe("team channels", () => {
       },
     });
     await app.waitFor("id:team-composer");
+    // ⌘K: the palette; what's typed there is searched as its last group
     await app.press("id:open-search");
-    await app.type("id:search-input", "慢查询");
+    await app.waitFor("id:palette");
+    await app.type("id:palette-command", "慢查询");
+    await app.waitFor("text:Search messages for “慢查询”");
+    await app.press("text:Search messages for “慢查询”");
     await app.waitFor("id:search-msg-msg_1");
     expect(asked.at(-1)).toBe("慢查询");
     expect(app.shows("id:search-task-T-0001")).toBe(true);
@@ -886,6 +890,9 @@ describe("channel v2", () => {
     const out = { ...mac, runtime_info: [{ name: "codex", version: "0.46.0", installed: true, logged_in: false }] };
     const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: { ...server(newLog()), [`GET ${URL}/api/v1/machines`]: { body: { machines: [out] } } } });
     await app.waitFor("id:side-agent-acha-state");
+    expect(app.shows("text:/Stuck/")).toBe(true); // the sidebar has the word; the members panel says why
+    await app.press("id:channel-members");
+    await app.waitFor("id:member-acha-state");
     expect(app.shows("text:/Codex isn’t logged in on 张伟的 Mac/")).toBe(true);
   });
 
@@ -1753,5 +1760,78 @@ describe("private channels", () => {
     await app.press("id:task-T-0008-handoff-ho_7-accept");
     await app.waitUntil(() => log.acts.length === 1);
     expect(log.acts[0]).toBe("T-0008 handoff");
+  });
+});
+
+describe("desktop shell", () => {
+  // two tasks wait for 张伟 (u_1): a decision, then an acceptance
+  const two = () => [
+    task({ id: "T-0001", created_by: "u_1", state: "needs_decision", tracked: true, title: "退款接口重构", updated: T0 + 2,
+      decision: { question: "兼容旧版签名吗？", options: ["兼容 v1，半年后下线", "只支持 v2"], recommendation: "兼容 v1" } }),
+    task({ id: "T-0002", thread_id: "msg_t2", created_by: "u_1", state: "review", tracked: true, title: "订单导出加时区", updated: T0 + 1 }),
+  ];
+
+  test("⌘K opens the palette; G I and G T go to 待你决定 and 我的任务; C starts a dispatch", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog()) });
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("mod+k");
+    await app.waitFor("id:palette");
+    await app.type("id:palette-command", "New channel");
+    await app.press("text:New channel");
+    await app.waitFor("id:channel-name");
+    await app.keyboard.press("g");
+    await app.keyboard.press("i");
+    await app.waitFor("id:inbox-empty");
+    await app.keyboard.press("g");
+    await app.keyboard.press("t");
+    await app.waitFor("text:Tasks");
+    // 派任务: the palette at its dispatch commands; in a channel it writes @acha into the box
+    await app.press("id:channel-pay");
+    await app.waitFor("id:team-composer");
+    await app.keyboard.press("c");
+    await app.waitFor("text:Dispatch to @acha");
+    await app.press("text:Dispatch to @acha");
+    await app.waitUntil(() => app.value("id:team-composer") === "@acha ");
+  });
+
+  test("待你决定 is a triage desk: the first one picked, J and K move, acting picks the next, H reminds me later", async () => {
+    const log = newLog();
+    const made: any[] = [];
+    const app = await open("./App.tsx", {
+      storage: SESSION, width: 1200, height: 800,
+      network: server(log, { [`POST ${URL}/api/v1/reminders`]: (r: { body?: string | null }) => { const b = JSON.parse(r.body!); made.push(b); return { body: { id: "rem_9", by: "u_1", target: { kind: "user", id: "u_1" }, channel_id: "c_1", thread_id: null, message_id: b.message_id, text: "", due: Date.now() + 3600_000, repeat: "", created: Date.now(), fired: null, seen: null, done: false } }; } }, two()),
+    });
+    await app.waitFor("id:open-inbox-unread");
+    await app.press("id:open-inbox");
+    await app.waitFor("id:triage-T-0001");
+    expect(app.shows("id:triage-detail")).toBe(true);
+    expect(app.shows("id:task-T-0001-ask")).toBe(true); // the decision: options first, then 回复…
+    expect(app.shows("id:task-T-0001-ask-reply")).toBe(true);
+    await app.keyboard.press("j");
+    await app.waitFor("id:task-T-0002-review");
+    await app.keyboard.press("k");
+    await app.waitFor("id:task-T-0001-ask");
+    await app.press("id:task-T-0001-option-0");
+    await app.waitFor("id:task-T-0002-review"); // decided: the next one is up
+    expect(log.acts).toEqual(["T-0001 decide 兼容 v1，半年后下线"]);
+    await app.keyboard.press("h");
+    await app.waitUntil(() => made.length === 1);
+    expect(made[0]).toEqual({ message_id: "msg_t2", when: "1h" });
+    await app.waitFor("id:inbox-empty"); // put off until the reminder goes off
+  });
+
+  test("an agent's state is one of five words; only 等你 and 卡住 are colored", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, network: server(newLog(), {}, [two()[0]].map((x) => ({ ...x, agent_id: "a_1" }))) });
+    await app.waitFor("id:side-agent-acha-state");
+    await app.waitFor("text:Codex · Waiting on you");
+  });
+
+  test("a channel's right click (a held finger on phones): the same commands as the palette", async () => {
+    const app = await open("./App.tsx", { storage: SESSION, width: 1200, height: 800, platform: "macos", network: server(newLog()) });
+    await app.waitFor("id:channel-pay");
+    await app.rightClick("id:channel-pay");
+    await app.waitFor("text:Dispatch to @acha");
+    await app.press("id:ctx-dispatch-acha");
+    await app.waitUntil(() => app.value("id:team-composer") === "@acha ");
   });
 });

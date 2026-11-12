@@ -22,20 +22,21 @@ export function statusOf(state: TaskState | string): { status: Status; needs: Ne
   return { status: "in_progress", needs: "" };
 }
 
-export type Tone = "accent" | "warn" | "danger" | "up" | "muted";
+export type { Tone } from "../ui";
+import type { Tone } from "../ui";
 
 export const STATUS: Record<Status, { label: () => string; tone: Tone }> = {
   todo: { label: () => L("To do", "待办"), tone: "muted" },
-  in_progress: { label: () => L("In progress", "进行中"), tone: "accent" },
-  in_review: { label: () => L("In review", "待验收"), tone: "accent" },
-  done: { label: () => L("Done", "完成"), tone: "up" },
+  in_progress: { label: () => L("In progress", "进行中"), tone: "default" },
+  in_review: { label: () => L("In review", "待验收"), tone: "default" },
+  done: { label: () => L("Done", "完成"), tone: "ok" },
   closed: { label: () => L("Closed", "关闭"), tone: "muted" },
 };
 
 /** The "needs you" mark: what a person has to do. */
 export const NEEDS: Record<Exclude<Needs, "">, { label: () => string; tone: Tone }> = {
-  confirm: { label: () => L("Needs its owner’s OK", "等主人确认"), tone: "warn" },
-  decide: { label: () => L("Needs a decision", "等你决定"), tone: "warn" },
+  confirm: { label: () => L("Needs its owner’s OK", "等主人确认"), tone: "attention" },
+  decide: { label: () => L("Needs a decision", "等你决定"), tone: "attention" },
   unblock: { label: () => L("Blocked", "被阻塞"), tone: "danger" },
   retry: { label: () => L("Run failed", "执行失败"), tone: "danger" },
 };

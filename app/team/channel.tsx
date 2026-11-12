@@ -2,10 +2,10 @@
 import { effect, List, Scroll, signal, Text, untracked, View } from "nsh";
 import { Input } from "nsh/base";
 import { L } from "../i18n";
-import { Avatar, Btn, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
+import { Avatar, Btn, StateMark, colors, Dot, ErrorNote, Field, hovered, Icon, Noted, radius, Spinner, Tabs, Tag, TextArea, Toggle, Txt } from "../ui";
 import { agentHost, errorOf, machineNow, isMember, mayBringAgent, repoLabel, type Agent, type Member, type Message, type Task, type Team } from "./api";
 import { LayoutSwitch, rememberedLayout, TaskBoard, trackedTasks } from "./tasks";
-import { agentState, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
+import { agentState, stateLine, authorOf, failed, Header, RuntimeBadge, time, unreachable } from "./ui";
 import { RepoPicker } from "./taskfacts";
 import { ChannelTriggers } from "./duties";
 import { Composer } from "./composer";
@@ -405,7 +405,7 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
               <Avatar name={u().name} size={28} />
               <Text style={{ flex: 1, fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{u().name} <Text style={{ color: colors.fg2 }}>@{u().handle}</Text></Text>
               <If when={u().id === t.me()?.id}><Tag label={L("you", "你")} /></If>
-              <If when={u().role === "admin"}><Tag label={L("admin", "管理员")} tone="accent" /></If>
+              <If when={u().role === "admin"}><Tag label={L("admin", "管理员")} tone="default" /></If>
               <If when={u().id !== t.me()?.id}>{removeBtn({ kind: "user", id: u().id }, u().handle)}</If>
             </View>
           )}
@@ -428,12 +428,8 @@ export function MembersPanel(props: { team: Team; channelId: string; back?: bool
                             <Text style={{ fontSize: 14, color: colors.fg, numberOfLines: 1 }}>{a().name} <Text style={{ color: colors.fg2 }}>@{a().handle}</Text></Text>
                             <RuntimeBadge runtime={a().runtime} />
                           </View>
-                          <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-                            <Dot tone={st().tone} />
-                            <Text testID={`member-${a().handle}-state`} style={{ flex: 1, fontSize: 12, color: st().blocked ? colors.danger : colors.fg2, numberOfLines: 1 }}>
-                              {st().blocked ? st().label : [machineNow(t, a())?.name, st().label].filter(Boolean).join(" · ")}
-                            </Text>
-                          </View>
+                          <StateMark testID={`member-${a().handle}-state`} state={st().state}
+                            text={st().blocked ? stateLine(st()) : [machineNow(t, a())?.name, st().word].filter(Boolean).join(" · ")} />
                         </View>
                         {removeBtn({ kind: "agent", id: a().id }, a().handle)}
                       </View>

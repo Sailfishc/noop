@@ -7,13 +7,15 @@ import { channelLabel, type Message, type Task, type Team } from "./api";
 import { STATUS, statusOf } from "./status";
 import { authorOf, Header, time } from "./ui";
 
-export function SearchPage(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void }) {
+export function SearchPage(props: { team: Team; back: boolean; onBack: () => void; onOpen: (channelId: string, threadId: string | null) => void; query?: string }) {
   const t = props.team;
   const q = signal("");
   const busy = signal(false);
   const found = signal<{ messages: Message[]; tasks: Task[] } | null>(null);
   let timer: ReturnType<typeof setTimeout> | undefined, asked = 0;
   cleanup(() => clearTimeout(timer));
+  // from the palette: what was typed there is the first search
+  queueMicrotask(() => { if (props.query?.trim()) look(props.query); });
   function look(v: string) {
     q.set(v);
     clearTimeout(timer);

@@ -103,39 +103,27 @@ export function pressMotion() {
 
 /** A tone of text, an icon or a tag: the foreground's strengths, the attention color, or a status. */
 export type Tone = "default" | "muted" | "faint" | "attention" | "danger" | "ok" | "info";
-/**
- * The old tone names pages still pass: `accent` (now the foreground), `warn` (now `attention`), `up` (now `ok`).
- * @deprecated Use `Tone`; these go when the pages that pass them are next touched.
- */
-export type OldTone = "accent" | "warn" | "up";
-
-const toneColor: Record<Tone | OldTone, () => string> = {
+const toneColor: Record<Tone, () => string> = {
   default: () => colors.fg,
-  accent: () => colors.fg,
   muted: () => colors.fg2,
   faint: () => colors.fg3,
   attention: () => colors.attention,
-  warn: () => colors.attention,
   danger: () => colors.danger,
   ok: () => colors.ok,
-  up: () => colors.ok,
   info: () => colors.info,
 };
-const toneTint: Record<Tone | OldTone, () => string> = {
+const toneTint: Record<Tone, () => string> = {
   default: () => colors.selected,
-  accent: () => colors.selected,
   muted: () => colors.hover,
   faint: () => colors.hover,
   attention: () => colors.attentionTint,
-  warn: () => colors.attentionTint,
   danger: () => colors.dangerTint,
   ok: () => colors.okTint,
-  up: () => colors.okTint,
   info: () => colors.infoTint,
 };
 
 /** A tone's color (`fg`) and its fill (`tint`) behind text of that color. Unknown names are muted. */
-export function tone(t: Tone | OldTone | (string & {}) | undefined): { fg: string; tint: string } {
+export function tone(t: Tone | undefined): { fg: string; tint: string } {
   const k = (t && t in toneColor ? t : "muted") as Tone;
   return { fg: toneColor[k](), tint: toneTint[k]() };
 }

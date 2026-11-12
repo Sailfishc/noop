@@ -73,7 +73,7 @@ export function TaskFacts(props: { team: Team; task: Task }) {
         {fact(calls().mine ? L("Asked you", "找你") : L("Asked people", "找人"), <>
           <Txt testID={`task-${task().id}-calls`}>{L(`${calls().total} time${calls().total === 1 ? "" : "s"}${calls().moments ? `: ${calls().moments}` : ""}`, `${calls().total} 次${calls().moments ? `：${calls().moments}` : ""}`)}</Txt>
           <If when={calls().outside}>
-            <Txt tone="warn" weight="semibold" testID={`task-${task().id}-calls-outside`}>{L(`${calls().outside} outside align, decide, accept`, `${calls().outside} 次在对齐、拍板、验收之外`)}</Txt>
+            <Txt weight="semibold" testID={`task-${task().id}-calls-outside`}>{L(`${calls().outside} outside align, decide, accept`, `${calls().outside} 次在对齐、拍板、验收之外`)}</Txt>
           </If>
         </>)}
       </If>

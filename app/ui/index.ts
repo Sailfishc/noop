@@ -6,7 +6,7 @@
 // What pages may still read of the tokens is listed here and nothing more: `colors`, `radius`, `hovered` and `tone`
 // are the old pages' debt (they still draw some things themselves), `blackTheme` the appearance setting,
 // `scrollbarTheme` the app's root. New page code uses components.
-export { blackTheme, colors, hovered, radius, tone, type OldTone, type Tone } from "./theme";
+export { blackTheme, colors, hovered, radius, tone, type Tone } from "./theme";
 export { scrollbarTheme } from "./scrollbar-theme";
 export { AppFrame, titleBarHeight } from "./frame";
 export { Icon, type IconName } from "./icons";
@@ -28,8 +28,12 @@ export { PickCard } from "./pick-card";
 export { confirm, Modal } from "./dialog";
 export { toast, Toaster } from "./toast";
 export { Dropdown } from "./select";
-export { MenuHeading, MenuLine, MenuRow, PopMenu } from "./menu";
-export { ListRow } from "./list-row";
+export { MenuHeading, MenuLine, MenuRow, PopMenu, RowMenu } from "./menu";
+export { CommandPalette, Keys, type PaletteItem } from "./palette";
+export { AskCard } from "./ask-card";
+export { StateDot, StateMark, type AgentStateKind } from "./agent-state";
+export { ListHeading, ListRow } from "./list-row";
+export { Split } from "./split";
 export { AccountRow } from "./account-row";
 export { Tabs } from "./tabs";
 export { Empty } from "./empty";

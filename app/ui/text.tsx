@@ -1,10 +1,10 @@
 import { Text, type JSX } from "nsh";
-import { size, tone, type OldTone, type Tone } from "./theme";
+import { size, tone, type Tone } from "./theme";
 
 /** The five steps of the type scale, by what the text is. */
 export type TextVariant = "caption" | "body" | "message" | "title" | "display";
 /** The text's color, by role. */
-export type TextTone = Tone | OldTone;
+export type TextTone = Tone;
 
 const weights = { regular: "400", medium: "500", semibold: "600", bold: "700" } as const;
 

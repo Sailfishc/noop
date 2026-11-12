@@ -13,18 +13,18 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
   const taker = t.users().find((u) => u.id === takerOf(task));
   const isMe = (id?: string) => !!me && id === me.id;
   const by = (id: string | undefined, name: string | undefined, mine: [string, string], other: (n: string) => [string, string], tone: Tone) =>
-    isMe(id) ? { label: L(...mine), mine: true, tone } : { label: L(...other(name ?? "?")), mine: false, tone };
+    isMe(id) ? { label: L(...mine), mine: true, tone } : { label: L(...other(name ?? "?")), mine: false, tone: "muted" as Tone };
   // its computer is gone and another can take it: the agent's owner says go on there, or wait
-  if (task.engine?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: switch runtimes?", "等你决定换不换引擎"], (n) => [`Waits for ${n}: switch runtimes?`, `等 ${n} 决定换不换引擎`], "warn");
-  if (task.move?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: move computers?", "等你决定换不换电脑"], (n) => [`Waits for ${n}: move computers?`, `等 ${n} 决定换不换电脑`], "warn");
+  if (task.engine?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: switch runtimes?", "等你决定换不换引擎"], (n) => [`Waits for ${n}: switch runtimes?`, `等 ${n} 决定换不换引擎`], "attention");
+  if (task.move?.state === "proposed") return by(agent?.owner_id, owner?.name, ["Waits for you: move computers?", "等你决定换不换电脑"], (n) => [`Waits for ${n}: move computers?`, `等 ${n} 决定换不换电脑`], "attention");
   switch (task.state) {
     case "pending":
-      return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "warn");
+      return by(agent?.owner_id, owner?.name, ["Waits for your OK", "等你确认"], (n) => [`Waits for ${n}’s OK`, `等 ${n} 确认`], "attention");
     case "needs_decision":
-      if (task.decision?.kind === "align") return by(takerOf(task), taker?.name, ["Waits for you to align", "等你对齐"], (n) => [`Waits for ${n} to align`, `等 ${n} 对齐`], "warn");
-      return by(takerOf(task), taker?.name, ["Waits for your decision", "等你决定"], (n) => [`Waits for ${n} to decide`, `等 ${n} 决定`], "warn");
+      if (task.decision?.kind === "align") return by(takerOf(task), taker?.name, ["Waits for you to align", "等你对齐"], (n) => [`Waits for ${n} to align`, `等 ${n} 对齐`], "attention");
+      return by(takerOf(task), taker?.name, ["Waits for your decision", "等你决定"], (n) => [`Waits for ${n} to decide`, `等 ${n} 决定`], "attention");
     case "review":
-      return by(takerOf(task), taker?.name, ["Waits for your acceptance", "等你验收"], (n) => [`Waits for ${n} to accept`, `等 ${n} 验收`], "accent");
+      return by(takerOf(task), taker?.name, ["Waits for your acceptance", "等你验收"], (n) => [`Waits for ${n} to accept`, `等 ${n} 验收`], "attention");
     case "blocked":
     case "failed": {
       const mine = isMe(task.created_by) || isMe(agent?.owner_id);
@@ -33,7 +33,7 @@ export function waitsOn(t: Team, task: Task): { label: string; mine: boolean; to
     case "waiting":
       // a day waiting for its runtime's quota: its people are told once (the server puts it in their inbox)
       if (task.wait?.how === "quota" && task.wait.stale) {
-        return { label: L("Quota out for a day", "等额度超过一天"), mine: isMe(task.created_by) || isMe(agent?.owner_id), tone: "warn" };
+        return { label: L("Quota out for a day", "等额度超过一天"), mine: isMe(task.created_by) || isMe(agent?.owner_id), tone: isMe(task.created_by) || isMe(agent?.owner_id) ? "attention" : "muted" };
       }
   }
   return null;

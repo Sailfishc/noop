@@ -219,7 +219,7 @@ function DutyCard(props: { team: Team; group: Group; run: Run }) {
           <If when={history()!.length} else={<Txt variant="caption" tone="faint">{L("None", "没有")}</Txt>}>
             <Each of={history()!} key={(r) => `${r.trigger_id}-${r.at}-${r.outcome}`}>
               {(r) => (
-                <Txt variant="caption" tone={r().outcome === "failed" ? "warn" : "muted"} lines={1}>
+                <Txt variant="caption" tone={r().outcome === "failed" ? "danger" : "muted"} lines={1}>
                   {`${time(r().at)} · ${OUTCOME[r().outcome]?.() ?? r().outcome}${r().note ? ` · ${r().note}` : ""}${r().task_id ? ` · ${r().task_id}` : ""}`}
                 </Txt>
               )}
@@ -274,14 +274,14 @@ function TriggerRow(props: { team: Team; trigger: Trigger; grouped: boolean; run
       <Noted
         testID={`trigger-limits-${x().id}`}
         note={x().max_per_day ? limits() : undefined}
-        label={<Txt variant="caption" tone={!x().confirmed_by || x().check_waits ? "warn" : "faint"}>
+        label={<Txt variant="caption" tone={!x().confirmed_by || x().check_waits ? "attention" : "faint"}>
           {!x().confirmed_by ? L(`Waits for @${owner()} to confirm once`, `等 @${owner()} 确认一次`)
             : x().check_waits ? L(`Its check command changed: waits for @${owner()} to confirm`, `检查命令改了，等 @${owner()} 确认`)
             : !x().enabled ? L("Paused", "已暂停") : x().fires ? L(`Fired ${x().fires} times, last ${time(x().fired!)}`, `触发过 ${x().fires} 次，上次 ${time(x().fired!)}`) : L("Not fired yet", "还没触发过")}
         </Txt>}
       />
       <If when={x().skipped_run}>
-        <Txt variant="caption" tone="warn" testID={`trigger-stuck-${x().id}`}>
+        <Txt variant="caption" tone="danger" testID={`trigger-stuck-${x().id}`}>
           {x().skip_reason === "limit"
             ? L(`Skipped ${x().skipped_run} times in a row: it reached today’s limit`, `已连续跳过 ${x().skipped_run} 次：今天的次数到上限了`)
             : L(`Skipped ${x().skipped_run} times in a row: ${x().last_task ?? "its last task"} is still queued or running`, `已连续跳过 ${x().skipped_run} 次，因为 ${x().last_task ?? "上一个任务"} 还在排队或运行`)}
