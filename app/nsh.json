@@ -1,8 +1,8 @@
 {
   "name": "Remi",
   "id": "dev.noop.app",
-  "version": "0.1.1",
-  "build": 2,
+  "version": "0.1.2",
+  "build": 3,
   "appearance": "system",
   "schemes": ["remi"],
   "macos": {
