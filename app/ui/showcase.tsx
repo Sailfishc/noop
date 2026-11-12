@@ -10,6 +10,7 @@ import { Count } from "./count";
 import { Dot } from "./dot";
 import { Empty } from "./empty";
 import { ListRow } from "./list-row";
+import { AccountRow } from "./account-row";
 import { Tabs } from "./tabs";
 import { ErrorNote } from "./error-note";
 import { Field, TextArea } from "./field";
@@ -199,13 +200,14 @@ export function Showcase() {
         </Row>
       </Section>
 
-      <Section title="Tabs, ListRow (plain, subtitle, selected), Card">
+      <Section title="Tabs, ListRow (plain, subtitle, selected), AccountRow, Card">
         <View style={{ flexDirection: "row", gap: 16, alignItems: "flex-start" }}>
           <View style={{ flex: 1, gap: 8 }}>
             <Tabs testID="showcase-tab" value={tab()} onChange={tab.set} tabs={[{ value: "chat", label: "Conversation" }, { value: "tasks", label: "Tasks", count: 4 }]} />
             <ListRow title="A row" left={<Icon name="chat" size={16} tint={colors.muted} />} right={<Tag label="3" />} onPress={() => {}} />
             <ListRow title="With a subtitle" subtitle="Codex · Ready" left={<Avatar name="acha" agent size={28} />} right={<Dot tone="up" />} onPress={() => {}} />
             <ListRow title="Selected" selected left={<Icon name="chat" size={16} tint={colors.muted} />} onPress={() => {}} />
+            <AccountRow name="张伟" status="Live" live />
           </View>
           <View style={{ flex: 1 }}>
             <Card>

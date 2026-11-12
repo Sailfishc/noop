@@ -125,3 +125,90 @@ func TestReminders(t *testing.T) {
 	e.h.Tick()
 	check(t, "its own reminder brings the task back", e.task(id)["state"] == "queued", resp{raw: []byte(e.task(id)["state"].(string))})
 }
+
+func TestIntervalRepeats(t *testing.T) {
+	now := time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
+	for in, want := range map[string]string{"every 10m": "10m", "每 10 分钟": "10m", "每10分钟": "10m", "每隔 30 分钟": "30m", "every 2h": "2h",
+		"每 2 小时": "2h", "120m": "2h", "every 90 minutes": "90m"} {
+		got, ok, bad := normRepeat(in)
+		check(t, "normRepeat "+in, ok && bad == "" && got == want, resp{raw: []byte(got + " " + bad)})
+	}
+	_, ok, bad := normRepeat("every 5m")
+	check(t, "under 10 minutes is refused", ok && bad != "")
+	_, ok, _ = normRepeat("看一下")
+	check(t, "not a repeat", !ok)
+
+	due, repeat, who, what, problem := parseRemind("every 10m @acha 看一下 MR 的进展", now)
+	check(t, "/remind every 10m: first one in 10 minutes", problem == "" && repeat == "10m" && who == "acha" && what == "看一下 MR 的进展" &&
+		due.Format("15:04") == "10:10")
+	due, repeat, _, what, _ = parseRemind("每 2 小时 汇报", now)
+	check(t, "每 2 小时", repeat == "2h" && what == "汇报" && due.Format("15:04") == "12:00")
+	due, repeat, _, _, _ = parseRemind("每30分钟 14:00 看", now)
+	check(t, "an interval from a time", repeat == "30m" && due.Format("15:04") == "14:00")
+	_, repeat, _, what, _ = parseRemind("10m 看一下", now)
+	check(t, "10m alone is still a time", repeat == "" && what == "看一下")
+	_, _, _, _, problem = parseRemind("every 1m 刷", now)
+	check(t, "every minute is refused", problem != "")
+	check(t, "next: missed ones are not made up", nextDue(now.Add(-35*time.Minute), "10m", now).Format("15:04") == "10:05")
+	check(t, "next: on time", nextDue(now, "10m", now).Format("15:04") == "10:10")
+}
+
+func TestIntervalReminders(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+	list := func(s string) []any { return e.do("GET", "/api/v1/reminders", s, nil).body["reminders"].([]any) }
+	msgs := func() []any {
+		return e.do("GET", "/api/v1/channels/"+e.cid+"/messages", e.wl.session, nil).body["messages"].([]any)
+	}
+
+	// a person: every 10 minutes, have @acha report. One thread, and no new @ while the agent is still on it.
+	r := e.do("POST", "/api/v1/reminders", e.wl.session, map[string]any{"command": "每 10 分钟 @acha 看一下 MR 的进展", "channel_id": e.cid})
+	check(t, "set", r.status == 200 && r.body["repeat"] == "10m" && r.body["until"] == nil, r)
+	rid := r.body["id"].(string)
+	e.advance(10*time.Minute + time.Second)
+	e.h.Tick()
+	rem, _ := e.h.reminder(rid)
+	check(t, "it fired, opened a thread and stays on it", rem.Fired != nil && rem.ThreadID != nil && !rem.Done)
+	thread := *rem.ThreadID
+	tasks := e.do("GET", "/api/v1/tasks?thread="+thread, e.wl.session, nil).body["tasks"].([]any)
+	check(t, "a task for @acha", len(tasks) == 1 && tasks[0].(map[string]any)["state"] == "queued")
+	n := len(msgs())
+	e.advance(10 * time.Minute)
+	e.h.Tick()
+	rem, _ = e.h.reminder(rid)
+	check(t, "still queued: skipped, no new message", len(msgs()) == n && rem.Due > e.now().UnixMilli())
+	id := tasks[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+id+"/report", e.token, map[string]any{"state": "review", "summary": "MR !12 还在等 CI"})
+	e.advance(10 * time.Minute)
+	e.h.Tick()
+	check(t, "done with the last one: the next goes into the same thread", e.task(id)["state"] == "queued")
+	top := 0
+	for _, m := range msgs() {
+		if strings.HasPrefix(m.(map[string]any)["text"].(string), "⏰") {
+			top++
+		}
+	}
+	check(t, "one thread, not one per firing", top == 1)
+
+	// an agent: only for itself, at most 3, and it stops after a day
+	tok := e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil).body["read_token"].(string)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("every 10m @wanglei 看 MR"), "content-type", "text/plain")
+	check(t, "an agent can't ping a person every 10 minutes", r.status == 400, r)
+	r = e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("every 30m 看一下 MR 和 CI，有变化就汇报"), "content-type", "text/plain")
+	check(t, "itself, in this thread", r.status == 200 && strings.Contains(string(r.raw), "then every 30m until"), r)
+	for range 2 {
+		e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("every 1h 看"), "content-type", "text/plain")
+	}
+	check(t, "a fourth is refused", e.do("POST", "/api/v1/agent/remind", tok, bytes.NewBufferString("every 2h 看"), "content-type", "text/plain").status == 429)
+	check(t, "the person sees them", len(list(e.wl.session)) == 4)
+	e.advance(25 * time.Hour)
+	e.h.Tick()
+	open := 0
+	for _, x := range list(e.wl.session) {
+		if x.(map[string]any)["by_agent"] != nil && x.(map[string]any)["done"] == false {
+			open++
+		}
+	}
+	check(t, "after a day they stop", open == 0)
+	check(t, "every 5 minutes is refused", e.do("POST", "/api/v1/reminders", e.wl.session, map[string]any{"command": "every 5m @acha 看", "channel_id": e.cid}).status == 400)
+}

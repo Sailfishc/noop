@@ -3,6 +3,7 @@ package hub
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -22,7 +23,7 @@ const remindersSchema = `
 CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY, by_user TEXT NOT NULL, by_agent TEXT,
   target_kind TEXT NOT NULL, target_id TEXT NOT NULL, channel_id TEXT NOT NULL, thread_id TEXT, message_id TEXT,
   text TEXT NOT NULL, due INTEGER NOT NULL, repeat TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL,
-  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0);
+  fired INTEGER, seen INTEGER, done INTEGER NOT NULL DEFAULT 0, until INTEGER);
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders (done, due);
 `
 
@@ -30,11 +31,75 @@ const (
 	maxReminderText     = 500
 	maxAgentReminders   = 20 // scheduled ones an agent may have set at a time
 	reminderDefaultHour = 9
+	minInterval         = 10 * time.Minute // "every 10m" is as often as anything repeats
+	maxInterval         = 24 * time.Hour
+	maxAgentIntervals   = 3              // interval reminders an agent may have running at a time
+	agentIntervalFor    = 24 * time.Hour // an agent's interval reminder stops by itself after this
 )
 
-// repeats: what a reminder does after it fires. "" = once.
+// repeats: what a reminder does after it fires. "" = once. An interval ("every 10m", "每 10 分钟") is kept as
+// "10m" or "2h" (see normRepeat).
 var repeats = map[string]string{"": "", "daily": "daily", "每天": "daily", "weekdays": "weekdays", "工作日": "weekdays", "每个工作日": "weekdays",
 	"weekly": "weekly", "每周": "weekly"}
+
+var (
+	everyRE        = regexp.MustCompile(`^(?:every|每隔|每)\s*(\d+)\s*(m|min|mins|minutes?|分钟|h|hr|hrs|hours?|小时|个小时)$`)
+	intervalRE     = regexp.MustCompile(`^(\d+)\s*(m|min|mins|minutes?|分钟|h|hr|hrs|hours?|小时|个小时)$`)
+	keptIntervalRE = regexp.MustCompile(`^(\d+)(m|h)$`)
+)
+
+// normRepeat: a repeat as people and agents write it, as it is kept: "", daily, weekdays, weekly, or an interval
+// ("10m", "2h"). An interval is also read without "every" ("10m"), since the API's repeat field names one anyway.
+// ok false: not a repeat; problem: an interval out of range.
+func normRepeat(s string) (repeat string, ok bool, problem string) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if r, ok := repeats[s]; ok {
+		return r, true, ""
+	}
+	m := everyRE.FindStringSubmatch(s)
+	if m == nil {
+		m = intervalRE.FindStringSubmatch(s)
+	}
+	if m == nil {
+		return "", false, ""
+	}
+	n, _ := strconv.Atoi(m[1])
+	d := time.Duration(n) * time.Minute
+	if strings.HasPrefix(m[2], "h") || strings.Contains(m[2], "时") {
+		d = time.Duration(n) * time.Hour
+	}
+	if d < minInterval || d > maxInterval {
+		return "", true, "按间隔重复最短每 10 分钟、最长每 24 小时"
+	}
+	if d%time.Hour == 0 {
+		return strconv.Itoa(int(d/time.Hour)) + "h", true, ""
+	}
+	return strconv.Itoa(int(d/time.Minute)) + "m", true, ""
+}
+
+// interval: how often an interval repeat fires; 0 for once, daily, weekdays, weekly.
+func interval(repeat string) time.Duration {
+	m := keptIntervalRE.FindStringSubmatch(repeat)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(m[1])
+	if m[2] == "h" {
+		return time.Duration(n) * time.Hour
+	}
+	return time.Duration(n) * time.Minute
+}
+
+// repeatText: "每天 " / "每 10 分钟" for messages people read.
+func repeatText(repeat string) string {
+	if d := interval(repeat); d > 0 {
+		if d%time.Hour == 0 {
+			return fmt.Sprintf("每 %d 小时", d/time.Hour)
+		}
+		return fmt.Sprintf("每 %d 分钟", d/time.Minute)
+	}
+	return map[string]string{"daily": "每天", "weekdays": "每个工作日", "weekly": "每周"}[repeat]
+}
 
 type reminderView struct {
 	ID        string  `json:"id"`
@@ -46,15 +111,16 @@ type reminderView struct {
 	MessageID *string `json:"message_id"`
 	Text      string  `json:"text"`
 	Due       int64   `json:"due"`    // the next time it fires (unix ms)
-	Repeat    string  `json:"repeat"` // "" | daily | weekdays | weekly
+	Repeat    string  `json:"repeat"` // "" | daily | weekdays | weekly | an interval: 10m, 2h
 	Created   int64   `json:"created"`
-	Fired     *int64  `json:"fired"` // the last time it fired
-	Seen      *int64  `json:"seen"`  // the last time its person dismissed it
-	Done      bool    `json:"done"`  // nothing more scheduled
+	Fired     *int64  `json:"fired"`           // the last time it fired
+	Seen      *int64  `json:"seen"`            // the last time its person dismissed it
+	Done      bool    `json:"done"`            // nothing more scheduled
+	Until     *int64  `json:"until,omitempty"` // it stops by itself after this (an agent's interval reminder)
 }
 
 const reminderCols = `id, by_user, by_agent, target_kind, target_id, channel_id, thread_id, message_id, text, due, repeat, created,
-	fired, seen, done`
+	fired, seen, done, until`
 
 func scanReminders(rows *sql.Rows, err error) []reminderView {
 	if err != nil {
@@ -65,7 +131,7 @@ func scanReminders(rows *sql.Rows, err error) []reminderView {
 	for rows.Next() {
 		var r reminderView
 		if err := rows.Scan(&r.ID, &r.By, &r.ByAgent, &r.Target.Kind, &r.Target.ID, &r.ChannelID, &r.ThreadID, &r.MessageID, &r.Text,
-			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done); err != nil {
+			&r.Due, &r.Repeat, &r.Created, &r.Fired, &r.Seen, &r.Done, &r.Until); err != nil {
 			panic(err)
 		}
 		out = append(out, r)
@@ -201,8 +267,14 @@ func parseWhen(words []string, now time.Time) (time.Time, int) {
 	return t, used
 }
 
-// nextDue: when a repeating reminder fires next after `due`, past `now`.
+// nextDue: when a repeating reminder fires next after `due`, past `now`. Missed firings are not made up.
 func nextDue(due time.Time, repeat string, now time.Time) time.Time {
+	if d := interval(repeat); d > 0 {
+		if due.After(now) {
+			return due.Add(d)
+		}
+		return due.Add((now.Sub(due)/d + 1) * d)
+	}
 	for {
 		switch repeat {
 		case "daily":
@@ -223,29 +295,46 @@ func nextDue(due time.Time, repeat string, now time.Time) time.Time {
 	}
 }
 
-// parseRemind reads "/remind" words: [repeat] when [repeat] [@who] what. A repeat without a time starts at 9:00.
+// parseRemind reads "/remind" words: [repeat] when [repeat] [@who] what. A daily, weekday or weekly repeat without
+// a time starts at 9:00; an interval ("every 10m", "每 10 分钟", "每2小时") without one, an interval from now.
 func parseRemind(s string, now time.Time) (due time.Time, repeat, who, what, problem string) {
 	words := strings.Fields(s)
-	takeRepeat := func() bool {
-		if len(words) > 0 {
-			if r, ok := repeats[strings.ToLower(words[0])]; ok && r != "" && repeat == "" {
-				repeat, words = r, words[1:]
-				return true
+	takeRepeat := func() {
+		if repeat != "" || problem != "" {
+			return
+		}
+		for k := min(3, len(words)); k >= 1; k-- { // "每 10 分钟" is three words, "every 10m" two
+			first := strings.ToLower(words[0])
+			if k == 1 && intervalRE.MatchString(first) {
+				return // "10m" alone is a time, not a repeat
+			}
+			if k > 1 && first != "every" && first != "每" && first != "每隔" {
+				continue
+			}
+			if r, ok, bad := normRepeat(strings.Join(words[:k], " ")); ok && (r != "" || bad != "") {
+				repeat, problem, words = r, bad, words[k:]
+				return
 			}
 		}
-		return false
 	}
 	takeRepeat()
 	t, n := parseWhen(words, now)
 	words = words[n:]
 	takeRepeat()
+	if problem != "" {
+		return due, "", "", "", problem
+	}
 	if n == 0 {
-		if repeat == "" {
-			return due, "", "", "", "说一下什么时候：如 20m、2h、明天 9:00、周五 15:00、2026-12-01 10:00"
-		}
-		t = at(now, reminderDefaultHour, 0)
-		if !t.After(now) {
-			t = t.AddDate(0, 0, 1)
+		switch {
+		case repeat == "":
+			return due, "", "", "", "说一下什么时候：如 20m、2h、明天 9:00、周五 15:00、2026-12-01 10:00，或者 every 10m"
+		case interval(repeat) > 0:
+			t = now.Add(interval(repeat))
+		default:
+			t = at(now, reminderDefaultHour, 0)
+			if !t.After(now) {
+				t = t.AddDate(0, 0, 1)
+			}
 		}
 	}
 	if repeat == "weekdays" {
@@ -265,7 +354,7 @@ type remindRequest struct {
 	Command   string `json:"command"`    // the words after /remind (or remi remind)
 	When      string `json:"when"`       // or: a time in parseWhen's words…
 	At        int64  `json:"at"`         // …or in unix ms
-	Repeat    string `json:"repeat"`     // "" | daily | weekdays | weekly
+	Repeat    string `json:"repeat"`     // "" | daily | weekdays | weekly | an interval (10m, 2h)
 	Target    string `json:"target"`     // a handle; "" = the one setting it
 	Text      string `json:"text"`       // what to remind of ("" with a message: the message)
 	MessageID string `json:"message_id"` // the message it is about
@@ -278,9 +367,12 @@ type remindRequest struct {
 func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (reminderView, int, string) {
 	now := h.now()
 	var due time.Time
-	repeat, ok := repeats[strings.ToLower(strings.TrimSpace(b.Repeat))]
+	repeat, ok, bad := normRepeat(b.Repeat)
 	if !ok {
-		return reminderView{}, 400, "repeat 只能是 daily、weekdays 或 weekly"
+		return reminderView{}, 400, "repeat 只能是 daily、weekdays、weekly 或间隔（如 10m、2h）"
+	}
+	if bad != "" {
+		return reminderView{}, 400, bad
 	}
 	who, text := strings.TrimPrefix(strings.TrimSpace(b.Target), "@"), strings.TrimSpace(b.Text)
 	switch {
@@ -305,6 +397,8 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 			return reminderView{}, 400, "看不懂这个时间：" + b.When
 		}
 		due = t
+	case interval(repeat) > 0:
+		due = now.Add(interval(repeat))
 	default:
 		return reminderView{}, 400, "说一下什么时候"
 	}
@@ -384,6 +478,18 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 	if byAgent != "" && h.count("SELECT COUNT(*) FROM reminders WHERE by_agent = ? AND done = 0", byAgent) >= maxAgentReminders {
 		return reminderView{}, 429, "这个 Agent 设的提醒太多了，先让人取消一些"
 	}
+	// an agent's interval reminder: only for itself (people would get one every few minutes), a few at a time, and it
+	// stops by itself after a day; a person who wants it longer sets it (or a trigger) themselves
+	var until any
+	if byAgent != "" && interval(repeat) > 0 {
+		if target != setter {
+			return reminderView{}, 400, "Agent 设的按间隔提醒只能提醒它自己（在这个线程里汇报）；要定时提醒人，用 daily、weekdays 或 weekly"
+		}
+		if h.count("SELECT COUNT(*) FROM reminders WHERE by_agent = ? AND done = 0 AND repeat GLOB '[0-9]*'", byAgent) >= maxAgentIntervals {
+			return reminderView{}, 429, "这个 Agent 已经有 3 个按间隔的提醒了，先取消一个（remi 提醒的人可以在「待你决定」里取消）"
+		}
+		until = now.Add(agentIntervalFor).UnixMilli()
+	}
 
 	id := newID("rem_")
 	var th, ag any
@@ -393,9 +499,9 @@ func (h *Hub) newReminder(b remindRequest, by, byAgent string, self member) (rem
 	if byAgent != "" {
 		ag = byAgent
 	}
-	h.must(h.db.Exec(`INSERT INTO reminders (id, by_user, by_agent, target_kind, target_id, channel_id, thread_id, message_id, text, due, repeat, created)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, by, ag, target.Kind, target.ID, c.ID, th, messageID, trimmed(text, maxReminderText),
-		due.UnixMilli(), repeat, now.UnixMilli()))
+	h.must(h.db.Exec(`INSERT INTO reminders (id, by_user, by_agent, target_kind, target_id, channel_id, thread_id, message_id, text, due, repeat, created, until)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, by, ag, target.Kind, target.ID, c.ID, th, messageID, trimmed(text, maxReminderText),
+		due.UnixMilli(), repeat, now.UnixMilli(), until))
 	r, _ := h.reminder(id)
 	h.remindersChanged(r)
 	return r, 200, ""
@@ -422,14 +528,33 @@ func (h *Hub) remindersChanged(r reminderView) {
 // ---------------------------------------------------------------- firing
 
 // fireReminders: the ones that are due go off. Tick calls it (with h.mu held).
+//
+// An interval reminder for an agent does not pile up: while the agent's task in its thread is still queued or
+// running, that firing is skipped (the next one comes on time). Its first firing in a channel opens a thread, and the
+// later ones go into that thread, so "every 10m" is one thread of reports, not a new thread every ten minutes.
 func (h *Hub) fireReminders() {
 	now := h.now()
 	for _, r := range scanReminders(h.db.Query("SELECT "+reminderCols+" FROM reminders WHERE done = 0 AND due <= ? ORDER BY due", now.UnixMilli())) {
 		next, done := nextDue(time.UnixMilli(r.Due).In(now.Location()), r.Repeat, now), r.Repeat == ""
-		if r.Target.Kind == "agent" && !h.remindAgent(r) {
-			done = true // its person left the channel, or the agent is gone: it stops
+		if r.Until != nil && next.UnixMilli() > *r.Until {
+			done = true
 		}
-		h.must(h.db.Exec("UPDATE reminders SET fired = ?, due = ?, done = ? WHERE id = ?", now.UnixMilli(), next.UnixMilli(), done, r.ID))
+		every := interval(r.Repeat) > 0
+		if every && r.Target.Kind == "agent" && r.ThreadID != nil && h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE thread_id = ? AND agent_id = ?
+			AND state IN (?, ?, ?)`, *r.ThreadID, r.Target.ID, taskPending, taskQueued, taskRunning) > 0 {
+			h.must(h.db.Exec("UPDATE reminders SET due = ?, done = ? WHERE id = ?", next.UnixMilli(), done, r.ID))
+			continue
+		}
+		fired := now.UnixMilli()
+		if r.Target.Kind == "agent" {
+			m, ok := h.remindAgent(r)
+			if !ok {
+				done = true // its person left the channel, or the agent is gone: it stops
+			} else if every && r.ThreadID == nil {
+				h.must(h.db.Exec("UPDATE reminders SET thread_id = ? WHERE id = ?", m, r.ID))
+			}
+		}
+		h.must(h.db.Exec("UPDATE reminders SET fired = ?, due = ?, done = ? WHERE id = ?", fired, next.UnixMilli(), done, r.ID))
 		r, _ = h.reminder(r.ID)
 		h.remindersChanged(r)
 	}
@@ -445,21 +570,22 @@ func (h *Hub) otherAgent(text, self string) string {
 	return ""
 }
 
-// remindAgent @s the agent where the reminder was set, in its person's name; dispatch takes it from there.
-func (h *Hub) remindAgent(r reminderView) bool {
+// remindAgent @s the agent where the reminder was set, in its person's name; dispatch takes it from there. It
+// returns the message's id.
+func (h *Hub) remindAgent(r reminderView) (string, bool) {
 	a, ok := h.agent(r.Target.ID)
 	if !ok || !h.isMember(r.ChannelID, "user", r.By) {
-		return false
+		return "", false
 	}
 	if c, ok := h.channel(r.ChannelID); !ok || c.Archived {
-		return false
+		return "", false
 	}
 	if r.ByAgent != nil && h.otherAgent(r.Text, *r.ByAgent) != "" { // set before agents' reminders were checked for this
-		return false
+		return "", false
 	}
 	m := h.insertMessage(r.ChannelID, r.ThreadID, member{"user", r.By}, "⏰ @"+a.Handle+" "+r.Text)
 	h.onPosted(m, false)
-	return true
+	return m.ID, true
 }
 
 // ---------------------------------------------------------------- API
@@ -580,7 +706,12 @@ func (h *Hub) v1AgentRemind(w http.ResponseWriter, q *request) {
 		}
 	}
 	line := "reminder " + r.ID + ": " + who + " at " + time.UnixMilli(r.Due).In(h.now().Location()).Format("2006-01-02 15:04 Mon")
-	if r.Repeat != "" {
+	if d := interval(r.Repeat); d > 0 {
+		line += ", then every " + r.Repeat
+		if r.Until != nil {
+			line += " until " + time.UnixMilli(*r.Until).In(h.now().Location()).Format("2006-01-02 15:04") + " (skipped while you are still on it)"
+		}
+	} else if r.Repeat != "" {
 		line += ", then " + r.Repeat
 	}
 	writeText(w, line+"\n")

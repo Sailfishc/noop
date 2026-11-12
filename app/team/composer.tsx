@@ -222,7 +222,7 @@ export function Composer(props: { team: Team; channelId: string; threadId?: stri
       busy.set(true);
       const err = cmd[1]?.trim()
         ? await t.remind({ command: cmd[1], channel_id: props.channelId, thread_id: props.threadId ?? null })
-        : L("/remind [every day|weekdays|every week] WHEN [@who] WHAT, e.g. /remind tomorrow 9:00 send the report", "/remind [每天|工作日|每周] 时间 [@谁] 内容，例如 /remind 明天 9:00 交周报");
+        : L("/remind [every day|weekdays|every week|every 30m] WHEN [@who] WHAT, e.g. /remind tomorrow 9:00 send the report", "/remind [每天|工作日|每周|每 30 分钟] 时间 [@谁] 内容，例如 /remind 明天 9:00 交周报");
       busy.set(false);
       error.set(err ?? "");
       if (!err) {

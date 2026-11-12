@@ -43,6 +43,8 @@ describe("team sign in", () => {
     expect(phone.shows("id:scan-camera")).toBe(false);
     await phone.press("id:team-scan");
     await phone.waitFor("id:scan-camera");
+    // headless has no web page to answer: the box says why instead of staying black
+    await phone.waitFor("id:scan-camera-problem", { timeout: 5000 });
     await phone.press("id:scan-close");
     await phone.waitFor("id:scan-camera", { state: "gone" });
 
@@ -937,7 +939,7 @@ describe("channel v2", () => {
     await app.waitFor("id:task-T-0001-fold-repo");
     await app.press("id:task-T-0001-fold-repo");
     await app.waitFor("id:task-T-0001-repo");
-    expect(app.shows("text:none yet: the agent checks one out if the work needs it")).toBe(true);
+    expect(app.shows("text:none yet: the agent checks one out to read or change code")).toBe(true);
     expect(app.shows("text:/^Branch/")).toBe(false); // no repository, no branch
     await app.press("id:task-T-0001-repo-edit");
     await app.waitFor("id:task-T-0001-repo-picker-pay");
@@ -1465,6 +1467,24 @@ describe("passing the ball", () => {
     await app.waitUntil(() => log.created.length === 1);
     expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "schedule", text: "有新告警就看看", when: "9:00", repeat: "weekdays", check_cmd: "cat alerts.txt", readonly: true } });
     await app.waitFor("text:$ cat alerts.txt");
+  });
+
+  test("a schedule every N minutes: an interval instead of a time, said as 每 10 分钟", async () => {
+    const log = newLog();
+    const every = { id: "trg_1", channel_id: "c_1", agent_id: "a_1", created_by: "u_1", kind: "schedule", text: "看一下 MR 进展", repeat: "10m", due: T0, confirmed_by: "u_1", enabled: true, fired: T0, fires: 3, created: T0, max_per_day: 144, skipped: 0, readonly: true };
+    const app = await open("./App.tsx", { storage: { ...SESSION, "hub.lang": "zh" }, width: 1200, height: 900, network: server(log, { __triggers: [every] }) });
+    await app.waitFor("id:channel-members");
+    await app.press("id:channel-members");
+    await app.waitFor("text:/每 10 分钟/");
+    await app.press("id:trigger-add");
+    await app.press("id:trigger-repeat-every");
+    expect(app.shows("id:trigger-when")).toBe(false);
+    await app.clear("id:trigger-every");
+    await app.type("id:trigger-every", "30m");
+    await app.type("id:trigger-text", "看一下 MR 和 CI");
+    await app.press("id:trigger-save");
+    await app.waitUntil(() => log.created.length === 1);
+    expect(log.created[0]).toEqual({ trigger: { channel_id: "c_1", agent: "a_1", kind: "schedule", text: "看一下 MR 和 CI", when: "", repeat: "30m", readonly: true } });
   });
 });
 

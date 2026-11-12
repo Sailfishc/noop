@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
+import { AccountRow, alpha, Avatar, colors, Count, Dot, hovered, Icon, type IconName, MenuLine, MenuRow, PopMenu, radius, Spinner, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -368,17 +368,15 @@ function UserMenu(props: { team: Team; onSettings: (tab?: SettingsTab | null, ag
       placement="top"
       minWidth={240}
       trigger={
-        <View role="button" testID="user-menu" accessibilityLabel={L("Account menu", "用户菜单")} hoverStyle={hovered()} style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 44, paddingHorizontal: 8, borderRadius: radius.control }}>
-          <Avatar name={t.me()?.name ?? "?"} size={28} />
-          <View style={{ flex: 1 }}>
-            <Text testID="me-name" style={{ fontSize: 14, fontWeight: "600", color: colors.text, numberOfLines: 1 }}>{t.me()?.name ?? ""}</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <Dot on={t.conn() === "live"} />
-              <Text testID="conn" style={{ fontSize: 11.5, color: colors.muted }}>{t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}</Text>
-            </View>
-          </View>
-          <Icon name="settings" size={16} tint={colors.muted} />
-        </View>
+        <AccountRow
+          testID="user-menu"
+          nameTestID="me-name"
+          statusTestID="conn"
+          label={L("Account menu", "用户菜单")}
+          name={t.me()?.name ?? ""}
+          live={t.conn() === "live"}
+          status={t.conn() === "live" ? L("Live", "实时") : t.conn() === "offline" ? L("Offline, retrying", "离线，正在重连") : L("Connecting…", "连接中…")}
+        />
       }
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, paddingTop: 6, paddingBottom: 7 }}>
