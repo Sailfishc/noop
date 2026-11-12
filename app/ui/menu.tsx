@@ -1,7 +1,8 @@
 import { Text, View, type JSX } from "nsh";
 import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { Icon, type IconName } from "./icons";
-import { colors, floatSurface, hovered, measure, radius, size, space, stroke } from "./theme";
+import { Tip } from "./tip";
+import { colors, floatSurface, hovered, measure, radius, size, slop, space, stroke } from "./theme";
 
 /**
  * A menu of actions that opens from `trigger` (nsh/base's `Menu`: a floating surface on desktops, a sheet on phones;
@@ -81,3 +82,18 @@ export function RowMenu(props: { trigger: JSX.Element; children: JSX.Element }) 
     </ContextMenu>
   );
 }
+
+/**
+ * An icon that opens a `PopMenu` (its `trigger`): the `sm` icon button's box and a finger's hit target, the label as
+ * its tooltip and its name to screen readers. The menu takes the press.
+ */
+export function MenuIcon(props: { icon: IconName; label: string; testID?: string }) {
+  const box = () => size.iconButton.sm;
+  return (
+    <View testID={props.testID} accessibilityLabel={props.label} tooltip={<Tip label={props.label} placement="bottom" />} hitSlop={slop(box())} hoverStyle={hovered()}
+      style={{ width: box(), height: box(), borderRadius: radius.md, alignItems: "center", justifyContent: "center" }}>
+      <Icon name={props.icon} size={size.icon.sm} tint={colors.fg3} />
+    </View>
+  );
+}
+

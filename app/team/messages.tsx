@@ -2,7 +2,7 @@
 import { Clipboard, Image, openUrl, signal, Text, View } from "nsh";
 import { TextView, type MarkdownExtension } from "nsh/base";
 import { L } from "../i18n";
-import { Avatar, colors, hovered, Icon } from "../ui";
+import { Avatar, colors, hovered, Icon, IconBtn, Link } from "../ui";
 import { type Attachment, type Mention, type Message, type Team } from "./api";
 import { RemindMenu } from "./reminders";
 import { authorOf, RuntimeBadge, time } from "./ui";
@@ -146,10 +146,7 @@ function CopyButton(props: { id: string; text: string }) {
   };
   const label = () => (done() ? L("Copied", "已复制") : L("Copy text", "复制文本"));
   return (
-    <View role="button" testID={`copy-${props.id}`} accessibilityLabel={label()} tooltip={<Text>{label()}</Text>}
-      onPress={() => void copy().catch(() => {})} hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-      <Icon name={done() ? "check" : "copy"} size={13} tint={done() ? colors.fg : colors.fg3} />
-    </View>
+    <IconBtn testID={`copy-${props.id}`} size="sm" label={label()} icon={done() ? "check" : "copy"} tone={done() ? "default" : "faint"} onPress={() => void copy().catch(() => {})} />
   );
 }
 
@@ -202,12 +199,8 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           </Each>
         </If>
         <If when={props.onThread}>
-          <View role="button" testID={`thread-${props.m.id}`} onPress={() => props.onThread!()} hoverStyle={hovered()} style={{ alignSelf: "flex-start", height: 26, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6 }}>
-            <Icon name="reply" size={14} tint={props.m.reply_count ? colors.fg : colors.fg3} />
-            <Text style={{ fontSize: 13, color: props.m.reply_count ? colors.fg : colors.fg3 }}>
-              {props.m.reply_count ? L(`${props.m.reply_count} replies`, `${props.m.reply_count} 条回复`) : L("Reply in thread", "在线程里回复")}
-            </Text>
-          </View>
+          <Link testID={`thread-${props.m.id}`} icon="reply" tone={props.m.reply_count ? "default" : "faint"} onPress={() => props.onThread!()}
+            label={props.m.reply_count ? L(`${props.m.reply_count} replies`, `${props.m.reply_count} 条回复`) : L("Reply in thread", "在线程里回复")} />
         </If>
       </View>
     </View>

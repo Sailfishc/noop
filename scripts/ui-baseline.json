@@ -25,16 +25,16 @@
   },
   "app/team/messages.tsx": {
     "nsh-base": 1,
-    "font-size": 15,
-    "radius": 6,
-    "spacing": 9,
-    "pressable": 6
+    "font-size": 14,
+    "radius": 4,
+    "spacing": 8,
+    "pressable": 4
   },
   "app/team/reminders.tsx": {
     "font-size": 4,
-    "radius": 2,
+    "radius": 1,
     "spacing": 2,
-    "pressable": 2
+    "pressable": 1
   },
   "app/team/search.tsx": {
     "font-size": 8,
@@ -47,9 +47,6 @@
     "radius": 17,
     "spacing": 41,
     "pressable": 6
-  },
-  "app/team/signin.tsx": {
-    "spacing": 1
   },
   "app/team/signups.tsx": {
     "font-size": 4,

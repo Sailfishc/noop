@@ -5,12 +5,6 @@
     "channel-members",
     "channel-tab-chat",
     "channel-tab-tasks",
-    "copy-msg_1",
-    "copy-msg_2",
-    "copy-msg_p1",
-    "remind-msg_1",
-    "remind-msg_2",
-    "remind-msg_p1",
     "settings-nav-account",
     "settings-nav-agents",
     "settings-nav-general",
@@ -34,7 +28,6 @@
     "team-composer-at",
     "team-composer-attach",
     "thread-composer-at",
-    "thread-composer-attach",
-    "thread-msg_p1"
+    "thread-composer-attach"
   ]
 }

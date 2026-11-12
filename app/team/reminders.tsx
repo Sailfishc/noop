@@ -2,7 +2,7 @@
 // in the composer and an agent's `remi remind` make them too; the server parses the time words (reminders.go).
 import { signal, Text, View } from "nsh";
 import { L } from "../i18n";
-import { Btn, colors, hovered, Icon, MenuHeading, MenuLine, MenuRow, PopMenu, Tag, TagMenu } from "../ui";
+import { Btn, colors, hovered, Icon, MenuHeading, MenuIcon, MenuLine, MenuRow, PopMenu, Tag, TagMenu } from "../ui";
 import { mayStopReminder, reminderUp, type Message, type Reminder, type Team } from "./api";
 import { time } from "./ui";
 
@@ -103,10 +103,7 @@ export function RemindMenu(props: { team: Team; messageId: string; m?: Message; 
     <PopMenu
       align="end"
       trigger={
-        <View role="button" testID={`remind-${props.messageId}`} accessibilityLabel={L("Remind me later", "稍后提醒")} tooltip={<Text>{L("Remind me later", "稍后提醒")}</Text>}
-          hoverStyle={hovered()} style={{ width: 24, height: 24, borderRadius: 6, alignItems: "center", justifyContent: "center" }}>
-          <Icon name="bell" size={13} tint={colors.fg3} />
-        </View>
+        <MenuIcon testID={`remind-${props.messageId}`} icon="bell" label={L("Remind me later", "稍后提醒")} />
       }
     >
       <MenuHeading text={L("Remind me", "提醒我")} />
