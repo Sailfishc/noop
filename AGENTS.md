@@ -61,7 +61,8 @@ After changing `app/`, `scripts/check.sh` runs these; what each one is for:
 - `bun scripts/gen-tokens.ts --check` and `bun scripts/check-ui.ts`: one token source, no raw values in `app/ui`, pages
   don't style themselves (see "Client components" below).
 
-In the PR, say which screens changed, attach or describe the screenshots you looked at, and list anything you could not run.
+In the PR, say which screens changed, attach or describe the screenshots you looked at, and list anything you could not run. A change to the camera, gestures, haptics, sheets or safe areas also ticks [docs/device-checks.md](docs/device-checks.md)
+on a phone, or lists its unticked lines as NOT RUN.
 
 ### Client components: pages use `app/ui`, only `app/ui` decides the look
 

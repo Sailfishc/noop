@@ -46,7 +46,7 @@ describe("team sign in", () => {
     for (const way of ["signin-code", "signin-invite", "signin-ask"]) expect(phone.shows(`id:${way}`)).toBe(true);
     await phone.press("id:signin-invite");
     await phone.waitFor("id:invite-link");
-    await phone.press("id:signin-back");
+    await phone.press("id:back");
     await phone.waitFor("id:signin-home");
     // headless has no web page to answer the scanner: it falls back to typing the code, saying why
     await phone.press("id:team-scan");
@@ -410,6 +410,17 @@ describe("team channels", () => {
     await app.waitFor("id:team-composer");
     await app.press("id:back");
     await app.waitFor("id:channel-ops");
+    // the system's back (a swipe from the left edge on iOS, back on Android) goes back a page the same way
+    await app.press("id:channel-pay");
+    await app.waitFor("id:team-composer");
+    await app.press("id:thread-msg_1");
+    await app.waitFor("收到，在看");
+    await app.back();
+    await app.waitFor("id:team-composer");
+    expect(app.shows("收到，在看")).toBe(false);
+    await app.back();
+    await app.waitFor("id:channel-ops");
+    expect(app.shows("id:tab-chat")).toBe(true);
   });
 });
 

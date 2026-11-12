@@ -1,7 +1,7 @@
 // A task's card: status, what it waits for, outputs, PR, and the buttons for whoever has to act.
 import { Image, openUrl, Scroll, signal, Text, View } from "nsh";
 import { L, lang } from "../i18n";
-import { AskCard, Btn, Card, Link, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
+import { AskCard, Btn, Card, feelDone, Link, colors, Dot, ErrorNote, Field, hovered, Icon, type IconName, Noted, Spinner, tone, type Tone, Txt } from "../ui";
 import { blockedReason, errorOf, isParty, machinesOf, taskMachine, taskRuntime, openHandoffs, openQuestions, runtimeTrouble, type Holder, type Output, type Task, type Team, type Wait } from "./api";
 import { STATUS, statusOf } from "./status";
 import { taskRef, waitsOn } from "./taskpeople";
@@ -236,6 +236,8 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     const r = await t.act(task().id, action, body);
     busy.set("");
     if (!r.ok) error.set(errorOf(r, L(`The server returned ${r.status}`, `服务器返回 ${r.status}`)));
+    // accepting a result or deciding what was asked: felt once, as it lands (phones)
+    else if (action === "accept" || action === "decide") feelDone();
   }
   /** 回复…: the thread's box, with the focus, for what the buttons don't say. */
   const reply = () => {
@@ -359,7 +361,7 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
                   <If when={mayAccept()}>
                     <Btn small kind="primary" testID={`task-${task().id}-handoff-${x().id}-accept`} label={L(`Hand to @${to()?.handle ?? "?"}`, `交给 @${to()?.handle ?? "?"}`)} busy={busy() === "handoff"} onPress={() => act("handoff", { id: x().id, accept: true })} />
                   </If>
-                  <Btn small kind="ghost" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
+                  <Btn small kind="plain" testID={`task-${task().id}-handoff-${x().id}-decline`} label={L("No need", "不用")} onPress={() => act("handoff", { id: x().id, accept: false })} />
                 </If>
               }
             >

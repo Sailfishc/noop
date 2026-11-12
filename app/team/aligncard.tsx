@@ -21,8 +21,8 @@ export function AlignCard(props: { task: Task; decision: Decision; party: boolea
         <If when={props.party}>
           <Btn small kind="primary" testID={`task-${id()}-align-go`} label={L("Go with this", "按这个做")} busy={props.busy}
             disabled={editing() && !draft().trim()} onPress={() => props.onGo(editing() ? draft() : undefined)} />
-          <If when={!editing()} else={<Btn small kind="ghost" label={L("Cancel", "取消")} onPress={() => editing.set(false)} />}>
-            <Btn small kind="ghost" testID={`task-${id()}-align-edit`} label={L("Edit criteria", "改标准")} onPress={() => { draft.set(criteria().join("\n")); editing.set(true); }} />
+          <If when={!editing()} else={<Btn small kind="plain" label={L("Cancel", "取消")} onPress={() => editing.set(false)} />}>
+            <Btn small kind="plain" testID={`task-${id()}-align-edit`} label={L("Edit criteria", "改标准")} onPress={() => { draft.set(criteria().join("\n")); editing.set(true); }} />
           </If>
         </If>
       }

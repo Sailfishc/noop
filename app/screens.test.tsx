@@ -15,6 +15,7 @@ const SIZE = { width: 1280, height: 800, platform: "macos" as const };
 
 async function shot(app: Awaited<ReturnType<typeof open>>, name: string) {
   try {
+    await app.wait(400); // a page pushed on a phone has slid in
     await app.screenshot(`.nsh/screens/${name}.png`);
   } catch (e) {
     // Headless runs draw nothing, so there is no picture to take; real targets must take it.

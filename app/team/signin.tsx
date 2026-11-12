@@ -1,11 +1,11 @@
 // Signing in: an invite link (name and @handle), a one-time login code or link from a signed-in device, or asking
 // to join (an admin approves; this device keeps the application's token and signs in with it then).
-import { cleanup, effect, Image, Scroll, signal, Storage, untracked, View, windowSize } from "nsh";
+import { cleanup, effect, Image, safeArea, Scroll, signal, Storage, untracked, View, windowSize } from "nsh";
 import { L } from "../i18n";
 import { LOGO } from "./logo";
-import { Btn, canScan, Card, Choice, colors, ErrorNote, Field, IconBtn, Modal, QrScanner, toast, Txt } from "../ui";
+import { Btn, canScan, Card, Choice, colors, ErrorNote, Field, Modal, QrScanner, toast, Txt } from "../ui";
 import { call, errorOf, type Reply, normalizeServer, parseInvite, parseLoginLink, type Session, TEAM_KEYS } from "./api";
-import { unreachable, WIDE } from "./ui";
+import { Header, unreachable, WIDE } from "./ui";
 
 type Mode = "home" | "login" | "invite" | "ask";
 
@@ -92,7 +92,8 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     const typed = link?.code ?? code().trim();
     if (link) { url.set(link.server); code.set(link.code); }
     if (!server) return error.set(L("Enter the server address", "请填写服务器地址"));
-    if (!typed || busy()) return;
+    if (!typed) return error.set(L("Enter the login code", "请填写登录码"));
+    if (busy()) return;
     busy.set(true);
     error.set("");
     const r = await call(server, "POST", "/api/v1/login", "", { code: typed });
@@ -194,7 +195,7 @@ export function SignIn(props: { url: string; email: string; notice: string; link
         <If when={canScan() && !phone()}>
           <Btn testID="team-scan" icon="scan" label={L("Scan", "扫码")} onPress={() => scanning.set(true)} />
         </If>
-        <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} disabled={!code().trim() && !parseLoginLink(url())} onPress={login} />
+        <Btn testID="team-login" kind="primary" grow label={busy() ? L("Signing in…", "登录中…") : L("Sign in", "登录")} busy={busy()} onPress={login} />
       </View>
     </>
   );
@@ -224,21 +225,27 @@ export function SignIn(props: { url: string; email: string; notice: string; link
     : mode() === "invite" ? L("Join your team with the invite link an admin sent you.", "用管理员发给你的邀请链接加入团队。")
     : L("Ask to join your team. An admin approves, then this device signs you in.", "申请加入团队。管理员通过后，这台设备会自动登录。");
   const go = (m: Mode) => { mode.set(m); error.set(""); };
+  /** A phone on one of the other ways in: its own page. */
+  const sub = () => phone() && mode() !== "home";
+  const title = () => mode() === "invite" ? L("Join with an invite link", "用邀请链接加入") : mode() === "ask" ? L("Ask to join", "申请加入") : L("Enter a login code", "输入登录码");
 
   return (
     <Scroll style={{ flex: 1, backgroundColor: colors.page }} keyboardShouldPersistTaps="handled">
-      <View testID="team-signin" style={{ minHeight: windowSize().height, alignItems: "center", justifyContent: "center", paddingHorizontal: 16, paddingVertical: 48 }}>
+      {/* a phone's other ways in are pages: a title and a way back at the top, no logo again */}
+      <If when={sub()}>
+        <View style={{ paddingTop: safeArea().top }}>
+          <Header title={title()} back onBack={() => go("home")} />
+        </View>
+      </If>
+      <View testID="team-signin" style={{ minHeight: sub() ? undefined : windowSize().height, alignItems: "center", justifyContent: sub() ? "flex-start" : "center", paddingHorizontal: 16, paddingVertical: sub() ? 16 : 48 }}>
         <View style={{ width: "100%", maxWidth: 440, gap: 24 }}>
-          <If when={phone() && mode() !== "home"}>
-            <View style={{ alignSelf: "flex-start" }}>
-              <IconBtn icon="back" testID="signin-back" label={L("Back", "返回")} onPress={() => go("home")} />
+          <If when={!sub()}>
+            <View style={{ alignItems: "center", gap: 12 }}>
+              <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
+              <Txt variant="display">Remi</Txt>
+              <Txt tone="muted" center>{blurb()}</Txt>
             </View>
           </If>
-          <View style={{ alignItems: "center", gap: 12 }}>
-            <Image testID="team-logo" src={LOGO} accessibilityLabel="" style={{ width: 72, height: 72 }} />
-            <Txt variant="display">Remi</Txt>
-            <Txt tone="muted" center>{blurb()}</Txt>
-          </View>
           <If when={mode() === "home"} else={
             <Card>
               <View style={{ gap: 16 }}>

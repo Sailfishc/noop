@@ -5,7 +5,7 @@
 import { cleanup, computed, effect, type JSX, keyboardFrame, keymap, platform, safeArea, Scroll, signal, Storage, Text, untracked, UrlScheme, View, windowSize } from "nsh";
 import { CLIENT_VERSION } from "../version";
 import { L } from "../i18n";
-import { AccountRow, Avatar, colors, CommandPalette, Count, Dot, Icon, IconBtn, type IconName, Keys, ListHeading, ListRow, MenuHeading, MenuLine, MenuRow, PopMenu, RowMenu, Spinner, StateMark, TabBar, titleBarHeight, toast, Txt } from "../ui";
+import { AccountRow, Avatar, colors, CommandPalette, Count, Dot, Icon, IconBtn, type IconName, Keys, ListHeading, ListRow, MenuHeading, MenuLine, MenuRow, PageStack, PopMenu, RowMenu, createPageStack, Spinner, StateMark, TabBar, titleBarHeight, toast, Txt } from "../ui";
 import { reminderUp, createTeam, isMember, mayBringAgent, parseLoginLink, runtimeLabel, TEAM_KEYS, type Agent, type Session, type Team } from "./api";
 import { TasksPage } from "./tasks";
 import { SettingsPage, type SettingsTab } from "./settings";
@@ -176,6 +176,27 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
       </View>
     );
   };
+  // narrow windows: the pages as a stack (list, then a page, then a thread or the members), kept in step with the state
+  type Pane = "list" | "main" | "side";
+  const stack = createPageStack<Pane>(["list"]);
+  const tabPage = () => !showList() && (page().kind === "inbox" || page().kind === "tasks");
+  const panes = (): Pane[] => showList() || page().kind === "home" || tabPage() ? ["list"] : side() && page().kind === "channel" ? ["list", "main", "side"] : ["list", "main"];
+  effect(() => {
+    if (wide()) return;
+    const want = panes();
+    if (want.join() !== untracked(stack.routes).join()) stack.setRoutes(want);
+  });
+  /** The person went back by a swipe or the system's back: what is left of the stack says where they are now. */
+  function backTo(routes: readonly Pane[]) {
+    if (routes.length < 3 && untracked(side)) side.set(null);
+    if (routes.length < 2 && !untracked(showList)) {
+      if (untracked(page).kind === "channel") t.leaveView();
+      showList.set(true);
+    }
+  }
+  /** The thread or members page keeps showing while it slides away after a back. */
+  let kept: JSX.Element | null = null;
+  const keptSide = () => { const p = sidePane(true); if (p) kept = p; return kept; };
   const sidePane = (back: boolean) => {
     const s = side(), p = page();
     if (!s || p.kind !== "channel") return null;
@@ -198,8 +219,14 @@ function Workspace(props: { team: Team; onSignOut: () => void }) {
                 <If when={chrome().left}>
                   <View desktop={{ windowDrag: true }} style={{ height: chrome().height }} />
                 </If>
-                <If when={showList() || page().kind === "home"} else={<If when={sidePane(true)} else={<View style={{ flex: 1 }}>{main()}</View>}>{(pane) => pane()}</If>}>
-                  {sidebar()}
+                {/* the list, the page over it, a thread or the members over that: a swipe from the left edge goes back */}
+                {/* 待你决定 and 任务 are tabs of their own, beside the stack rather than pushed over the list */}
+                <If when={tabPage()} else={
+                  <PageStack testID="pages" state={stack} onBack={backTo}>
+                    {(r) => r === "list" ? sidebar() : r === "main" ? <View style={{ flex: 1 }}>{main()}</View> : <View style={{ flex: 1 }}>{keptSide()}</View>}
+                  </PageStack>
+                }>
+                  <View style={{ flex: 1 }}>{main()}</View>
                 </If>
               </View>
             }
