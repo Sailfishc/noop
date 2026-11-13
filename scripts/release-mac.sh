@@ -75,7 +75,7 @@ xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
 xcrun stapler staple "$APP"
 spctl --assess --type execute --verbose "$APP"
 rm -f "$ZIP" && ditto -c -k --keepParent "$APP" "$ZIP"
-UPDATE="$WORK/feed/remi-$VERSION-macos-arm64.tar.gz"
+UPDATE="$WORK/feed/remi-$VERSION-macos-aarch64.tar.gz"
 tar -czf "$UPDATE" -C "$WORK/out" Remi.app
 tar -tzf "$UPDATE" | sed '/^Remi\.app\/Contents\/CodeResources$/d' | sort > "$WORK/layout.after"
 diff -q "$WORK/layout.before" "$WORK/layout.after" > /dev/null || { echo "the signed archive's layout differs from nsh's:"; diff "$WORK/layout.before" "$WORK/layout.after" | head; exit 1; }

@@ -17,7 +17,7 @@
 两种更新，App 自动选：
 
 - **OTA 代码包**（`remi-<版本>.nshpkg`）：只改了 TSX 的版本，App 下载签名过的代码包，重启后生效，不用换整个 App。新包先「试运行」，启动就崩会自动退回上一版。
-- **整个 App**（`remi-<版本>-macos-arm64.tar.gz`）：升级了 NSH 运行时的版本，代码包跑不了，就下载整个签名公证过的 App，校验后替换并重启。
+- **整个 App**（`remi-<版本>-macos-aarch64.tar.gz`）：升级了 NSH 运行时的版本，代码包跑不了，就下载整个签名公证过的 App，校验后替换并重启。
 
 此外每个 Release 带 `remi-macos-arm64.zip`（第一次安装用）、`latest.json`、`latest.json.sig`、`sha256sums`。`releases/latest/download/latest.json` 总是指向最新 Release 里的那份；草稿和预发布（比如 CI 的 `nsh-<commit>`）App 看不到。
 
