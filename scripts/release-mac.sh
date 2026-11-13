@@ -59,7 +59,7 @@ jq --arg repo "$REPO" --arg key "$(cat "$KEYS/release.pub")" --arg root "$(cat "
 echo "==> packaging"
 (cd "$WORK/app" && nsh package --target macos -o "$WORK/out" --build "$BUILD" --app-version "$VERSION")
 APP="$WORK/out/Remi.app"
-ARCHIVE=$(ls "$WORK/out"/Remi-"$VERSION"-macos-arm64.tar.gz)
+ARCHIVE=$(ls "$WORK/out"/Remi-"$VERSION"-macos-aarch64.tar.gz)
 # nsh/updater unpacks this archive and swaps the app in: keep its layout, with the signed app in it.
 tar -tzf "$ARCHIVE" | sort > "$WORK/layout.before"
 
