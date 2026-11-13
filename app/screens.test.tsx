@@ -362,6 +362,7 @@ describe("screens", () => {
     await app.waitFor("id:thread-msg_1");
     await app.press("id:thread-msg_1");
     await app.waitFor("id:work-tab-plan");
+    await app.waitFor("text:收到，在看");
     await app.press("id:work-tab-plan");
     await app.waitFor("id:work-plan-ratio");
     await shot(app, "workpanel-plan");

@@ -773,7 +773,22 @@ func (h *Hub) v1Edit(w http.ResponseWriter, q *request) {
 		return
 	}
 	c, _ := h.channel(m.ChannelID)
-	mentions, _ := json.Marshal(h.postMentions(c, m.ThreadID == nil, m.Author, b.Text, ""))
+	toAgent := ""
+	if c.DMAgent == "" && m.ThreadID == nil && m.Author.Kind == "user" {
+		oldTextMentions := map[string]bool{}
+		for _, om := range h.mentions(m.Text) {
+			if om.Kind == "agent" {
+				oldTextMentions[om.ID] = true
+			}
+		}
+		for _, om := range m.Mentions {
+			if om.Kind == "agent" && !oldTextMentions[om.ID] {
+				toAgent = om.ID
+				break
+			}
+		}
+	}
+	mentions, _ := json.Marshal(h.postMentions(c, m.ThreadID == nil, m.Author, b.Text, toAgent))
 	h.must(h.db.Exec("UPDATE messages SET text = ?, mentions = ?, edited = ? WHERE id = ?", b.Text, string(mentions), h.nowMs(), m.ID))
 	m, _ = h.message(m.ID)
 	h.broadcastChannel(m.ChannelID, obj{"type": "message_edited", "message": m})

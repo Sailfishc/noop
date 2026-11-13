@@ -371,3 +371,62 @@ func TestAgentPausesReminders(t *testing.T) {
 	rem, _ = e.h.reminder(rid)
 	check(t, "a paused one still stops after a day", rem.Done)
 }
+
+func TestReminderActiveWaitingAndThreadReply(t *testing.T) {
+	e := newTaskEnv(t, "channel", false)
+
+	// 1. Reminder firing on a waiting task wakes via timer (no silent firing), and rejects state=="nothing".
+	m1 := e.post(e.zw.session, "@acha 提交外部渲染", "")
+	t1 := e.do("GET", "/api/v1/tasks?thread="+m1["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+t1+"/claim", e.token, nil)
+	r := e.do("POST", "/api/v1/tasks/"+t1+"/report", e.token, map[string]any{
+		"state": "waiting", "summary": "已提交渲染", "run": 1,
+		"wait": map[string]any{"how": "timer", "deadline": 7200, "what": "3D 渲染"},
+	})
+	check(t, "task is waiting", r.status == 200 && r.body["state"] == "waiting", r)
+
+	e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"when": "10m", "target": "@acha", "text": "顺便看眼渲染队列", "message_id": m1["id"]})
+	e.advance(11 * time.Minute)
+	e.h.Tick()
+	cl1 := e.do("POST", "/api/v1/tasks/"+t1+"/claim", e.token, nil).body
+	check(t, "waiting task wakes via wake.reason=timer without firing", cl1["firing"] == nil && cl1["wake"] != nil &&
+		cl1["wake"].(map[string]any)["reason"] == "timer" && cl1["wake"].(map[string]any)["note"] == "顺便看眼渲染队列", resp{raw: []byte(fmt.Sprint(cl1))})
+	bad := e.do("POST", "/api/v1/tasks/"+t1+"/report", e.token, map[string]any{"state": "nothing", "summary": "没变", "run": 2})
+	check(t, "waiting task woken by reminder cannot report nothing", bad.status == 400, bad)
+	e.do("POST", "/api/v1/tasks/"+t1+"/report", e.token, map[string]any{"state": "review", "summary": "渲染完成", "run": 2})
+
+	// Stopped task (review) woken by reminder sets PrevState=="review" and restores it on nothing.
+	e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"when": "10m", "target": "@acha", "text": "看下有没有新评论", "message_id": m1["id"]})
+	e.advance(11 * time.Minute)
+	e.h.Tick()
+	clStop := e.do("POST", "/api/v1/tasks/"+t1+"/claim", e.token, nil).body
+	check(t, "stopped task carries prev_state", clStop["firing"] != nil && clStop["firing"].(map[string]any)["prev_state"] == "review", resp{raw: []byte(fmt.Sprint(clStop))})
+	okStop := e.do("POST", "/api/v1/tasks/"+t1+"/report", e.token, map[string]any{"state": "nothing", "summary": "无新评论", "run": 3})
+	check(t, "stopped task nothing restores review", okStop.status == 200 && okStop.body["state"] == "review", okStop)
+
+	// 2. Reminder firing on a queued/running person task delivers reminder_note without suppressing 👀 or allowing nothing.
+	m2 := e.post(e.zw.session, "@acha 修一下退款接口", "")
+	t2 := e.do("GET", "/api/v1/tasks?thread="+m2["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)["id"].(string)
+	e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"when": "10m", "target": "@acha", "text": "记得兼容旧签名", "message_id": m2["id"]})
+	e.advance(11 * time.Minute)
+	e.h.Tick()
+	cl2 := e.do("POST", "/api/v1/tasks/"+t2+"/claim", e.token, nil).body
+	check(t, "queued person task gets reminder_note, no firing", cl2["firing"] == nil && cl2["reminder_note"] == "记得兼容旧签名", resp{raw: []byte(fmt.Sprint(cl2))})
+	root2 := e.do("GET", "/api/v1/messages/"+m2["id"].(string)+"/thread", e.zw.session, nil).body["root"].(map[string]any)
+	check(t, "👀 reaction still placed on person's message", len(root2["reactions"].([]any)) == 1, resp{raw: []byte(fmt.Sprint(root2))})
+	check(t, "person task cannot report nothing", e.do("POST", "/api/v1/tasks/"+t2+"/report", e.token, map[string]any{"state": "nothing", "summary": "略", "run": 1}).status == 400)
+	e.do("POST", "/api/v1/tasks/"+t2+"/report", e.token, map[string]any{"state": "review", "summary": "修好了", "run": 1})
+
+	// 3. Reminder on a plain human message with no prior task replies inside that message's thread, not top-level.
+	mPlain := e.post(e.zw.session, "下午三点看一眼线上监控面板", "")
+	e.do("POST", "/api/v1/reminders", e.zw.session, map[string]any{"when": "10m", "target": "@acha", "text": "看一下监控面板", "message_id": mPlain["id"]})
+	e.advance(11 * time.Minute)
+	e.h.Tick()
+	t3 := e.do("GET", "/api/v1/tasks?thread="+mPlain["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
+	check(t, "reminder-originated task starts silent", t3["silent"] == true, resp{raw: []byte(fmt.Sprint(t3))})
+	t3ID := t3["id"].(string)
+	e.do("POST", "/api/v1/tasks/"+t3ID+"/claim", e.token, nil)
+	e.do("POST", "/api/v1/tasks/"+t3ID+"/report", e.token, map[string]any{"state": "review", "summary": "监控指标一切正常", "answer": true, "run": 1})
+	th3 := e.do("GET", "/api/v1/messages/"+mPlain["id"].(string)+"/thread", e.zw.session, nil).body["replies"].([]any)
+	check(t, "thread reminder replies inside the message thread", len(th3) == 1 && th3[0].(map[string]any)["text"] == "监控指标一切正常", resp{raw: []byte(fmt.Sprint(th3))})
+}

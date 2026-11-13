@@ -8,6 +8,7 @@ import { Avatar } from "./avatar";
 import { Btn, IconBtn } from "./button";
 import { Choice } from "./choice";
 import { Count } from "./count";
+import { Divider } from "./divider";
 import { Dot } from "./dot";
 import { Empty } from "./empty";
 import { ListHeading, ListRow } from "./list-row";
@@ -238,6 +239,7 @@ export function Showcase() {
         <View style={{ flexDirection: touch ? "column" : "row", gap: space.xl, alignItems: touch ? "stretch" : "flex-start" }}>
           <View style={{ flex: touch ? undefined : 1, gap: space.md }}>
             <Tabs testID="showcase-tab" value={tab()} onChange={tab.set} tabs={[{ value: "chat", label: "Conversation" }, { value: "tasks", label: "Tasks", count: 4 }]} />
+            <Divider testID="showcase-divider" />
             <ListRow title="A row" left={<Icon name="chat" size={size.icon.md} tint={colors.fg2} />} right={<Count n={3} />} onPress={() => {}} />
             <ListRow title="With a subtitle" subtitle="Codex · 等你" left={<Avatar name="acha" agent size="sm" />} right={<Dot tone="attention" />} onPress={() => {}} />
             <ListRow title="Selected" selected left={<Icon name="chat" size={size.icon.md} tint={colors.fg2} />} onPress={() => {}} />

@@ -100,15 +100,27 @@ for (const path of [`/api/v1/channels/${priv.json.id}`, `/api/v1/channels/${priv
 }
 // the daemon above found no codex here and held codex back on this machine (teamquota.go): say it is there now
 await api("PUT", "/api/v1/machine", token, { runtimes: ["codex"], runtime_info: [{ name: "codex", installed: true, logged_in: true }] });
+// Finish the earlier public conversation turn before claiming another turn in that conversation.
+const firstTask = (await api("GET", `/api/v1/tasks?thread=${post.json.id}`, zw.session)).json.tasks[0];
+await api("POST", `/api/v1/tasks/${firstTask.id}/confirm`, wl.session);
+const firstClaim = await api("POST", `/api/v1/tasks/${firstTask.id}/claim`, token);
+check("earlier public turn is claimed", firstClaim.status === 200 && !!firstClaim.json?.task && !!firstClaim.json?.read_token);
+if (!firstClaim.json?.task || !firstClaim.json?.read_token) throw new Error("earlier public turn was not claimed");
+await api("POST", `/api/v1/tasks/${firstTask.id}/report`, token, { state: "review", summary: "看过了", run: firstClaim.json.task.runs });
 const claim = await api("POST", `/api/v1/tasks/${secretTask.id}/claim`, token);
+check("private task is claimed", claim.status === 200 && !!claim.json?.task && !!claim.json?.read_token);
+if (!claim.json?.task || !claim.json?.read_token) throw new Error("private task was not claimed");
 check("on its owner's task the agent finds the private words", (await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim.json.read_token}` } })).text()).includes("zebra"));
 await api("POST", `/api/v1/tasks/${secretTask.id}/report`, token, { state: "review", summary: "好了", run: claim.json.task.runs });
 const ask = await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "@acha 找找菜谱" });
 const askTask = (await api("GET", `/api/v1/tasks?thread=${ask.json.id}`, zw.session)).json.tasks[0];
 await api("POST", `/api/v1/tasks/${askTask.id}/confirm`, wl.session);
 const claim2 = await api("POST", `/api/v1/tasks/${askTask.id}/claim`, token);
-const found = await (await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim2.json.read_token}` } })).text();
-check("asked by an outsider elsewhere, it finds nothing there", !found.includes("zebra"), found.slice(0, 160));
+check("outsider's task is claimed", claim2.status === 200 && !!claim2.json?.task && !!claim2.json?.read_token);
+if (!claim2.json?.task || !claim2.json?.read_token) throw new Error("outsider's task was not claimed");
+const outsiderSearch = await fetch(`${BASE}/api/v1/agent/search?q=zebra`, { headers: { authorization: `Bearer ${claim2.json.read_token}` } });
+const found = await outsiderSearch.text();
+check("asked by an outsider elsewhere, it finds nothing there", outsiderSearch.status === 200 && !found.includes("zebra"), found.slice(0, 160));
 await api("POST", `/api/v1/tasks/${askTask.id}/report`, token, { state: "review", summary: "没有找到", answer: true, run: claim2.json.task.runs });
 
 // 「我的偏好」 travel with the tasks their writer asks for; an agent's memory is read only by its owner, and a
@@ -117,6 +129,8 @@ await api("PATCH", `/api/v1/users/${zw.user.id}`, zw.session, { preferences: "�
 const prefTask = (await api("GET", `/api/v1/tasks?thread=${(await api("POST", `/api/v1/channels/${ch.json.id}/messages`, zw.session, { text: "@acha 再看一眼" })).json.id}`, zw.session)).json.tasks[0];
 await api("POST", `/api/v1/tasks/${prefTask.id}/confirm`, wl.session);
 const claim3 = await api("POST", `/api/v1/tasks/${prefTask.id}/claim`, token);
+check("preference task is claimed", claim3.status === 200 && !!claim3.json?.task && !!claim3.json?.read_token);
+if (!claim3.json?.task || !claim3.json?.read_token) throw new Error("preference task was not claimed");
 check("the claim carries the asker's preferences", claim3.json.requester_preferences === "回复用中文", JSON.stringify(claim3.json.requester_preferences));
 check("and may write memory in a public channel", claim3.json.memory_writable === true);
 await api("POST", `/api/v1/tasks/${prefTask.id}/report`, token, { state: "review", summary: "好了", memory: "- zw 喜欢中文", run: claim3.json.task.runs });

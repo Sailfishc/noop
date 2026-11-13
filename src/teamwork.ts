@@ -47,6 +47,8 @@ export type TeamTask = {
   readonly?: boolean;
   /** Why a run woke silently without a person's message (reminder, trigger, or channel TL). */
   firing?: Firing | null;
+  /** Background firing task that has not spoken or been tracked. */
+  silent?: boolean;
   /** Shared conversation workdir id when consecutive messages reuse one runtime session (ADR 0001). */
   conv_id?: string;
   /** Live plan checklist synced from the runtime's own todo list (Spec §7). */
@@ -57,7 +59,7 @@ export type TaskCheckpoint = { at: number; checked?: number; machine?: string; r
 /** On whose word the agent works and how far it may go (fixed when the task was made). */
 export type Mandate = { by: string; rule: string; confirm: boolean; joined?: boolean; autonomy: string; branch: string; runtime: string; model?: string;
   /** It came from another agent (a handoff) or a trigger, not from a person's own words. */
-  via?: string[] | null; parent?: string; trigger?: string; reminder?: string;
+  via?: string[] | null; parent?: string; trigger?: string; reminder?: string; tl?: boolean;
   /** The agent of the parent task delegated a part to it (remi delegate): its result goes back to that agent. */
   delegated?: boolean; redos?: number };
 export type Claim = {
@@ -71,6 +73,8 @@ export type Claim = {
   wake?: Wake | null;
   /** Why a run woke silently without a person's message. */
   firing?: Firing | null;
+  /** Scheduled reminder text due for an active person task (delivered as context, never inviting silent nothing). */
+  reminder_note?: string;
   /** In-flight tasks in the channel when woken as the channel's TL (Spec §4). */
   active_tasks?: string;
   /** Where an outside service can post to wake this task. */
@@ -319,9 +323,16 @@ Choose ONE of three reactions:
 3. Answer or act yourself: when it is a question you can answer or no better-suited agent is in the channel, answer directly (or claim as a task if it requires changes).`;
 }
 
+/** Whether this claim is a genuine silent firing (waking a stopped task or created by a firing), permitted to end with `nothing`. */
+export function isSilentFiring(c: Claim): boolean {
+  const f = c.firing ?? c.task.firing;
+  const m = c.task.mandate;
+  return !!f && Boolean(f.prev_state || f.kind === "tl" || m?.trigger || m?.reminder || m?.tl);
+}
+
 /** The first turn: who the agent is, what it remembers, where it works, the channel, the task and its thread. */
 export function taskPrompt(c: Claim, wd: Workdir, team?: TeamContext | null): string {
-  const a = c.agent, t = c.task, firing = c.firing ?? t.firing;
+  const a = c.agent, t = c.task, firing = isSilentFiring(c) ? (c.firing ?? t.firing) : null;
   const conventions = [
     team?.instructions ? `# Team conventions (the team's AGENTS.md; they hold in every channel)\n${team.instructions}\n\n` : "",
     c.channel.conventions ? `# How #${c.channel.name} works (its members wrote this; it comes before the team's conventions)\n${c.channel.conventions}\n\n` : "",
@@ -342,7 +353,7 @@ ${c.conv_recent?.length ? `\n# Earlier conversation context (your previous sessi
 # Request ${t.id}: ${t.title}${t.tracked ? " (tracked as a task)" : ""}
 Asked by ${c.creator.name} (@${c.creator.handle}).${mandateLine(c)}
 The request and its thread:
-${quote(c, c.thread)}
+${quote(c, c.thread)}${c.reminder_note?.trim() ? `\n\nScheduled reminder also due:\n${c.reminder_note.trim()}` : ""}
 
 # Acceptance criteria
 ${t.acceptance?.trim() || "(none given: decide sensible criteria for this request, work to them, and return them in \"acceptance\")"}
@@ -431,10 +442,11 @@ const WAKE: Record<Wake["reason"], string> = {
 /** A woken turn: why it woke, what was posted, what people said meanwhile. */
 export function wakePrompt(c: Claim): string {
   const w = c.wake!;
+  const reminder = c.reminder_note?.trim() ? `\nScheduled reminder due:\n${c.reminder_note.trim()}\n` : "";
   if (w.reason === "delegates") return `You were waiting for the parts you delegated; all of them are back. What came back:
 
 ${(w.payload ?? "").slice(0, 20000)}
-${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}${reminder}
 Check each against what you asked (look at their branches, PRs and outputs; run what you can). If one is not right, send
 it back with \`remi delegate @AGENT WHAT TO CHANGE\` (each at most twice) and end with status waiting, wait
 {"how": "delegates"}. A part that failed: do it yourself, delegate it to another agent, or stop with needs_decision.
@@ -443,10 +455,10 @@ A person accepts only your result.
 
 ${RESULT_SPEC}`;
   if (w.reason === "quota") return `Your last turn was cut off by the usage limit of your runtime; it has reset now. Continue from where you got to; do not redo steps that already took effect.
-${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}${reminder}
 ${RESULT_SPEC}`;
   return `You were waiting; you are woken because ${WAKE[w.reason] ?? w.reason}.${w.note ? `\nLast note: ${w.note}` : ""}${w.payload ? `\nWhat was posted to your callback address:\n${w.payload.slice(0, 20000)}` : ""}
-${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}
+${c.new.length ? `\nPeople in the task's thread said meanwhile:\n${quote(c, c.new)}\n` : ""}${reminder}
 Look at the result, check it against the acceptance criteria, save what people should see in out/ (a preview picture of
 an outside result too), and report; wait again only if it is still running.
 
@@ -477,8 +489,10 @@ ${RESULT_SPEC}`;
 /** A later turn of the same session: only what people said since, and the decision answer if there is one. */
 export function followUpPrompt(c: Claim): string {
   const shared = !!(c.task.conv_id && c.task.conv_id !== c.task.id);
+  const note = c.reminder_note?.trim();
+  const body = [c.new.length ? quote(c, c.new) : "", note ? `Scheduled reminder due:\n${note}` : ""].filter(Boolean).join("\n\n");
   return `${shared ? `New message in #${c.channel.name} (continuing your conversation; current request id is ${c.task.id}):` : "People in the task's thread said more since your last turn:"}
-${quote(c, c.new)}
+${body}
 ${shared && c.task.acceptance?.trim() ? `\nAcceptance criteria:\n${c.task.acceptance.trim()}\n` : ""}
 Continue ${shared ? "the conversation (answer directly if it is a question, or claim it with a `task:` line if it requires changing files or external work)" : "the task"} with this in mind (same rules as before).
 
@@ -492,8 +506,9 @@ ${RESULT_SPEC}`;
 export function steerPrompt(c: Claim, ready: Record<string, Workdir>, problem = ""): string {
   const repos = Object.entries(ready).map(([remote, x]) => `- ${remote} is ready at ${x.cwd}, a git worktree on branch ${x.branch}: change it there and commit on that branch (the machine pushes it and opens the pull request after you stop).${SETUP(x)}`);
   if (problem) repos.push(`- The machine could not check out a repository you declared: ${problem}`);
+  const note = c.reminder_note?.trim();
   return `The machine paused you between two steps because something new came in while you worked.
-${c.new.length ? `\nPeople in the task's thread said:\n${quote(c, c.new)}\n` : ""}${repos.length ? `\nRepositories you declared:\n${repos.join("\n")}\n` : ""}
+${c.new.length ? `\nPeople in the task's thread said:\n${quote(c, c.new)}\n` : ""}${note ? `\nScheduled reminder due:\n${note}\n` : ""}${repos.length ? `\nRepositories you declared:\n${repos.join("\n")}\n` : ""}
 Take this into account and continue the task from where you were (same rules as before). Do not redo steps that
 already took effect. If people changed what they want, follow the latest word.
 
@@ -1272,8 +1287,8 @@ export function createWorker(o: WorkerOptions) {
       afterRuns.set(t.id, async () => { clearInterval(timer); if (!cancelled && !stopped) await checkpoint(t.id, ckWd, files); });
     }
     const resume = t.session;
-    const firing = c.firing ?? t.firing;
-    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") + switchedPrompt(c) : firing ? firingPrompt(c) : c.wake ? wakePrompt(c) : c.new.length ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
+    const silentFiring = isSilentFiring(c);
+    const prompt = !resume ? taskPrompt(c, wd, o.team?.()) + (t.moves ? await movedPrompt(c, wd) : "") + switchedPrompt(c) : silentFiring ? firingPrompt(c) : c.wake ? wakePrompt(c) : (c.new.length || c.reminder_note?.trim()) ? followUpPrompt(c) : `Continue the task where you left off (the machine restarted).\n\n${RESULT_SPEC}`;
     let lastStep = 0, pendingStep = "";
     let latestPlan: PlanItem[] | undefined, pendingPlan: PlanItem[] | undefined;
     const every = o.stepEveryMs ?? 5000;
@@ -1458,7 +1473,7 @@ export function createWorker(o: WorkerOptions) {
     if (await moved(t.id)) { log(`${t.id} 已经换到另一台电脑，这次运行作废：不推送、不开 PR`); return; }
     let extra: { pr?: PR; note?: string } | null = null;
     const morePRs: PR[] = [], moreNotes: string[] = [];
-    const canNothing = t.readonly || !!(c.firing ?? t.firing);
+    const canNothing = t.readonly || isSilentFiring(c);
     if (t.readonly) { // a patrol: what it changed in a repository is thrown away, nothing is pushed
       if (await discard(wd)) { moreNotes.push("这是只读巡视，对仓库的改动已丢弃"); if (result.status === "nothing") result = { ...result, status: "review" }; }
       if (result.status === "nothing" && wd.files && outFiles(join(wd.files, "out")).length) result = { ...result, status: "review" }; // it made a report: that is something to hand over

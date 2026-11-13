@@ -19,6 +19,7 @@ export { Field, growing, TextArea } from "./field";
 export { ErrorNote } from "./error-note";
 export { Choice } from "./choice";
 export { Avatar } from "./avatar";
+export { Divider } from "./divider";
 export { Dot } from "./dot";
 export { Label, Noted } from "./noted";
 export { Card, CardHead, Panel } from "./panel";

@@ -133,6 +133,7 @@ type mandateView struct {
 	Parent   string   `json:"parent,omitempty"`
 	Trigger  string   `json:"trigger,omitempty"`
 	Reminder string   `json:"reminder,omitempty"`
+	TL       bool     `json:"tl,omitempty"`
 	// Delegated: the parent's agent delegated it (remi delegate, teamdelegate.go): its result goes back to that agent,
 	// not to a person's acceptance; Redos: how many times that agent sent it back
 	Delegated bool `json:"delegated,omitempty"`
@@ -205,11 +206,13 @@ type taskView struct {
 	Engine      *engineView     `json:"engine"`             // the 换引擎继续 card, its last one
 	Readonly    bool            `json:"readonly,omitempty"` // a read-only run, a patrol (teamduties.go): no PR, handoff or delegation; it may end with nothing
 	// Quiet: its thread has no message posted yet: the agent's own first words open it when there is something to say
-	Quiet     bool        `json:"quiet,omitempty"`
-	Firing    *firingView `json:"firing,omitempty"`
-	ConvID    string      `json:"conv_id,omitempty"`
-	convScope string
-	held      string
+	Quiet        bool        `json:"quiet,omitempty"`
+	Silent       bool        `json:"silent,omitempty"`
+	Firing       *firingView `json:"firing,omitempty"`
+	ConvID       string      `json:"conv_id,omitempty"`
+	convScope    string
+	held         string
+	reminderNote string
 	// Redacted: a task in a private channel shown to someone not in it (the agent's owner, who still confirms its
 	// work): who, which agent and where it stands, without its title, words, channel or outputs
 	Redacted bool  `json:"redacted,omitempty"`
@@ -218,10 +221,21 @@ type taskView struct {
 	seenSeq  int64
 }
 
+func isFiringOrigin(t taskView) bool {
+	if t.Mandate != nil && (t.Mandate.Trigger != "" || t.Mandate.Reminder != "" || t.Mandate.TL) {
+		return true
+	}
+	return t.Firing != nil && t.Firing.Kind == "tl"
+}
+
+func isSilentFiring(t taskView) bool {
+	return t.Firing != nil && (t.Firing.PrevState != "" || isFiringOrigin(t))
+}
+
 const taskCols = `id, channel_id, thread_id, agent_id, created_by, title, body, state, step, summary, COALESCE(decision, ''),
 	COALESCE(pr, ''), branch, session, claimed_by, confirmed_by, runs, created, updated, seen_seq, acceptance, COALESCE(mandate, ''), repo, COALESCE(wait, ''), result, tracked,
 	failures, last_failure, COALESCE(usage, ''), titled, handler, news, asked, repos, handoffs, submits, aligned, evidence, COALESCE(checkpoint, ''), moves, COALESCE(move, ''), runtime, COALESCE(engine, ''),
-	readonly, COALESCE(held, ''), COALESCE(firing, ''), COALESCE(conv_id, ''), COALESCE(conv_scope, ''), COALESCE(plan, '[]')`
+	readonly, COALESCE(held, ''), COALESCE(firing, ''), COALESCE(conv_id, ''), COALESCE(conv_scope, ''), COALESCE(plan, '[]'), silent, COALESCE(reminder_note, '')`
 
 func scanTasks(rows *sql.Rows, err error) []taskView {
 	if err != nil {
@@ -234,7 +248,7 @@ func scanTasks(rows *sql.Rows, err error) []taskView {
 		var decision, pr, mandate, wait, usage, asked, repos, handoffs, submits, evidence, checkpoint, move, engine, firing, plan string
 		if err := rows.Scan(&t.ID, &t.ChannelID, &t.ThreadID, &t.AgentID, &t.CreatedBy, &t.Title, &t.Body, &t.State, &t.Step, &t.Summary,
 			&decision, &pr, &t.Branch, &t.Session, &t.ClaimedBy, &t.ConfirmedBy, &t.Runs, &t.Created, &t.Updated, &t.seenSeq,
-			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine, &t.Readonly, &t.held, &firing, &t.ConvID, &t.convScope, &plan); err != nil {
+			&t.Acceptance, &mandate, &t.Repo, &wait, &t.Result, &t.Tracked, &t.Failures, &t.LastFailure, &usage, &t.Titled, &t.Handler, &t.News, &asked, &repos, &handoffs, &submits, &t.Aligned, &evidence, &checkpoint, &t.Moves, &move, &t.Runtime, &engine, &t.Readonly, &t.held, &firing, &t.ConvID, &t.convScope, &plan, &t.Silent, &t.reminderNote); err != nil {
 			panic(err)
 		}
 		t.Status, t.Needs = statusOf(t.State)
@@ -612,11 +626,13 @@ func (h *Hub) createTaskWith(m messageView, root, agentID string, joined, tracke
 	branch := "agent/" + id
 	convID, convScope, session, claimedBy := h.convBind(m, root, a, by, tracked, o, id)
 	mandate := mandateView{By: by, Rule: a.Dispatch, Confirm: state == taskPending, Joined: joined, Autonomy: a.Autonomy,
-		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Reminder: o.Reminder, Delegated: o.Delegated}
+		Branch: branch, Runtime: a.Runtime, Model: a.Model, Via: o.Via, Parent: o.Parent, Trigger: o.Trigger, Reminder: o.Reminder,
+		TL: o.Firing != nil && o.Firing.Kind == "tl", Delegated: o.Delegated}
+	silent := o.Firing != nil && !tracked
 	h.must(h.db.Exec(`INSERT INTO tasks_v1 (id, num, channel_id, thread_id, agent_id, created_by, title, body, acceptance, mandate, state, summary,
-		branch, repo, session, claimed_by, tracked, handler, created, updated, readonly, held, firing, conv_id, conv_scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
+		branch, repo, session, claimed_by, tracked, handler, created, updated, readonly, held, firing, conv_id, conv_scope, silent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, n, m.ChannelID, root, agentID, by,
 		taskTitle(m.Text), text, clip(acceptance, 4000), jsonOrNil(mandate), state, summary, branch, repo, session, claimedBy, boolInt(tracked), h.taskHandler(m.Text), now, now,
-		boolInt(o.Readonly), nilIfEmpty(o.Held), jsonOrNil(o.Firing), convID, convScope))
+		boolInt(o.Readonly), nilIfEmpty(o.Held), jsonOrNil(o.Firing), convID, convScope, boolInt(silent)))
 	if o.Firing == nil {
 		h.noteStatus(id, state)
 	}
@@ -791,6 +807,7 @@ func (h *Hub) v1TaskDecline(w http.ResponseWriter, q *request) {
 		summary += "：" + r
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "summary": summary})
+	h.convClosed(t)
 	h.endThreadReminders(t)
 	h.taskChanged(t.ID)
 	t, _ = h.task(t.ID)
@@ -803,6 +820,7 @@ func (h *Hub) v1TaskCancel(w http.ResponseWriter, q *request) {
 		return
 	}
 	h.setTask(t.ID, map[string]any{"state": taskClosed, "step": "", "summary": strings.TrimSpace(t.Summary + "\n已取消"), "cancelled_at": h.nowMs()})
+	h.convClosed(t)
 	h.endThreadReminders(t) // "stop" or "close" means its "every 10m" stops too
 	h.taskChanged(t.ID)
 	h.cancelDelegates(t.ID) // what it delegated and is not back yet goes too
@@ -876,7 +894,7 @@ func (h *Hub) v1TaskTrack(w http.ResponseWriter, q *request) {
 	}
 	var b struct{ Title string }
 	_ = q.json(&b)
-	cols := map[string]any{"tracked": 1}
+	cols := map[string]any{"tracked": 1, "silent": 0}
 	if title := trimmed(b.Title, 60); title != "" {
 		cols["title"], cols["titled"] = title, 1
 	}
@@ -1066,15 +1084,17 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	if t.Wait != nil {
 		woke = t.Wait.Wake
 	}
-	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil, "news": 0}
-	if t.Firing != nil {
+	reminderNote := t.reminderNote
+	silentRun := isSilentFiring(t)
+	cols := map[string]any{"state": taskRunning, "claimed_by": q.who.machineID, "seen_seq": seen, "step": "", "wait": nil, "news": 0, "reminder_note": ""}
+	if silentRun {
 		cols["_silent"] = true
 	}
 	if !mine {
 		cols["runs"] = t.Runs + 1
 	}
 	h.setTask(t.ID, cols)
-	if t.Firing == nil {
+	if !silentRun {
 		for _, m := range fresh { // the agent took them up: 👀 on each, the way a person would show they read it
 			if m.Author.Kind == "user" {
 				h.react(m.ID, member{"agent", a.ID}, "👀")
@@ -1110,7 +1130,7 @@ func (h *Hub) v1TaskClaim(w http.ResponseWriter, q *request) {
 	}
 	writeJSON(w, 200, obj{"task": t, "agent": a, "channel": obj{"id": c.ID, "name": c.Name, "topic": c.Topic, "repo": c.Repo, "conventions": c.Conventions},
 		"recent": recent, "conv_recent": convRecent, "thread": thread, "new": fresh, "names": people, "creator": creator, "resumed": mine,
-		"wake": woke, "firing": t.Firing, "active_tasks": activeTasks, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
+		"wake": woke, "firing": t.Firing, "reminder_note": reminderNote, "active_tasks": activeTasks, "callback_url": h.callbackURL(q.r, h.callbackToken(t.ID)), "read_token": h.readToken(t.ID),
 		"requester_preferences": h.preferences(t.CreatedBy), "memory_writable": h.memoryWritable(t, a),
 		"agents": h.agentList(t, promptAgents, t.Readonly), "checkpoint_files": h.checkpointFilesAllowed(q.who.machineID)})
 }
@@ -1192,7 +1212,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	cols := map[string]any{}
 	if b.Track && !t.Tracked {
-		cols["tracked"] = 1
+		cols["tracked"], cols["silent"] = 1, 0
 	}
 	// the agent names the task once (its "task:" line), unless a person already did
 	if title := trimmed(b.Title, 60); title != "" && !t.Titled {
@@ -1251,7 +1271,7 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		cols["plan"] = string(pj)
 	}
 	if b.State == "nothing" { // a patrol or silent firing found nothing a person needs to know: it ends without a word
-		if !t.Readonly && t.Firing == nil {
+		if !t.Readonly && !isSilentFiring(t) {
 			errJSON(w, 400, "只有只读巡视或静默触发能报 nothing")
 			return
 		}
@@ -1275,13 +1295,15 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 		h.convFinish(t, a, q.who.machineID, ses, false)
 		h.taskChanged(t.ID)
 		h.dutyRunEnded(t, "nothing", b.Summary)
-		h.reminderRunEnded(t, "nothing", b.Summary)
+		if t.reminderNote == "" {
+			h.reminderRunEnded(t, "nothing", b.Summary)
+		}
 		t, _ = h.task(t.ID)
 		writeJSON(w, 200, h.taskOut(q, t))
 		return
 	}
 	if b.State != "" {
-		cols["firing"] = nil
+		cols["firing"], cols["silent"] = nil, 0
 		if b.State == "align" {
 			d, msg, code := h.alignDecision(t, b.Align)
 			if d == nil {
@@ -1339,7 +1361,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 			}
 		}
 		isAnswer := state == taskReview && b.Answer && b.Result != "unconfirmed" && t.PR == nil && b.PR == nil && t.Handler == "" && !proposedHandoff(t) && !h.delegated(t) && (t.Mandate == nil || !t.Mandate.Delegated)
-		plainStreamAnswer := isAnswer && !t.Tracked && cols["tracked"] == nil && !t.Readonly && (t.Mandate == nil || t.Mandate.Trigger == "")
+		plainStreamAnswer := isAnswer && !t.Tracked && cols["tracked"] == nil && !t.Readonly &&
+			(t.Mandate == nil || (t.Mandate.Trigger == "" && t.Mandate.Reminder == "")) &&
+			(t.Firing == nil || t.Firing.Kind == "tl")
 		text = h.callHandler(t, state, text)
 		if text == "" && h.count("SELECT COUNT(*) FROM task_outputs WHERE task_id = ? AND message_id IS NULL", t.ID) > 0 {
 			text = "已生成产出"
@@ -1389,7 +1413,9 @@ func (h *Hub) v1TaskReport(w http.ResponseWriter, q *request) {
 	}
 	if b.State != "" {
 		h.dutyRunEnded(t, b.State, b.Summary)
-		h.reminderRunEnded(t, b.State, b.Summary)
+		if t.reminderNote == "" {
+			h.reminderRunEnded(t, b.State, b.Summary)
+		}
 	}
 	if cols["state"] == taskReview || cols["state"] == taskDone {
 		h.delegatesDropped(t.ID) // delivered: what it delegated and is not back yet is not wanted any more

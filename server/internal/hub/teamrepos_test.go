@@ -42,6 +42,7 @@ func TestTaskRepoFollowsTheTask(t *testing.T) {
 	m := e.post(e.wl.session, "@acha 整理一下上周的事故复盘", "")
 	tk := e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
 	check(t, "general task", tk["repo"] == "")
+	e.do("POST", "/api/v1/tasks/"+tk["id"].(string)+"/cancel", e.wl.session, nil)
 
 	// the channel's default
 	r = e.do("PATCH", "/api/v1/channels/"+e.cid, e.wl.session, map[string]any{"repo": "https://github.com/acme/pay"})
@@ -56,6 +57,7 @@ func TestTaskRepoFollowsTheTask(t *testing.T) {
 	m = e.post(e.wl.session, "@acha 在 fin/ledger 里加个对账脚本", "")
 	tk = e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
 	check(t, "owner/name of a known repo", tk["repo"] == "code.corp.com/fin/ledger")
+	e.do("POST", "/api/v1/tasks/"+tk["id"].(string)+"/cancel", e.wl.session, nil)
 	m = e.post(e.wl.session, "@acha 看看 https://github.com/acme/web/pull/7 为什么挂了", "")
 	tk = e.do("GET", "/api/v1/tasks?thread="+m["id"].(string), e.zw.session, nil).body["tasks"].([]any)[0].(map[string]any)
 	check(t, "an address", tk["repo"] == "github.com/acme/web")
@@ -71,7 +73,8 @@ func TestTaskRepoFollowsTheTask(t *testing.T) {
 	// people may change it until it has run
 	r = e.do("PATCH", "/api/v1/tasks/"+id, e.wl.session, map[string]any{"repo": "github.com/acme/pay"})
 	check(t, "changed before it ran", r.status == 200 && r.body["repo"] == "github.com/acme/pay", r)
-	e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	r = e.do("POST", "/api/v1/tasks/"+id+"/claim", e.token, nil)
+	check(t, "task claimed before checking the repository lock", r.status == 200, r)
 	r = e.do("PATCH", "/api/v1/tasks/"+id, e.wl.session, map[string]any{"repo": "github.com/acme/web"})
 	check(t, "not after", r.status == 409, r)
 }

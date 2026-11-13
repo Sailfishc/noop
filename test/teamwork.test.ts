@@ -881,3 +881,46 @@ test("runtime checklists (Codex todo_list and Claude TodoWrite) become plan even
     rmSync(W, { recursive: true, force: true });
   }
 });
+
+test("reminders on active person tasks pass reminder_note without allowing status nothing; stopped tasks with prev_state allow silent nothing", async () => {
+  const { isSilentFiring, steerPrompt } = await import("../src/teamwork");
+  const activeWithNote: Claim = { ...claim({ id: "T-0010", session: "ses_a" }), reminder_note: "顺便检查慢查询日志" };
+  expect(isSilentFiring(activeWithNote)).toBe(false);
+  expect(followUpPrompt(activeWithNote)).toContain("Scheduled reminder due:\n顺便检查慢查询日志");
+  expect(steerPrompt(activeWithNote, {})).toContain("Scheduled reminder due:\n顺便检查慢查询日志");
+  for (const reason of ["timer", "delegates", "quota"] as const) {
+    expect(wakePrompt({ ...activeWithNote, wake: { reason, at: 1 } })).toContain("Scheduled reminder due:\n顺便检查慢查询日志");
+  }
+
+  const stoppedWoken = claim({ id: "T-0011", session: "ses_b", firing: { kind: "reminder", id: "rem_1", text: "检查 CI", prev_state: "review" } });
+  expect(isSilentFiring(stoppedWoken)).toBe(true);
+
+  const rogueActiveFiring = claim({ id: "T-0012", session: "ses_c", firing: { kind: "reminder", id: "rem_2", text: "不该静默关单" } });
+  expect(isSilentFiring(rogueActiveFiring)).toBe(false);
+
+  const W = realpathSync(mkdtempSync(join(tmpdir(), "teamwork-rem-")));
+  try {
+    const seen: RunOptions[] = [], calls: { path: string; body: any }[] = [];
+    const rt = fakeRuntime([
+      { text: '```json\n{"status":"nothing","summary":"在跑的任务不能静默关单"}\n```' },
+      { text: '```json\n{"status":"nothing","summary":"CI 没变化"}\n```' },
+    ], seen);
+    const w = createWorker({
+      api: fakeApi({ "T-0010": activeWithNote, "T-0011": stoppedWoken }, calls),
+      maxParallel: 1,
+      workRoot: join(W, "work"),
+      runtimes: { codex: rt },
+      log: () => {},
+    });
+    for (const id of ["T-0010", "T-0011"]) {
+      w.onTask({ ...claim().task, id, state: "queued" } as any, () => true);
+      await Bun.sleep(1);
+      await w.idle();
+    }
+    const last = (id: string) => calls.filter((c) => c.path === `/api/v1/tasks/${id}/report` && c.body.state).at(-1)!.body;
+    expect(last("T-0010").state).toBe("review"); // converted from nothing -> review on active person task
+    expect(last("T-0011").state).toBe("nothing"); // genuine stopped firing allowed to stay silent
+  } finally {
+    rmSync(W, { recursive: true, force: true });
+  }
+});

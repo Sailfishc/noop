@@ -773,17 +773,38 @@ func (h *Hub) remindAgent(r reminderView) (string, string, bool) {
 				if w == nil {
 					w = &waitView{}
 				}
-				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "_silent": true})
 				h.wakeTask(t.ID, w, "timer", r.Text, "")
 			case t.State == taskRunning:
-				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "news": 1, "_silent": true})
+				if isSilentFiring(t) {
+					if t.Firing != nil && t.Firing.PrevState != "" {
+						fv.PrevState = t.Firing.PrevState
+					}
+					h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "news": 1, "_silent": true})
+				} else {
+					note := r.Text
+					if t.reminderNote != "" {
+						note = t.reminderNote + "\n" + r.Text
+					}
+					h.setTask(t.ID, map[string]any{"reminder_note": note, "news": 1})
+				}
 				if t.ClaimedBy != nil {
 					b, _ := json.Marshal(obj{"type": "steer", "task_id": t.ID})
 					h.socks.send("m:"+*t.ClaimedBy, b)
 				}
 				h.taskChanged(t.ID)
 			case t.State == taskPending || t.State == taskQueued:
-				h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "_silent": true})
+				if isSilentFiring(t) {
+					if t.Firing != nil && t.Firing.PrevState != "" {
+						fv.PrevState = t.Firing.PrevState
+					}
+					h.setTask(t.ID, map[string]any{"firing": jsonOrNil(fv), "_silent": true})
+				} else {
+					note := r.Text
+					if t.reminderNote != "" {
+						note = t.reminderNote + "\n" + r.Text
+					}
+					h.setTask(t.ID, map[string]any{"reminder_note": note})
+				}
 				h.taskChanged(t.ID)
 			case stoppedStates[t.State]:
 				fv.PrevState = t.State

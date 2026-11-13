@@ -7,7 +7,7 @@ import { type Attachment, type Mention, type Message, type Output, type Team } f
 import { RemindMenu } from "./reminders";
 import { authorOf, RuntimeBadge, time } from "./ui";
 import { fileSize } from "./composer";
-import { outputMeta, TaskCard, TrackLink, shownAsTask } from "./taskcard";
+import { isSilentTask, outputMeta, TaskCard, TrackLink, shownAsTask } from "./taskcard";
 
 /** @handles in a message: a custom node, shown in the accent color when it names someone. */
 const MENTION: MarkdownExtension[] = [{ name: "mention", pattern: "@[a-z][a-z0-9_-]{1,31}" }];
@@ -151,14 +151,75 @@ function CopyButton(props: { id: string; text: string }) {
 }
 
 const FOLD_LINES = 12;
+const FOLD_CHARS = 800;
+
+export function foldPreview(text: string): { preview: string; totalLines?: number } | null {
+  const lines = text.split("\n");
+  if (lines.length <= FOLD_LINES && text.length <= FOLD_CHARS) return null;
+
+  const cutChars = (s: string, max: number) => {
+    if (s.length <= max) return s;
+    const sub = s.slice(0, max);
+    const brk = Math.max(sub.lastIndexOf("\n"), sub.lastIndexOf(" "), sub.lastIndexOf("。"), sub.lastIndexOf("，"), sub.lastIndexOf("; "));
+    return (brk >= max - 120 ? sub.slice(0, brk + (s[brk] === "。" || s[brk] === "，" ? 1 : 0)) : sub).trimEnd() + "…";
+  };
+
+  const scanFences = (slice: string[]) => {
+    let fence: string | null = null;
+    let openAt = -1;
+    for (let i = 0; i < slice.length; i++) {
+      const m = slice[i]!.match(/^\s*(`{3,}|~{3,})(.*)$/);
+      if (!m) continue;
+      const mark = m[1]!;
+      const rest = m[2]!;
+      if (!fence) {
+        if (mark[0] === "`" && rest.includes("`")) continue;
+        fence = mark;
+        openAt = i;
+      } else if (mark[0] === fence[0] && mark.length >= fence.length && rest.trim() === "") {
+        fence = null;
+        openAt = -1;
+      }
+    }
+    return { fence, openAt };
+  };
+
+  if (lines.length > FOLD_LINES) {
+    const head = lines.slice(0, FOLD_LINES);
+    const { fence, openAt } = scanFences(head);
+    let preview: string;
+    if (fence) {
+      const before = head.slice(0, openAt).join("\n");
+      preview = openAt > 0 && before.trim() !== "" ? before : `${head.join("\n")}\n${fence}`;
+    } else {
+      preview = head.join("\n");
+    }
+    if (!fence && preview.length > FOLD_CHARS) {
+      preview = cutChars(preview, FOLD_CHARS);
+    }
+    return { preview, totalLines: lines.length };
+  }
+
+  const clipped = cutChars(text, FOLD_CHARS);
+  const clippedLines = clipped.split("\n");
+  const { fence, openAt } = scanFences(clippedLines);
+  if (fence) {
+    const before = clippedLines.slice(0, openAt).join("\n");
+    return { preview: openAt > 0 && before.trim() !== "" ? before : `${clipped.replace(/…$/, "")}\n${fence}` };
+  }
+  return { preview: clipped };
+}
 
 export function MessageRow(props: { team: Team; m: Message; onThread?: () => void; onOpenOutput?: (o: Output) => void; noTask?: boolean; flat?: boolean; foldable?: boolean; expanded?: boolean; onToggleExpand?: () => void }) {
   const a = () => authorOf(props.team, props.m.author);
   const agent = () => (props.m.author.kind === "agent" ? props.team.agents().find((x) => x.id === props.m.author.id) : undefined);
   const note = signal("");
-  const lines = () => props.m.text.split("\n");
-  const canFold = () => !!props.foldable && props.m.author.kind === "agent" && lines().length > FOLD_LINES;
-  const shownText = () => (canFold() && !props.expanded ? lines().slice(0, FOLD_LINES).join("\n") : props.m.text);
+  const fold = () => (props.foldable && props.m.author.kind === "agent" ? foldPreview(props.m.text) : null);
+  const canFold = () => fold() !== null;
+  const shownText = () => {
+    const f = fold();
+    return f && !props.expanded ? f.preview : props.m.text;
+  };
   return (
     <View testID={`msg-${props.m.id}`} style={{ flexDirection: "row", gap: 10, paddingHorizontal: 16, paddingVertical: 8 }}>
       <Avatar name={a().name} agent={a().agent} />
@@ -183,7 +244,7 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
           <If when={canFold()}>
             <FoldLine
               testID={`expand-${props.m.id}`}
-              label={props.expanded ? L("Collapse", "收起") : L(`Show all (${lines().length} lines)`, `展开全文（共 ${lines().length} 行）`)}
+              label={props.expanded ? L("Collapse", "收起") : fold()?.totalLines ? L(`Show all (${fold()!.totalLines} lines)`, `展开全文（共 ${fold()!.totalLines} 行）`) : L("Show all", "展开全文")}
               open={!!props.expanded}
               onToggle={() => props.onToggleExpand?.()}
             />
@@ -229,7 +290,7 @@ export function MessageRow(props: { team: Team; m: Message; onThread?: () => voi
         </If>
         <If when={!props.noTask}>
           <Each of={props.team.taskOfThread(props.m.id)} key={(x) => x.id}>
-            {(task) => <If when={shownAsTask(task())} else={props.flat ? undefined : <TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} onCardPress={props.onThread} /></If>}
+            {(task) => <If when={shownAsTask(task())} else={props.flat || isSilentTask(task()) ? undefined : <TrackLink team={props.team} task={task()} />}><TaskCard team={props.team} task={task()} onCardPress={props.onThread} /></If>}
           </Each>
         </If>
         <If when={props.onThread && (!props.flat || !!props.m.reply_count || props.team.taskOfThread(props.m.id).some(shownAsTask))}>

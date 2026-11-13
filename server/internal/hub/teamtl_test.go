@@ -52,10 +52,11 @@ func TestChannelAnswerContinueAndTL(t *testing.T) {
 		strings.Contains(firing["text"].(string), "转圈") &&
 		cl["task"].(map[string]any)["thread_id"] == u2["id"], resp{raw: []byte(fmt.Sprint(cl))})
 
-	// 4. TL chooses silence ("nothing"): nothing appears in the channel stream.
+	// 4. TL chooses silence ("nothing"): nothing appears in the channel stream, and silent+mandate.tl stay recorded.
 	beforeCount := len(e.channelTexts())
 	r = e.do("POST", "/api/v1/tasks/"+tlTask+"/report", e.token, map[string]any{"state": "nothing", "summary": "闲聊，不插话", "session": "ses_tl_1", "run": 1})
-	check(t, "TL silent nothing accepted", r.status == 200 && r.body["state"] == "done" && len(e.channelTexts()) == beforeCount, r)
+	check(t, "TL silent nothing accepted", r.status == 200 && r.body["state"] == "done" && r.body["silent"] == true &&
+		r.body["mandate"].(map[string]any)["tl"] == true && len(e.channelTexts()) == beforeCount, r)
 
 	// 5. Explicit @agent does not discard the earlier unaddressed message.
 	e.post(e.wl.session, "等一下我问问", "")
@@ -99,4 +100,30 @@ func TestEmptyPlanClearsTaskChecklist(t *testing.T) {
 	task := e.task(id)
 	plan, ok := task["plan"].([]any)
 	check(t, "empty plan persisted", !ok || len(plan) == 0)
+}
+
+func TestTLConfirmAndCrossUserMentionBurst(t *testing.T) {
+	// Agent with dispatch="channel", confirm=true: non-owner casual chat must NOT create pending confirmation cards.
+	e := newTaskEnv(t, "channel", true)
+	e.do("PATCH", "/api/v1/channels/"+e.cid, e.wl.session, map[string]any{"tl": e.aid})
+
+	e.post(e.zw.session, "大家中午吃什么", "")
+	e.post(e.ll.session, "@zhangwei 一起去楼下吧", "")
+	e.post(e.wl.session, "@zhangwei 下午开会", "")
+	e.advance(25 * time.Second)
+	e.h.Tick()
+	all := e.do("GET", "/api/v1/tasks", e.wl.session, nil).body["tasks"].([]any)
+	check(t, "Confirm=true TL ignores non-owner casual chat and @person mentions", len(all) == 0, resp{raw: []byte(fmt.Sprint(all))})
+
+	// Owner's unaddressed message wakes TL even when another user posts @agent inside the 20s window.
+	e.post(e.wl.session, "订单库连接池好像满了", "")
+	e.advance(5 * time.Second)
+	e.post(e.zw.session, "@acha 帮我查一下退款单", "")
+	e.advance(25 * time.Second)
+	e.h.Tick()
+	qs := e.do("GET", "/api/v1/tasks?state=queued", e.wl.session, nil).body["tasks"].([]any)
+	check(t, "owner's pending TL burst survives another user's @agent", len(qs) == 1 &&
+		qs[0].(map[string]any)["firing"].(map[string]any)["kind"] == "tl" &&
+		strings.Contains(qs[0].(map[string]any)["firing"].(map[string]any)["text"].(string), "连接池") &&
+		!strings.Contains(qs[0].(map[string]any)["firing"].(map[string]any)["text"].(string), "退款单"), resp{raw: []byte(fmt.Sprint(qs))})
 }

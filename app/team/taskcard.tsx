@@ -22,13 +22,18 @@ export function shownAsTask(task: Task): boolean {
   return task.tracked !== false || statusOf(task.state).needs !== "" || openQuestions(task).length > 0 || openHandoffs(task).length > 0;
 }
 
+/** A background firing run (channel TL, scheduled reminder, or trigger) while running silently or after ending with nothing. */
+export function isSilentTask(task: Task): boolean {
+  return !!(task.silent || task.quiet || task.firing);
+}
+
 /** Under a request the agent took up without tracking it: "convert to task", for its asker or the agent's owner. */
 export function TrackLink(props: { team: Team; task: Task }) {
   const t = props.team;
   const agent = () => t.agents().find((a) => a.id === props.task.agent_id);
   const busy = signal(false);
   return (
-    <If when={isParty(props.task, t.me(), agent()) && props.task.state !== "closed"}>
+    <If when={!isSilentTask(props.task) && isParty(props.task, t.me(), agent()) && props.task.state !== "closed"}>
       <View role="button" testID={`track-${props.task.id}`} onPress={async () => { busy.set(true); await t.act(props.task.id, "track"); busy.set(false); }} hoverStyle={hovered()}
         style={{ alignSelf: "flex-start", height: 24, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 6, marginLeft: -6, borderRadius: 6, opacity: busy() ? 0.5 : 1 }}>
         <Icon name="plus" size={13} tint={colors.fg3} />
@@ -291,32 +296,30 @@ export function TaskCard(props: { team: Team; task: Task; channelName?: string; 
     if (s === "waiting") return waitShort(task());
     return "";
   };
+  const headerBody = () => (
+    <>
+      <Txt variant="caption" tone="faint" weight="semibold" tabular>{task().id}</Txt>
+      <Txt testID={`task-${task().id}-heading`} tone={task().redacted ? "muted" : "default"} weight="semibold" grow lines={1}>
+        {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
+      </Txt>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <If when={task().state === "running"}>
+          <Spinner size={11} tint={colors.fg} />
+        </If>
+        <Txt testID={`task-${task().id}-state`} variant="caption" weight="semibold" tone={label().tone}>{label().label()}</Txt>
+      </View>
+    </>
+  );
   return (
     <View testID={`task-${task().id}`} style={{ marginTop: 6, gap: 8, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.raised, maxWidth: 560 }}>
       <If when={props.detail} else={
         <If when={props.onCardPress && !task().redacted} else={
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-            <Text style={{ fontSize: 12.5, fontWeight: "600", color: colors.fg3, fontVariant: ["tabular-nums"] }}>{task().id}</Text>
-            <Text testID={`task-${task().id}-heading`} style={{ flex: 1, fontSize: 14.5, fontWeight: "600", color: task().redacted ? colors.fg2 : colors.fg, numberOfLines: 1 }}>
-              {task().redacted ? L("A task in a private channel", "私有频道里的任务") : task().title}
-            </Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <If when={task().state === "running"}>
-                <Spinner size={11} tint={colors.fg} />
-              </If>
-              <Text testID={`task-${task().id}-state`} style={{ fontSize: 12.5, fontWeight: "600", color: toneOf(label().tone) }}>{label().label()}</Text>
-            </View>
+            {headerBody()}
           </View>
         }>
           <CardHead testID={`task-${task().id}-card`} label={`${task().id} ${task().title}`} onPress={() => props.onCardPress!()}>
-            <Txt variant="caption" tone="faint" weight="semibold" tabular>{task().id}</Txt>
-            <Txt testID={`task-${task().id}-heading`} weight="semibold" grow lines={1}>{task().title}</Txt>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-              <If when={task().state === "running"}>
-                <Spinner size={11} tint={colors.fg} />
-              </If>
-              <Txt testID={`task-${task().id}-state`} variant="caption" weight="semibold" tone={label().tone}>{label().label()}</Txt>
-            </View>
+            {headerBody()}
           </CardHead>
         </If>
       }>

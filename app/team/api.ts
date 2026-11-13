@@ -72,7 +72,7 @@ export type Mandate = { by: string; rule: Dispatch; confirm: boolean; joined?: b
   /** People in the channel who took it over from the one who asked; by is the last. */
   takeovers?: { from: string; to: string; at: number; pending?: boolean }[] | null;
   /** The agents it came through when one handed it on ("@who via @A"), the task it came from, the trigger that started it. */
-  via?: string[] | null; parent?: string; trigger?: string;
+  via?: string[] | null; parent?: string; trigger?: string; reminder?: string; tl?: boolean;
   /** The parent's agent delegated it (remi delegate): its result goes back to that agent; redos: times it sent it back. */
   delegated?: boolean; redos?: number };
 /** since: when the computer it ran on was last seen; proposed: the agent's owner decides; waited: they wait for it;
@@ -145,6 +145,10 @@ export type Task = {
   reminders?: Reminder[] | null;
   /** Live plan checklist synced from the runtime's own todo list (Spec §7). */
   plan?: PlanItem[] | null;
+  /** Background firing task (TL/reminder/trigger) that has not spoken or been tracked. */
+  silent?: boolean;
+  quiet?: boolean;
+  firing?: { kind: "reminder" | "trigger" | "tl"; id?: string; text?: string; prev_state?: string } | null;
 };
 export type PlanItem = { text: string; status: "pending" | "in_progress" | "done" };
 /** Plan progress ("3/7" + current step) for task cards and task rows (Spec §7); null when the task has no checklist. */
@@ -510,10 +514,10 @@ export function createTeam(s: Session) {
   const talking = signal<Record<string, { id: string; handle: string; until: number }>>({});
   const talkingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  function setTalking(channelId: string, id: string, handle: string) {
+  const TALKING_TTL_MS = 10 * 60_000;
+  function setTalking(channelId: string, id: string, handle: string, span = TALKING_TTL_MS) {
     const prev = talkingTimers.get(channelId);
     if (prev) clearTimeout(prev);
-    const span = 10 * 60_000;
     talking.update((x) => ({ ...x, [channelId]: { id, handle, until: Date.now() + span } }));
     talkingTimers.set(channelId, setTimeout(() => dismissTalking(channelId), span));
   }
@@ -572,10 +576,12 @@ export function createTeam(s: Session) {
     if (live && isNew && m.author.kind === "agent" && myId) {
       const ch = untracked(channels).find((c) => c.id === m.channel_id);
       if (!ch?.dm_agent) {
-        const forMe = m.answer_to === myId;
-        if (forMe) {
+        const mentionedMe = (m.mentions ?? []).some((x) => x.kind === "user" && x.id === myId);
+        const forMe = m.answer_to === myId || mentionedMe;
+        const age = Math.max(0, Date.now() - m.created);
+        if (forMe && age < TALKING_TTL_MS) {
           const ag = untracked(agents).find((a) => a.id === m.author.id);
-          if (ag) setTalking(m.channel_id, ag.id, ag.handle);
+          if (ag) setTalking(m.channel_id, ag.id, ag.handle, TALKING_TTL_MS - age);
         }
       }
     }

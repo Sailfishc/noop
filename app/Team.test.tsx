@@ -1969,7 +1969,7 @@ describe("chat stream, workspace panel, plan checklists & channel files", () => 
   test("继续和 @acha 聊 chip routes unaddressed follow-up messages until dismissed; MembersPanel sets channel TL", async () => {
     const log = newLog();
     const myAsk = msg({ id: "msg_1", seq: 1, author: { kind: "user", id: "u_1" }, text: "@acha 超时是多少？", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
-    const liveReply = msg({ id: "msg_5", seq: 5, author: { kind: "agent", id: "a_1" }, text: "默认 3 秒。", answer_to: "u_1" });
+    const liveReply = msg({ id: "msg_5", seq: 5, created: Date.now(), author: { kind: "agent", id: "a_1" }, text: "默认 3 秒。", answer_to: "u_1" });
     let updatesServed = false;
     const app = await open("./App.tsx", {
       storage: { ...SESSION, "hub.lang": "zh" },
@@ -2013,14 +2013,15 @@ describe("chat stream, workspace panel, plan checklists & channel files", () => 
     const log = newLog();
     const myAsk = msg({ id: "msg_1", seq: 1, author: { kind: "user", id: "u_1" }, text: "@acha 先前的问题", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
     const otherAsk = msg({ id: "msg_2", seq: 2, author: { kind: "user", id: "u_2" }, text: "@acha 我的问题", mentions: [{ kind: "agent", id: "a_1", handle: "acha" }] });
-    const otherReply = msg({ id: "msg_3", seq: 3, author: { kind: "agent", id: "a_1" }, text: "给王磊的回答", answer_to: "u_2" });
+    const otherReply = msg({ id: "msg_3", seq: 3, created: Date.now(), author: { kind: "agent", id: "a_1" }, text: "给王磊的回答", answer_to: "u_2" });
+    const staleReply = msg({ id: "msg_4", seq: 4, created: T0, author: { kind: "agent", id: "a_1" }, text: "一小时前的旧回复", answer_to: "u_1" });
     let served = false;
     const app = await open("./App.tsx", {
       storage: { ...SESSION, "hub.lang": "zh" }, width: 1280, height: 800,
       network: {
         ...server(log),
         [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [myAsk, otherAsk], more: false } },
-        [`GET ${URL}/api/v1/updates?*`]: () => ({ body: { messages: served ? [] : (served = true, [otherReply]), more: false } }),
+        [`GET ${URL}/api/v1/updates?*`]: () => ({ body: { messages: served ? [] : (served = true, [otherReply, staleReply]), more: false } }),
       },
     });
     await app.waitFor("text:给王磊的回答");
@@ -2029,5 +2030,34 @@ describe("chat stream, workspace panel, plan checklists & channel files", () => 
     await app.press("id:team-composer-send");
     await app.waitUntil(() => log.posts.length === 1);
     expect(log.posts[0].to_agent).toBeUndefined();
+  });
+
+  test("silent TL/firing tasks show no TrackLink; long single-paragraph and fenced agent replies fold cleanly", async () => {
+    const log = newLog();
+    const chatMsg = msg({ id: "msg_chat", seq: 1, author: { kind: "user", id: "u_1" }, text: "今天预发有点慢" });
+    const silentTL = task({
+      id: "T-0099", thread_id: "msg_chat", created_by: "u_1", state: "done", tracked: false, silent: true,
+      mandate: { by: "u_1", rule: "channel", confirm: false, autonomy: "assist", branch: "agent/T-0099", runtime: "codex", tl: true },
+    });
+    const wall = msg({ id: "msg_wall", seq: 2, author: { kind: "agent", id: "a_1" }, text: "排查结论：".repeat(180) });
+    const fenced = msg({
+      id: "msg_fence", seq: 3, author: { kind: "agent", id: "a_1" },
+      text: ["先看配置：", ...Array.from({ length: 8 }, (_, i) => `说明 ${i + 1}`), "```ts", "const a = 1;", "const b = 2;", "const c = 3;", "const d = 4;", "```"].join("\n"),
+    });
+    const app = await open("./App.tsx", {
+      storage: { ...SESSION, "hub.lang": "zh" }, width: 1280, height: 800,
+      network: {
+        ...server(log, {}, [silentTL]),
+        [`GET ${URL}/api/v1/channels/c_1/messages?*`]: { body: { messages: [chatMsg, wall, fenced], more: false } },
+      },
+    });
+    await app.waitFor("text:今天预发有点慢");
+    expect(app.shows("id:task-T-0099")).toBe(false);
+    expect(app.shows("id:track-T-0099")).toBe(false);
+    await app.waitFor("id:expand-msg_wall");
+    expect(app.shows("id:expand-msg_fence")).toBe(true);
+    expect(app.shows("text:/const a = 1/")).toBe(false); // cut cleanly before opening fence rather than splitting inside it
+    await app.press("id:expand-msg_fence");
+    await app.waitFor("text:/const d = 4/");
   });
 });

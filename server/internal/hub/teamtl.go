@@ -69,6 +69,12 @@ func (h *Hub) clearAgentTL(agentID string) {
 	}
 }
 
+// mayWakeTL reports whether an unaddressed message by userID may wake the channel's TL automatically without
+// creating owner-confirmation cards on casual chat.
+func mayWakeTL(tl agentView, userID string) bool {
+	return userID == tl.OwnerID || (!tl.Confirm && (tl.Dispatch == "team" || tl.Dispatch == "channel"))
+}
+
 // onPostedTL schedules or extends the 20s merge window for unaddressed human top-level messages in a channel with a TL,
 // A change of sender or an explicit mention ends the previous sender's window first.
 func (h *Hub) onPostedTL(m messageView) {
@@ -93,8 +99,8 @@ func (h *Hub) onPostedTL(m messageView) {
 	if !ok || !h.isMember(c.ID, "agent", tl.ID) {
 		return
 	}
-	if tl.Dispatch == "owner" && m.Author.ID != tl.OwnerID {
-		return // sender has no permission to dispatch this agent: TL stays out of it
+	if !mayWakeTL(tl, m.Author.ID) {
+		return // sender cannot dispatch this agent without per-message confirmation: TL stays out of it
 	}
 	due := h.nowMs() + tlDebounce.Milliseconds()
 	if h.count("SELECT COUNT(*) FROM tl_pending WHERE channel_id = ?", c.ID) > 0 {
@@ -138,7 +144,7 @@ func (h *Hub) fireTL(p pendingTL) {
 		return
 	}
 	tl, ok := h.agent(c.TL)
-	if !ok || !h.isMember(c.ID, "agent", tl.ID) || (tl.Dispatch == "owner" && p.byUser != tl.OwnerID) {
+	if !ok || !h.isMember(c.ID, "agent", tl.ID) || !mayWakeTL(tl, p.byUser) {
 		return
 	}
 	last, ok := h.message(p.lastMsg)
@@ -149,17 +155,22 @@ func (h *Hub) fireTL(p pendingTL) {
 			AND m.thread_id IS NULL AND m.seq >= ? AND m.seq <= ? AND m.author_kind = 'user' AND m.author_id = ? ORDER BY m.seq`,
 		c.ID, p.firstSeq, last.Seq, p.byUser))
 	var lines []string
+	var target messageView
 	for _, m := range burst {
-		if len(m.Mentions) > 0 {
+		if len(m.Mentions) > 0 || !mayWakeTL(tl, m.Author.ID) {
 			continue
 		}
+		target = m
 		who := m.Author.ID
 		if u, ok := h.user(m.Author.ID); ok {
 			who = fmt.Sprintf("%s (@%s)", u.Name, u.Handle)
 		}
 		lines = append(lines, fmt.Sprintf("- %s: %s", who, clip(m.Text, 1000)))
 	}
-	h.createTaskWith(last, last.ID, tl.ID, false, false, taskOrigin{
+	if len(lines) == 0 {
+		return
+	}
+	h.createTaskWith(target, target.ID, tl.ID, false, false, taskOrigin{
 		By:     p.byUser,
 		Firing: &firingView{Kind: "tl", Text: strings.Join(lines, "\n")},
 	})
@@ -169,7 +180,7 @@ func (h *Hub) fireTL(p pendingTL) {
 // working on that area (Spec §4).
 func (h *Hub) channelActiveTasks(channelID, excludeID string) string {
 	ts := scanTasks(h.db.Query("SELECT "+taskCols+` FROM tasks_v1 WHERE channel_id = ? AND id != ?
-		AND state NOT IN ('done', 'closed') AND (tracked = 1 OR state IN ('running', 'waiting', 'needs_decision', 'review'))
+		AND state NOT IN ('done', 'closed') AND firing IS NULL AND (tracked = 1 OR state IN ('running', 'waiting', 'needs_decision', 'review'))
 		ORDER BY updated DESC LIMIT 15`, channelID, excludeID))
 	var lines []string
 	for _, t := range ts {

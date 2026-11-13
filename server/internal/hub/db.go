@@ -178,6 +178,8 @@ func initSchema(db *sql.DB) error {
 		"ALTER TABLE task_outputs ADD COLUMN message_id TEXT",                      // message the output hangs on (Spec §6)
 		"ALTER TABLE tasks_v1 ADD COLUMN plan TEXT NOT NULL DEFAULT '[]'",          // live plan checklist from the runtime's todo list (Spec §7)
 		"ALTER TABLE messages ADD COLUMN answer_to TEXT NOT NULL DEFAULT ''",       // person whose request this top-level answer responds to
+		"ALTER TABLE tasks_v1 ADD COLUMN silent INTEGER NOT NULL DEFAULT 0",        // background run (TL/reminder/trigger) that has not spoken or been tracked
+		"ALTER TABLE tasks_v1 ADD COLUMN reminder_note TEXT NOT NULL DEFAULT ''",   // due reminder text held for an active person task without silent firing
 	} {
 		if _, err := db.Exec(alter); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return err
@@ -186,7 +188,7 @@ func initSchema(db *sql.DB) error {
 	for _, idx := range []string{
 		"CREATE INDEX IF NOT EXISTS idx_task_outputs_msg ON task_outputs (message_id)",
 		"CREATE INDEX IF NOT EXISTS idx_task_outputs_channel ON task_outputs (channel_id, updated DESC)",
-		"UPDATE task_outputs SET channel_id = COALESCE((SELECT channel_id FROM tasks_v1 WHERE tasks_v1.id = task_outputs.task_id), '') WHERE channel_id = ''",
+		"UPDATE task_outputs SET channel_id = (SELECT channel_id FROM tasks_v1 WHERE tasks_v1.id = task_outputs.task_id) WHERE channel_id = '' AND EXISTS (SELECT 1 FROM tasks_v1 WHERE tasks_v1.id = task_outputs.task_id AND tasks_v1.channel_id != '')",
 	} {
 		if _, err := db.Exec(idx); err != nil {
 			return err

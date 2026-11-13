@@ -69,7 +69,7 @@ func (h *Hub) convBind(m messageView, root string, a agentView, by string, track
 	if err != nil {
 		panic(err)
 	}
-	sameMachine := !cb.Valid || cb.String == "" || h.agentOn(a.ID, cb.String)
+	sameMachine := !cb.Valid || cb.String == "" || (h.agentOn(a.ID, cb.String) && (len(a.Machines) <= 1 || h.machineOnline(cb.String)))
 	if now-updated <= convIdle.Milliseconds() && rt == a.Runtime && sameMachine && workID != "" {
 		convID = workID
 		session = ses
@@ -87,13 +87,15 @@ func (h *Hub) convBind(m messageView, root string, a agentView, by string, track
 	return newTaskID, scope, "", nil
 }
 
-// convRunningBefore reports whether an earlier turn sharing the same conversation workdir is currently running, so
-// back-to-back messages run sequentially in the same session rather than racing on one CLI session.
+// convRunningBefore reports whether another turn sharing the same conversation workdir is currently running or an
+// earlier turn has not completed yet, so back-to-back messages execute strictly in order on one CLI session.
 func (h *Hub) convRunningBefore(t taskView) bool {
 	if t.ConvID == "" {
 		return false
 	}
-	return h.count("SELECT COUNT(*) FROM tasks_v1 WHERE conv_id = ? AND num < ? AND state = 'running'", t.ConvID, taskNum(t.ID)) > 0
+	return h.count(`SELECT COUNT(*) FROM tasks_v1 WHERE conv_id = ? AND id != ?
+		AND (state = 'running' OR (num < ? AND state IN ('pending', 'queued', 'running')))`,
+		t.ConvID, t.ID, taskNum(t.ID)) > 0
 }
 
 // convRecent returns recent messages from an earlier conversation segment when starting a fresh session after the 2h
@@ -147,7 +149,7 @@ func (h *Hub) convFinish(t taskView, a agentView, machineID, session string, pro
 		h.must(h.db.Exec(`UPDATE conversations SET session = ?, claimed_by = ?, runtime = ?, turns = turns + 1, updated = ?
 			WHERE channel_id = ? AND scope = ? AND agent_id = ? AND work_id = ?`,
 			session, nilIfEmpty(machineID), a.Runtime, now, t.ChannelID, t.convScope, t.AgentID, t.ConvID))
-		rows, err := h.db.Query(`SELECT id FROM tasks_v1 WHERE conv_id = ? AND id != ? AND state = 'queued'`, t.ConvID, t.ID)
+		rows, err := h.db.Query(`SELECT id FROM tasks_v1 WHERE conv_id = ? AND id != ? AND state IN ('pending', 'queued') ORDER BY num`, t.ConvID, t.ID)
 		if err != nil {
 			panic(err)
 		}
@@ -173,10 +175,7 @@ func (h *Hub) convDetach(t taskView) {
 	if t.convScope == "" || t.ConvID == "" {
 		return
 	}
-	h.must(h.db.Exec(`UPDATE conversations SET work_id = '', session = '', claimed_by = NULL, turns = turns + 1, updated = ?
-		WHERE channel_id = ? AND scope = ? AND agent_id = ? AND work_id = ?`,
-		h.nowMs(), t.ChannelID, t.convScope, t.AgentID, t.ConvID))
-	rows, err := h.db.Query(`SELECT id FROM tasks_v1 WHERE conv_id = ? AND id != ? AND state IN ('pending', 'queued') AND runs = 0`, t.ConvID, t.ID)
+	rows, err := h.db.Query(`SELECT id FROM tasks_v1 WHERE conv_id = ? AND id != ? AND state IN ('pending', 'queued') AND runs = 0 ORDER BY num`, t.ConvID, t.ID)
 	if err != nil {
 		panic(err)
 	}
@@ -187,8 +186,40 @@ func (h *Hub) convDetach(t taskView) {
 		waiting = append(waiting, id)
 	}
 	rows.Close()
+	nextWork := ""
+	if len(waiting) > 0 {
+		nextWork = waiting[0]
+	}
+	h.must(h.db.Exec(`UPDATE conversations SET work_id = ?, session = '', claimed_by = NULL, turns = turns + 1, updated = ?
+		WHERE channel_id = ? AND scope = ? AND agent_id = ? AND work_id = ?`,
+		nextWork, h.nowMs(), t.ChannelID, t.convScope, t.AgentID, t.ConvID))
 	for _, id := range waiting {
-		h.must(h.db.Exec(`UPDATE tasks_v1 SET conv_id = id, session = '', claimed_by = NULL WHERE id = ?`, id))
+		h.must(h.db.Exec(`UPDATE tasks_v1 SET conv_id = ?, session = '', claimed_by = NULL WHERE id = ?`, nextWork, id))
+		h.taskChanged(id)
+	}
+}
+
+// convClosed unblocks any subsequent turns sharing t's conversation when t is declined or cancelled.
+func (h *Hub) convClosed(t taskView) {
+	if t.ConvID == "" {
+		return
+	}
+	if t.ConvID == t.ID && t.Session == "" {
+		h.convDetach(t)
+		return
+	}
+	rows, err := h.db.Query(`SELECT id FROM tasks_v1 WHERE conv_id = ? AND id != ? AND state = 'queued' ORDER BY num`, t.ConvID, t.ID)
+	if err != nil {
+		panic(err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		_ = rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	for _, id := range ids {
 		h.taskChanged(id)
 	}
 }

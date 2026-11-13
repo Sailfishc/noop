@@ -51,9 +51,9 @@
     "spacing": 3
   },
   "app/team/taskcard.tsx": {
-    "font-size": 20,
+    "font-size": 17,
     "radius": 8,
-    "spacing": 9,
+    "spacing": 8,
     "pressable": 1
   },
   "app/team/taskfacts.tsx": {

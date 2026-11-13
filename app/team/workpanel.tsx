@@ -1,7 +1,7 @@
 // Right-hand workspace panel ("工作面板", Spec §8): opens one item's conversation, plan checklist, and outputs.
 import { effect, Image, openUrl, Scroll, signal, View } from "nsh";
 import { L } from "../i18n";
-import { Btn, Card, Choice, colors, DocView, Empty, ErrorNote, FoldLine, IconBtn, OutputRow, PlanList, Spinner, Tabs, Txt } from "../ui";
+import { Btn, Card, Choice, colors, Divider, DocView, Empty, ErrorNote, FoldLine, IconBtn, OutputRow, PlanList, Spinner, Tabs, Txt } from "../ui";
 import { isMember, type Message, type Output, type Reminder, type Team } from "./api";
 import { Composer } from "./composer";
 import { MessageRow } from "./messages";
@@ -268,7 +268,7 @@ export function WorkPanel(props: {
           <IconBtn testID="close-thread" label={L("Close workspace", "关闭工作面板")} icon="close" tone="muted" onPress={props.onClose} />
         )}
       />
-      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: colors.hairline }}>
+      <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 12 }}>
         <Tabs
           testID="work-tab"
           value={tab()}
@@ -280,6 +280,7 @@ export function WorkPanel(props: {
           ]}
         />
       </View>
+      <Divider />
       <If when={shown()} else={<View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner size={18} tint={colors.fg2} /></View>}>
         {(r) => (
           <>
@@ -301,7 +302,7 @@ export function WorkPanel(props: {
                   onToggleExpand={() => expandedMsgs.update((v) => ({ ...v, [r().id]: !v[r().id] }))}
                   onOpenOutput={openOutputInPanel}
                 />
-                <View style={{ marginHorizontal: 16, marginVertical: 6, height: 1, backgroundColor: colors.hairline }} />
+                <Divider inset spaced />
                 <Each of={replies()} key={(m) => m.id}>
                   {(m) => (
                     <MessageRow
