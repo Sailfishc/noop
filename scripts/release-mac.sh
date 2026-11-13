@@ -61,7 +61,8 @@ echo "==> packaging"
 APP="$WORK/out/Remi.app"
 ARCHIVE=$(ls "$WORK/out"/Remi-"$VERSION"-macos-aarch64.tar.gz)
 # nsh/updater unpacks this archive and swaps the app in: keep its layout, with the signed app in it.
-tar -tzf "$ARCHIVE" | sort > "$WORK/layout.before"
+# codesign may add the standard CodeResources symlink; it is not an app layout change.
+tar -tzf "$ARCHIVE" | sed '/^Remi\.app\/Contents\/CodeResources$/d' | sort > "$WORK/layout.before"
 
 echo "==> signing with $SIGN_IDENTITY"
 codesign --force --deep --options runtime --timestamp --entitlements scripts/remi.entitlements --sign "$SIGN_IDENTITY" "$APP"
@@ -76,7 +77,7 @@ spctl --assess --type execute --verbose "$APP"
 rm -f "$ZIP" && ditto -c -k --keepParent "$APP" "$ZIP"
 UPDATE="$WORK/feed/remi-$VERSION-macos-arm64.tar.gz"
 tar -czf "$UPDATE" -C "$WORK/out" Remi.app
-tar -tzf "$UPDATE" | sort > "$WORK/layout.after"
+tar -tzf "$UPDATE" | sed '/^Remi\.app\/Contents\/CodeResources$/d' | sort > "$WORK/layout.after"
 diff -q "$WORK/layout.before" "$WORK/layout.after" > /dev/null || { echo "the signed archive's layout differs from nsh's:"; diff "$WORK/layout.before" "$WORK/layout.after" | head; exit 1; }
 
 echo "==> OTA package and update manifest"
